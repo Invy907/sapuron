@@ -104,11 +104,27 @@ test('径の並びが D10 → D13 → D16 → D19 → D22 になる', () => {
   )
 })
 
-// 3) 参考資料の加工長。大コーナー 700×700 → 1380 / 曲筋 → 1710・1410
-test('参考資料の加工長（1380 / 1710 / 1410）と一致する', () => {
-  assert.equal(cornerBarKakouchouMm(segs([700, 700])), 1380)
-  assert.equal(cornerBarKakouchouMm(segs([600, 455, 115, 600])), 1710)
-  assert.equal(cornerBarKakouchouMm(segs([450, 455, 115, 450])), 1410)
+// 3) 加工長は外々・芯々の辺 1 本につき -20。内々・未設定の辺は減らさない
+test('外々・芯々の辺ごとに 20 を引く', () => {
+  assert.equal(cornerBarKakouchouMm(segs([700, 700], 'SOTO_SOTO')), 1360)
+  assert.equal(cornerBarKakouchouMm(segs([600, 455, 115, 600], 'SHIN_SHIN')), 1690)
+})
+
+test('内々・寸法基準未設定の辺は加工長に影響しない', () => {
+  assert.equal(cornerBarKakouchouMm(segs([700, 700], 'UCHI_UCHI')), 1400)
+  assert.equal(cornerBarKakouchouMm(segs([700, 700])), 1400)
+})
+
+test('寸法基準が混在する場合は外々・芯々の辺の数だけ引く', () => {
+  assert.equal(
+    cornerBarKakouchouMm([
+      { id: 's1', lengthMm: 600, measurementType: 'SOTO_SOTO' },
+      { id: 's2', lengthMm: 455, measurementType: 'UCHI_UCHI' },
+      { id: 's3', lengthMm: 115, measurementType: 'SHIN_SHIN' },
+      { id: 's4', lengthMm: 600, measurementType: null },
+    ]),
+    1770 - 40,
+  )
 })
 
 test('寸法が未入力の辺があると加工長は null', () => {
@@ -134,7 +150,7 @@ test('§9 別の配置でも仕様が同じなら 1 行にまとめる', () => {
   assert.equal(rows[0]!.dimsDetailText, '700芯々 × 700芯々')
   assert.equal(rows[0]!.uniformMeasurementType, 'SHIN_SHIN')
   assert.equal(rows[0]!.segmentSumMm, 1400)
-  assert.equal(rows[0]!.kakouchouMm, 1380)
+  assert.equal(rows[0]!.kakouchouMm, 1360)
 })
 
 // 5) §10 数字が同じでも寸法基準が違えば別の行
@@ -186,7 +202,7 @@ test('§10 形状・segment 個数が違えば合算しない', () => {
 
   const four = rows.find((r) => r.segments.length === 4)!
   assert.equal(four.dimsText, '600 × 455 × 115 × 600')
-  assert.equal(four.kakouchouMm, 1710)
+  assert.equal(four.kakouchouMm, 1690)
   assert.equal(four.quantity, 2)
   assert.equal(four.shapeLabel, '2段階段')
 })

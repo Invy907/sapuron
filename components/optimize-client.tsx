@@ -18,6 +18,7 @@ import {
 import type { UnitShapeLegendPosition } from '@/components/unit-client'
 import {
   DEFAULT_PIECE_LENGTH_ADJUSTMENT_MM,
+  kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
@@ -246,6 +247,52 @@ export function OptimizeClient({
       const n = Math.max(0, Math.floor(value))
       if (prev[rowKey] === n) return prev
       return { ...prev, [rowKey]: n }
+    })
+  }, [])
+
+  const kakouchouStorageKey = useMemo(
+    () => kakouchouOverrideStorageKey(projectId),
+    [projectId],
+  )
+  const [kakouchouOverrides, setKakouchouOverrides] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.localStorage.getItem(kakouchouStorageKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      const next: Record<string, number> = {}
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          const n = Number(value)
+          if (Number.isFinite(n) && n > 0) next[key] = Math.floor(n)
+        }
+      }
+      setKakouchouOverrides(next)
+    } catch {
+      setKakouchouOverrides({})
+    }
+  }, [kakouchouStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(kakouchouStorageKey, JSON.stringify(kakouchouOverrides))
+    } catch {
+      // ignore
+    }
+  }, [kakouchouOverrides, kakouchouStorageKey])
+
+  const handleKakouchouOverrideChange = useCallback((rowKey: string, value: number | null) => {
+    setKakouchouOverrides((prev) => {
+      if (value == null) {
+        if (!(rowKey in prev)) return prev
+        const next = { ...prev }
+        delete next[rowKey]
+        return next
+      }
+      if (prev[rowKey] === value) return prev
+      return { ...prev, [rowKey]: value }
     })
   }, [])
 
@@ -534,7 +581,11 @@ export function OptimizeClient({
           {/* 付加筋 集計結果。画面では切断最適化の結果の後ろに続けて出す */}
           {cornerBars.length > 0 && (
             <section className="optimize-print-corner-bars space-y-4">
-              <CornerBarSummarySections placements={cornerBars} />
+              <CornerBarSummarySections
+                placements={cornerBars}
+                kakouchouOverrides={kakouchouOverrides}
+                onKakouchouOverrideChange={handleKakouchouOverrideChange}
+              />
             </section>
           )}
         </div>

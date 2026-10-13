@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   aggregateAdditionalRebars,
   type AdditionalRebarGroup,
@@ -30,6 +30,8 @@ import {
  */
 
 const DIAMETER_ORDER = new Map<string, number>(CORNER_BAR_DIAMETERS.map((d, i) => [d, i]))
+
+const EMPTY_OVERRIDES: Readonly<Record<string, number>> = {}
 
 function diameterRank(diameter: string): number {
   return DIAMETER_ORDER.get(diameter.trim().toUpperCase()) ?? DIAMETER_ORDER.size
@@ -100,25 +102,104 @@ function SpecWithDiameter({ row }: { row: AdditionalRebarSpecRow }) {
   )
 }
 
+function autoKakouchouOf(row: AdditionalRebarSpecRow): number | null {
+  return row.kakouchouMm ?? row.segmentSumMm
+}
+
+/**
+ * 加工長の手入力欄。入力中に空欄を挟んでも自動値へ戻らないよう、
+ * 確定（フォーカスを外す / Enter）まではローカルの文字列で持つ。
+ * 空欄または自動値と同じ値で確定すると手入力を解除する。
+ */
+function KakouchouInput({
+  autoMm,
+  overrideMm,
+  onChange,
+  label,
+}: {
+  autoMm: number | null
+  overrideMm: number | undefined
+  onChange: (value: number | null) => void
+  label: string
+}) {
+  const shown = overrideMm ?? autoMm
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? (shown == null ? '' : String(shown))
+
+  const commit = () => {
+    if (draft == null) return
+    setDraft(null)
+    const raw = draft.trim()
+    if (raw === '') {
+      onChange(null)
+      return
+    }
+    const n = Number.parseInt(raw, 10)
+    if (!Number.isFinite(n) || n <= 0) return
+    onChange(n === autoMm ? null : n)
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      aria-label={label}
+      title={autoMm != null ? `自動: ${autoMm}（空欄で自動に戻す）` : undefined}
+      placeholder="—"
+      value={text}
+      onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        if (e.key === 'Escape') {
+          setDraft(null)
+          e.currentTarget.blur()
+        }
+      }}
+      style={{ width: `${Math.max(text.length, 1) + 0.5}ch` }}
+      className={`border-0 bg-transparent p-0 text-center font-mono outline-none focus:underline focus:decoration-primary/40 ${
+        overrideMm != null ? 'text-primary print:text-inherit' : ''
+      }`}
+    />
+  )
+}
+
 /** 特殊コーナー筋: 括弧内は加工長のみ（辺寸法は形状図） */
-function SpecWithKakouchou({ row }: { row: AdditionalRebarSpecRow }) {
-  const inner =
-    row.kakouchouMm != null
-      ? String(row.kakouchouMm)
-      : row.segmentSumMm != null
-        ? String(row.segmentSumMm)
-        : '—'
+function SpecWithKakouchou({
+  row,
+  overrideMm,
+  onOverrideChange,
+}: {
+  row: AdditionalRebarSpecRow
+  overrideMm?: number
+  onOverrideChange?: (rowKey: string, value: number | null) => void
+}) {
+  const autoMm = autoKakouchouOf(row)
+  const shown = overrideMm ?? autoMm
   return (
     <>
       {row.diameter}
       <span className="text-muted">（</span>
-      {inner}
+      {onOverrideChange ? (
+        <KakouchouInput
+          autoMm={autoMm}
+          overrideMm={overrideMm}
+          onChange={(value) => onOverrideChange(row.key, value)}
+          label={`${row.categoryLabel} ${row.diameter} ${row.shapeLabel} の加工長`}
+        />
+      ) : (
+        (shown ?? '—')
+      )}
       <span className="text-muted">）</span>
     </>
   )
 }
 
-function buildSheetRows(groups: AdditionalRebarGroup[]): SheetRow[] {
+function buildSheetRows(
+  groups: AdditionalRebarGroup[],
+  kakouchouOverrides: Readonly<Record<string, number>>,
+  onKakouchouOverrideChange?: (rowKey: string, value: number | null) => void,
+): SheetRow[] {
   const rows: SheetRow[] = []
 
   for (const group of groups) {
@@ -169,13 +250,19 @@ function buildSheetRows(groups: AdditionalRebarGroup[]): SheetRow[] {
           key: row.key,
           label: block.heading,
           isGroupStart: i === 0,
-          spec: <SpecWithKakouchou row={row} />,
+          spec: (
+            <SpecWithKakouchou
+              row={row}
+              overrideMm={kakouchouOverrides[row.key]}
+              onOverrideChange={onKakouchouOverrideChange}
+            />
+          ),
           result: <QuantityText quantity={row.quantity} />,
           layout: 'inline',
           figure:
             showShapeFigure
               ? {
-                  node: <ShapeFigure shapeType={row.shapeType} rows={[row]} />,
+                  node: <ShapeFigure row={row} />,
                   rowSpan: 1,
                 }
               : 'empty',
@@ -188,14 +275,7 @@ function buildSheetRows(groups: AdditionalRebarGroup[]): SheetRow[] {
 }
 
 /**
- * 資料の手書きスケッチに当たる形状図。
- *
- * 1 つの形状に寸法違いの鉄筋が何本も入ることがあるので、辺のラベルは 2 通りに分ける。
- * ・全ての鉄筋で寸法が同じ  → その寸法をそのまま書く（資料と同じ見た目）
- * ・寸法が鉄筋ごとに違う    → 辺の番号だけ書く
- * 寸法を全部並べると 1 辺のラベルが「340（30/232/23）」のように長くなり、
- * 隣の辺のラベルと重なって読めなくなるため。寸法は左の列に並んでいるので、
- * 番号と列の並び順（左から辺 1, 2, 3…）で対応が取れる。
+ * 資料の手書きスケッチに当たる形状図。集計行ごとに 1 つ描き、各辺に寸法と寸法基準を書く。
  */
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
 const FIGURE_W = 280
@@ -205,46 +285,26 @@ const FIGURE_H = 120
 const FIGURE_PAD = 27
 /** 辺の中点からラベルまでの距離 */
 const FIGURE_LABEL_GAP = 13
-/** 辺番号を入れる丸の半径 */
-const FIGURE_BADGE_R = 8
 /** 寸法ラベルの 1 文字あたりの幅と行の高さ（fontSize 12 の概算） */
 const FIGURE_LABEL_CHAR_W = 7
 const FIGURE_LABEL_LINE_H = 14
-
+/** 寸法の文字サイズ / 寸法基準の文字サイズ / 2 行目のずれ（倍率 1 のとき） */
+const FIGURE_DIM_FONT = 14
+const FIGURE_MEASUREMENT_FONT = 11
+const FIGURE_LINE_DY = 14
 /**
- * 全ての鉄筋で各辺の寸法と寸法基準が一致しているか。
- * どちらかが違う場合、図だけでは各行を区別できないので辺番号へ切り替える。
+ * ラベルが収まらないときに順に試す文字の倍率。
+ * 辺が多く短い形状（階段形など）でも、小さくすれば数字のまま書ける。
  */
-function hasUniformSegments(
-  rows: AdditionalRebarSpecRow[],
-  segmentCount: number,
-): boolean {
-  if (rows.length <= 1) return true
-  for (let i = 0; i < segmentCount; i += 1) {
-    const first = rows[0]?.segments[i]?.lengthMm ?? null
-    const firstMeasurement = rows[0]?.segments[i]?.measurementType ?? null
-    for (const row of rows) {
-      if (
-        (row.segments[i]?.lengthMm ?? null) !== first ||
-        (row.segments[i]?.measurementType ?? null) !== firstMeasurement
-      ) {
-        return false
-      }
-    }
-  }
-  return true
-}
+const FIGURE_LABEL_SCALES = [1, 0.85, 0.7, 0.6, 0.5]
 
-function segmentLabelFor(rows: AdditionalRebarSpecRow[], index: number): string {
-  const length = rows[0]?.segments[index]?.lengthMm
+function segmentLabelFor(row: AdditionalRebarSpecRow, index: number): string {
+  const length = row.segments[index]?.lengthMm
   return length == null ? '—' : String(length)
 }
 
-function segmentMeasurementLabelFor(
-  rows: AdditionalRebarSpecRow[],
-  index: number,
-): string {
-  const measurementType = rows[0]?.segments[index]?.measurementType
+function segmentMeasurementLabelFor(row: AdditionalRebarSpecRow, index: number): string {
+  const measurementType = row.segments[index]?.measurementType
   return measurementType ? measurementTypeLabel(measurementType) : ''
 }
 
@@ -276,46 +336,97 @@ function pickSummaryFigureRotation(shape: CornerBarShapeDef): number {
   return best
 }
 
-/**
- * 寸法ラベルを中点の外側に置いても、隣の辺のラベルと重ならないか。
- *
- * 階段形は辺が短く中点が近いので、4 桁の寸法を 5 辺に書くと必ず重なる。
- * 実際の文字幅で当たり判定して、収まらない形状では辺番号に切り替える。
- */
-function labelsFitWithoutOverlap(
-  anchors: Array<{ index: number; x: number; y: number }>,
-  textLines: string[][],
-): boolean {
-  const halfWidth = textLines.map((lines) => {
-    const longest = Math.max(...lines.map((line) => line.length), 1)
-    return (longest * FIGURE_LABEL_CHAR_W) / 2 + 2
-  })
-  const halfHeight = textLines.map((lines) =>
-    lines.length > 1 ? FIGURE_LABEL_LINE_H : FIGURE_LABEL_LINE_H / 2,
-  )
-  for (let i = 0; i < anchors.length; i += 1) {
-    for (let j = i + 1; j < anchors.length; j += 1) {
-      const a = anchors[i]!
-      const b = anchors[j]!
-      if (
-        Math.abs(a.x - b.x) < halfWidth[i]! + halfWidth[j]! &&
-        Math.abs(a.y - b.y) < halfHeight[i]! + halfHeight[j]!
-      ) {
-        return false
-      }
-    }
-  }
-  return true
+type LabelAnchor = { index: number; x: number; y: number; mx: number; my: number }
+
+function bitCount(value: number): number {
+  let count = 0
+  for (let v = value; v > 0; v >>= 1) count += v & 1
+  return count
 }
 
-function ShapeFigure({
-  shapeType,
-  rows,
-}: {
-  shapeType: string
-  rows: AdditionalRebarSpecRow[]
-}) {
-  const shape = getCornerBarShape(shapeType)
+/**
+ * 寸法ラベルが互いに重ならず、他の辺にもかからない置き方を探す。
+ *
+ * まず全ラベルを形状の外側に置き、重なるときは内側へ回すラベルが少ない順に試す。
+ * 2段階段のように隣り合う短い辺のラベルが同じ角へ寄る形状でも、
+ * 片方を反対側へ回せば数字で書ける。どの組み合わせでも収まらなければ null。
+ */
+function resolveLabelAnchors(
+  anchors: LabelAnchor[],
+  textLines: string[][],
+  points: Array<{ x: number; y: number }>,
+  scale = 1,
+): LabelAnchor[] | null {
+  const halfWidth = textLines.map((lines) => {
+    const longest = Math.max(...lines.map((line) => line.length), 1)
+    return (longest * FIGURE_LABEL_CHAR_W * scale) / 2 + 2
+  })
+  const halfHeight = textLines.map((lines) =>
+    (lines.length > 1 ? FIGURE_LABEL_LINE_H : FIGURE_LABEL_LINE_H / 2) * scale,
+  )
+
+  const fits = (candidate: LabelAnchor[]): boolean => {
+    for (let i = 0; i < candidate.length; i += 1) {
+      const a = candidate[i]!
+      for (let j = i + 1; j < candidate.length; j += 1) {
+        const b = candidate[j]!
+        if (
+          Math.abs(a.x - b.x) < halfWidth[i]! + halfWidth[j]! &&
+          Math.abs(a.y - b.y) < halfHeight[i]! + halfHeight[j]!
+        ) {
+          return false
+        }
+      }
+      // 自分の辺は中点から gap だけ離しているので判定しない
+      for (let k = 0; k < points.length - 1; k += 1) {
+        if (k === a.index) continue
+        const p1 = points[k]!
+        const p2 = points[k + 1]!
+        if (
+          Math.max(p1.x, p2.x) > a.x - halfWidth[i]! &&
+          Math.min(p1.x, p2.x) < a.x + halfWidth[i]! &&
+          Math.max(p1.y, p2.y) > a.y - halfHeight[i]! &&
+          Math.min(p1.y, p2.y) < a.y + halfHeight[i]!
+        ) {
+          return false
+        }
+      }
+    }
+    return true
+  }
+
+  const masks = Array.from({ length: 1 << anchors.length }, (_, mask) => mask).sort(
+    (a, b) => bitCount(a) - bitCount(b) || a - b,
+  )
+  for (const mask of masks) {
+    const candidate = anchors.map((anchor, i) =>
+      (mask >> i) & 1
+        ? { ...anchor, x: 2 * anchor.mx - anchor.x, y: 2 * anchor.my - anchor.y }
+        : anchor,
+    )
+    if (fits(candidate)) return candidate
+  }
+  return null
+}
+
+/**
+ * 重ならない置き方が見つかる最大の文字倍率を選ぶ。
+ * 最小倍率でも収まらない場合も、最小倍率・外側配置で寸法を書く。
+ */
+function layoutLabels(
+  anchors: LabelAnchor[],
+  textLines: string[][],
+  points: Array<{ x: number; y: number }>,
+): { anchors: LabelAnchor[]; scale: number } {
+  for (const scale of FIGURE_LABEL_SCALES) {
+    const placed = resolveLabelAnchors(anchors, textLines, points, scale)
+    if (placed) return { anchors: placed, scale }
+  }
+  return { anchors, scale: FIGURE_LABEL_SCALES[FIGURE_LABEL_SCALES.length - 1]! }
+}
+
+function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
+  const shape = getCornerBarShape(row.shapeType)
   if (!shape) return null
 
   const rotation = pickSummaryFigureRotation(shape)
@@ -334,17 +445,15 @@ function ShapeFigure({
     .join(' ')
 
   const anchors = cornerBarSegmentLabelAnchors(points, FIGURE_LABEL_GAP)
-  const dimTexts = anchors.map((anchor) => segmentLabelFor(rows, anchor.index))
+  const dimTexts = anchors.map((anchor) => segmentLabelFor(row, anchor.index))
   const measurementTexts = anchors.map((anchor) =>
-    segmentMeasurementLabelFor(rows, anchor.index),
+    segmentMeasurementLabelFor(row, anchor.index),
   )
   const labelLines = dimTexts.map((dimension, index) =>
     measurementTexts[index] ? [dimension, measurementTexts[index]!] : [dimension],
   )
-  // 寸法を書けるのは「全ての鉄筋が同寸法」かつ「ラベルが重ならない」ときだけ
-  const uniform =
-    hasUniformSegments(rows, shape.directions.length) &&
-    labelsFitWithoutOverlap(anchors, labelLines)
+  const { anchors: drawnAnchors, scale } = layoutLabels(anchors, labelLines, points)
+  const lineDy = FIGURE_LINE_DY * scale
 
   return (
     <div className="corner-summary-figure flex flex-col items-start">
@@ -355,11 +464,7 @@ function ShapeFigure({
         // 余白を詰めているので、端の寸法ラベルが切れないように外へはみ出させる
         overflow="visible"
         role="img"
-        aria-label={
-          uniform
-            ? `${shape.label}の形状`
-            : `${shape.label}の形状。数字は辺の番号で、寸法は左の列と同じ並び`
-        }
+        aria-label={`${shape.label}の形状`}
       >
         <path
           d={path}
@@ -373,51 +478,31 @@ function ShapeFigure({
         {points.slice(1, -1).map((p, i) => (
           <circle key={i} cx={p.x} cy={p.y} r={2.5} fill="#0f172a" />
         ))}
-        {anchors.map((anchor, i) =>
-          uniform ? (
-            <text
-              key={anchor.index}
-              x={anchor.x}
-              y={measurementTexts[i] ? anchor.y - 5 : anchor.y}
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fontSize={14}
-              fill="#0f172a"
-            >
-              <tspan x={anchor.x}>{dimTexts[i]}</tspan>
-              {measurementTexts[i] ? (
-                <tspan
-                  x={anchor.x}
-                  dy={14}
-                  fontSize={11}
-                  fontWeight={400}
-                  fill="#0f172a"
-                >
-                  {measurementTexts[i]}
-                </tspan>
-              ) : null}
-            </text>
-          ) : (
-            <g key={anchor.index}>
-              <circle cx={anchor.x} cy={anchor.y} r={FIGURE_BADGE_R} fill="#0f172a" />
-              <text
+        {drawnAnchors.map((anchor, i) => (
+          <text
+            key={anchor.index}
+            x={anchor.x}
+            y={measurementTexts[i] ? anchor.y - lineDy / 2 + 2 * scale : anchor.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={FIGURE_DIM_FONT * scale}
+            fill="#0f172a"
+          >
+            <tspan x={anchor.x}>{dimTexts[i]}</tspan>
+            {measurementTexts[i] ? (
+              <tspan
                 x={anchor.x}
-                y={anchor.y}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize={10}
-                fontWeight={600}
-                fill="#ffffff"
+                dy={lineDy}
+                fontSize={FIGURE_MEASUREMENT_FONT * scale}
+                fontWeight={400}
+                fill="#0f172a"
               >
-                {anchor.index + 1}
-              </text>
-            </g>
-          ),
-        )}
+                {measurementTexts[i]}
+              </tspan>
+            ) : null}
+          </text>
+        ))}
       </svg>
-      {uniform ? null : (
-        <span className="mt-1 text-xs font-normal text-muted">※数字は辺の番号</span>
-      )}
     </div>
   )
 }
@@ -507,11 +592,19 @@ function SheetTable({ rows }: { rows: SheetRow[] }) {
  */
 export function CornerBarSummarySections({
   placements,
+  kakouchouOverrides = EMPTY_OVERRIDES,
+  onKakouchouOverrideChange,
 }: {
   placements: AdditionalRebarPlacementLike[]
+  /** 集計行 key → 手入力した加工長(mm)。無い行は自動計算の値 */
+  kakouchouOverrides?: Readonly<Record<string, number>>
+  onKakouchouOverrideChange?: (rowKey: string, value: number | null) => void
 }) {
   const summary = useMemo(() => aggregateAdditionalRebars(placements), [placements])
-  const rows = useMemo(() => buildSheetRows(summary.groups), [summary])
+  const rows = useMemo(
+    () => buildSheetRows(summary.groups, kakouchouOverrides, onKakouchouOverrideChange),
+    [summary, kakouchouOverrides, onKakouchouOverrideChange],
+  )
 
   if (rows.length === 0) {
     return <p className="text-sm text-muted">付加筋がまだ配置されていません。</p>

@@ -4,7 +4,11 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { OptimizationOutput } from '@/lib/optimizer'
-import type { UnitCalculationRow, UnitCountRoundingMode } from '@/lib/unit-calculations'
+import {
+  getUnitAutoShapeLengthMm,
+  type UnitCalculationRow,
+  type UnitCountRoundingMode,
+} from '@/lib/unit-calculations'
 import type { Unit } from '@/lib/types/database'
 import { UnitShapeThumbnail } from '@/components/unit-client'
 
@@ -25,6 +29,8 @@ interface UnitResultSummary {
   unitId: string | null
   unitName: string
   shapeLengthMm: number
+  /** 手入力を無視した自動計算の長さ。ユニットが無い行は null */
+  autoShapeLengthMm: number | null
   totalCount: number
 }
 
@@ -88,6 +94,9 @@ export function OptimizationResultView({
           unitId: row.unitId,
           unitName: row.unitName,
           shapeLengthMm: row.unitShapeLengthMm,
+          autoShapeLengthMm: row.unitId
+            ? getUnitAutoShapeLengthMm(unitById.get(row.unitId))
+            : null,
           totalCount: row.unitSummaryCount,
         })
       }
@@ -101,7 +110,7 @@ export function OptimizationResultView({
         return totals ? { ...s, totalCount: totals.tateTotal } : s
       })
       .filter((s) => s.totalCount > 0)
-  }, [manufactureTotalsByUnitId, unitCalculationRows])
+  }, [manufactureTotalsByUnitId, unitById, unitCalculationRows])
 
   useEffect(() => {
     const validKeys = new Set(unitSummaries.map((s) => s.key))
@@ -182,7 +191,11 @@ export function OptimizationResultView({
                       setShapeLengthDraft(e.target.value.replace(/[^\d]/g, ''))
                     }}
                     onBlur={async () => {
-                      const n = Number.parseInt(shapeLengthDraft, 10)
+                      // 空欄で確定したら自動計算の長さに戻す
+                      const n =
+                        shapeLengthDraft.trim() === '' && s.autoShapeLengthMm
+                          ? s.autoShapeLengthMm
+                          : Number.parseInt(shapeLengthDraft, 10)
                       const previous =
                         shapeLengthOverrides[s.key] ?? s.shapeLengthMm
                       setEditingShapeKey(null)
@@ -217,7 +230,20 @@ export function OptimizationResultView({
                         setSavingShapeKey(null)
                       }
                     }}
-                    className="w-[5.5rem] rounded border border-border bg-white px-1.5 py-0.5 text-base font-semibold outline-none focus:border-primary print:border-transparent print:bg-transparent print:p-0"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                    }}
+                    title={
+                      s.autoShapeLengthMm
+                        ? `自動: ${s.autoShapeLengthMm.toLocaleString('ja-JP')}（空欄で自動に戻す）`
+                        : undefined
+                    }
+                    className={`w-[5.5rem] rounded border border-border bg-white px-1.5 py-0.5 text-base font-semibold outline-none focus:border-primary print:border-transparent print:bg-transparent print:p-0 ${
+                      s.autoShapeLengthMm != null &&
+                      (shapeLengthOverrides[s.key] ?? s.shapeLengthMm) !== s.autoShapeLengthMm
+                        ? 'text-primary print:text-inherit'
+                        : ''
+                    }`}
                   />
                   <span className="text-muted">×</span>
                   <span>{s.totalCount.toLocaleString('ja-JP')}</span>

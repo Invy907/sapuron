@@ -125,6 +125,20 @@ export function getUnitShapeLengthMm(unit: Unit | null | undefined): number {
 }
 
 /**
+ * 手入力で上書きされた shape_length_mm を無視した、自動計算の形状長さ (mm)。
+ * 結果画面で手入力値かどうかを見分けるのに使う。
+ */
+export function getUnitAutoShapeLengthMm(unit: Unit | null | undefined): number {
+  if (!unit) return 0
+  return getUnitShapeLengthMm({
+    ...unit,
+    rebar_layout: unit.rebar_layout
+      ? { ...unit.rebar_layout, shape_length_mm: null }
+      : unit.rebar_layout,
+  })
+}
+
+/**
  * ユニット保存前に rebar_layout.shape_length_mm を計算して返す。
  * annotations の数値ラベルを合算し、is_excluded === true の項目のみ除外。
  * 間隔線(spacings)は視覚用のため計算対象外。

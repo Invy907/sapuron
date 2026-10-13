@@ -70,6 +70,7 @@ export type CornerBarShapeType =
   | 'V_STEP2'
   | 'V_STEP2_END'
   | 'V_NOTCH'
+  | 'V_NOTCH_SIDE'
   | 'V_STEP3'
 
 /**
@@ -193,6 +194,18 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
     ],
     defaultLengths: [400, 300, 400, 300, 400],
   },
+  /** 特殊コーナー筋: 欠き込みの最後を横に戻す（下→右→下→左、最後の横が長い） */
+  {
+    id: 'V_NOTCH_SIDE',
+    label: '欠き込み（横）',
+    directions: [
+      { x: 0, y: 1 },
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+      { x: -1, y: 0 },
+    ],
+    defaultLengths: [300, 200, 300, 500],
+  },
   /** 特殊コーナー筋: 縦方向 3 段階段。パレットからは外したが旧データ用に残す */
   {
     id: 'V_STEP3',
@@ -230,6 +243,7 @@ export const SPECIAL_CORNER_SHAPE_TYPES: CornerBarShapeType[] = [
   'V_STEP2',
   'V_NOTCH',
   'V_STEP2_END',
+  'V_NOTCH_SIDE',
 ]
 
 export function getFixedShapeForCategory(

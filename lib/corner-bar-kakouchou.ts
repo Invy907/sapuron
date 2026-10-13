@@ -1,20 +1,21 @@
-import type { CornerBarSegment } from '@/lib/corner-bar-presets'
+import type { CornerBarSegment, MeasurementType } from '@/lib/corner-bar-presets'
 
 /**
- * 曲げ 1 ヶ所あたりの減り(mm)。
+ * 外々・芯々で測った辺 1 本あたりの減り(mm)。
  *
- * 客先の手書き参考資料の実測値から逆算した参考値で、確定した規則ではない。
- *   700 + 700         = 1400 → 1380
- *   600 + 455 + 115 + 600 = 1770 → 1710
- *   450 + 455 + 115 + 450 = 1470 → 1410
- *
- * 規則が確定したら、この定数と cornerBarKakouchouMm だけを差し替える。
+ * 客先の手書き資料「外々 / 芯々 D10〜D22 マイナス 20㎜、内々 —」による。
+ * 曲げの数ではなく辺ごとに数える。内々・寸法基準未設定の辺は減らさない。
  * ユニット側の computeShapeLengthMm（L字 1 回のみ -20）とは別物なので混ぜない。
  */
-export const BEND_DEDUCTION_MM = 20
+export const SEGMENT_DEDUCTION_MM = 20
+
+const DEDUCTED_MEASUREMENT_TYPES: ReadonlySet<MeasurementType> = new Set([
+  'SOTO_SOTO',
+  'SHIN_SHIN',
+])
 
 /**
- * 付加筋の加工長(mm)。辺の合計から曲げ箇所ぶんを引いた参考値。
+ * 付加筋の加工長(mm)。辺の合計から、外々・芯々の辺 1 本につき SEGMENT_DEDUCTION_MM を引く。
  *
  * 寸法が 1 つでも未入力の場合は計算できないので null を返す（画面では「—」）。
  */
@@ -22,12 +23,15 @@ export function cornerBarKakouchouMm(segments: CornerBarSegment[]): number | nul
   if (segments.length === 0) return null
 
   let sum = 0
+  let deductedCount = 0
   for (const seg of segments) {
     if (seg.lengthMm == null || !Number.isFinite(seg.lengthMm) || seg.lengthMm <= 0) return null
     sum += seg.lengthMm
+    if (seg.measurementType && DEDUCTED_MEASUREMENT_TYPES.has(seg.measurementType)) {
+      deductedCount += 1
+    }
   }
 
-  const bendCount = Math.max(0, segments.length - 1)
-  const kakouchou = sum - BEND_DEDUCTION_MM * bendCount
+  const kakouchou = sum - SEGMENT_DEDUCTION_MM * deductedCount
   return kakouchou > 0 ? kakouchou : null
 }
