@@ -8,8 +8,10 @@ import {
   getCornerBarShape,
   measurementTypeLabel,
   normalizeCornerBarBars,
+  ZERO_MEASUREMENT_DEDUCTIONS,
   type CornerBarBarItem,
   type CornerBarSegment,
+  type MeasurementDeductionsMm,
   type MeasurementType,
 } from '@/lib/corner-bar-presets'
 import { cornerBarKakouchouMm } from '@/lib/corner-bar-kakouchou'
@@ -185,11 +187,29 @@ function specKeyOf(
   shapeType: string,
   barType: string,
   segments: CornerBarSegment[],
+  deductions: MeasurementDeductionsMm | undefined,
 ): string {
   const dims = segments
     .map((s) => `${s.lengthMm ?? ''}@${s.measurementType ?? ''}`)
     .join(',')
-  return `${category}|${shapeType}|${barType}|${segments.length}|${dims}`
+  const base = `${category}|${shapeType}|${barType}|${segments.length}|${dims}`
+  // 減りが違えば加工長も違うので別の行にする。全て 0 のときは付けず、
+  // 減りを入れる前と同じ key のまま（結果ページの手入力が外れないように）
+  if (!deductions || Object.values(deductions).every((mm) => mm === 0)) return base
+  const ded = `${deductions.UCHI_UCHI},${deductions.SOTO_SOTO},${deductions.SHIN_SHIN}`
+  return `${base}|ded:${ded}`
+}
+
+/**
+ * 加工長の計算に使う減り。特殊コーナー筋は配置ごとの入力値（未入力は全て 0）、
+ * それ以外はこれまでどおり外々・芯々 -20 の既定ルールを使う。
+ */
+function deductionsFor(
+  category: string,
+  bar: CornerBarBarItem,
+): MeasurementDeductionsMm | undefined {
+  if (category !== 'SPECIAL_CORNER') return undefined
+  return bar.measurementDeductionsMm ?? ZERO_MEASUREMENT_DEDUCTIONS
 }
 
 /**
@@ -233,7 +253,8 @@ export function aggregateAdditionalRebars(
       totalQuantity += bar.quantity
       group.diameters.set(diameter, (group.diameters.get(diameter) ?? 0) + bar.quantity)
 
-      const key = specKeyOf(category, shapeType, diameter, bar.segments)
+      const deductions = deductionsFor(category, bar)
+      const key = specKeyOf(category, shapeType, diameter, bar.segments, deductions)
       const existing = group.specs.get(key)
       if (existing) {
         existing.quantity += bar.quantity
@@ -256,7 +277,7 @@ export function aggregateAdditionalRebars(
         dimsDetailText: formatDimsWithMeasurement(bar.segments),
         uniformMeasurementType: resolveUniformMeasurementType(bar.segments),
         segmentSumMm: allDimensioned ? cornerBarSegmentSumMm(bar.segments) : null,
-        kakouchouMm: cornerBarKakouchouMm(bar.segments),
+        kakouchouMm: cornerBarKakouchouMm(bar.segments, deductions),
         quantity: bar.quantity,
       })
     }

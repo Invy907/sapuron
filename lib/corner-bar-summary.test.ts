@@ -4,7 +4,11 @@ import {
   type AdditionalRebarPlacementLike,
 } from './corner-bar-summary'
 import { cornerBarKakouchouMm } from './corner-bar-kakouchou'
-import type { CornerBarSegment, MeasurementType } from './corner-bar-presets'
+import type {
+  CornerBarSegment,
+  MeasurementDeductionsMm,
+  MeasurementType,
+} from './corner-bar-presets'
 
 function test(name: string, fn: () => void) {
   try {
@@ -30,7 +34,12 @@ function segs(
 function placement(
   category: string,
   shapeType: string,
-  bars: Array<{ barType: string; quantity: number; segments: CornerBarSegment[] }>,
+  bars: Array<{
+    barType: string
+    quantity: number
+    segments: CornerBarSegment[]
+    measurementDeductionsMm?: MeasurementDeductionsMm
+  }>,
 ): AdditionalRebarPlacementLike {
   return {
     category,
@@ -150,7 +159,8 @@ test('§9 別の配置でも仕様が同じなら 1 行にまとめる', () => {
   assert.equal(rows[0]!.dimsDetailText, '700芯々 × 700芯々')
   assert.equal(rows[0]!.uniformMeasurementType, 'SHIN_SHIN')
   assert.equal(rows[0]!.segmentSumMm, 1400)
-  assert.equal(rows[0]!.kakouchouMm, 1360)
+  // 特殊コーナー筋は減りを入力していなければ引かない
+  assert.equal(rows[0]!.kakouchouMm, 1400)
 })
 
 // 5) §10 数字が同じでも寸法基準が違えば別の行
@@ -202,9 +212,68 @@ test('§10 形状・segment 個数が違えば合算しない', () => {
 
   const four = rows.find((r) => r.segments.length === 4)!
   assert.equal(four.dimsText, '600 × 455 × 115 × 600')
-  assert.equal(four.kakouchouMm, 1690)
+  assert.equal(four.kakouchouMm, 1770)
   assert.equal(four.quantity, 2)
   assert.equal(four.shapeLabel, '2段階段')
+})
+
+// 5b) 特殊コーナー筋は配置ごとに入力した寸法基準別の減りを辺ごとに引く
+test('減りを渡すと寸法基準ごとにその値を辺ごとに引く', () => {
+  const deductions = { UCHI_UCHI: 5, SOTO_SOTO: 30, SHIN_SHIN: 15 }
+  assert.equal(
+    cornerBarKakouchouMm(
+      [
+        { id: 's1', lengthMm: 600, measurementType: 'SOTO_SOTO' },
+        { id: 's2', lengthMm: 300, measurementType: 'UCHI_UCHI' },
+        { id: 's3', lengthMm: 600, measurementType: 'SHIN_SHIN' },
+        { id: 's4', lengthMm: 300, measurementType: null },
+      ],
+      deductions,
+    ),
+    1800 - 30 - 5 - 15,
+  )
+})
+
+test('特殊コーナー筋: 入力した減りで加工長を出し、減りが違えば別の行にする', () => {
+  const steps = segs([600, 300, 600], 'SHIN_SHIN')
+  const summary = aggregateAdditionalRebars([
+    placement('SPECIAL_CORNER', 'V_OFFSET', [
+      {
+        barType: 'D13',
+        quantity: 1,
+        segments: steps,
+        measurementDeductionsMm: { UCHI_UCHI: 0, SOTO_SOTO: 20, SHIN_SHIN: 10 },
+      },
+    ]),
+    placement('SPECIAL_CORNER', 'V_OFFSET', [{ barType: 'D13', quantity: 2, segments: steps }]),
+  ])
+
+  const rows = summary.groups[0]!.specRows
+  assert.equal(rows.length, 2)
+  assert.deepEqual(
+    rows.map((r) => [r.quantity, r.kakouchouMm]),
+    [
+      [2, 1500],
+      [1, 1470],
+    ],
+  )
+  // 減りが全て 0 の行は減りを入れる前と同じ key（結果ページの手入力を保つ）
+  assert.ok(!rows[0]!.key.includes('ded:'))
+  assert.ok(rows[1]!.key.includes('ded:0,20,10'))
+})
+
+test('コーナー筋などは従来どおり外々・芯々の辺ごとに 20 を引く', () => {
+  const summary = aggregateAdditionalRebars([
+    placement('CORNER', 'L', [
+      {
+        barType: 'D13',
+        quantity: 1,
+        segments: segs([700, 700], 'SOTO_SOTO'),
+        measurementDeductionsMm: { UCHI_UCHI: 0, SOTO_SOTO: 50, SHIN_SHIN: 50 },
+      },
+    ]),
+  ])
+  assert.equal(summary.groups[0]!.specRows[0]!.kakouchouMm, 1360)
 })
 
 // 6) 旧スキーマ（bars 無し、diameter / segments のみ）でも本数を落とさない

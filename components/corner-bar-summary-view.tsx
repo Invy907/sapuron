@@ -32,6 +32,7 @@ import {
 const DIAMETER_ORDER = new Map<string, number>(CORNER_BAR_DIAMETERS.map((d, i) => [d, i]))
 
 const EMPTY_OVERRIDES: Readonly<Record<string, number>> = {}
+const EMPTY_LABEL_OVERRIDES: Readonly<Record<string, string>> = {}
 
 function diameterRank(diameter: string): number {
   return DIAMETER_ORDER.get(diameter.trim().toUpperCase()) ?? DIAMETER_ORDER.size
@@ -65,7 +66,7 @@ function hasStandardSizes(category: string): boolean {
  */
 interface SheetRow {
   key: string
-  label: string
+  label: ReactNode
   isGroupStart: boolean
   /** 「D13」または「D13（600芯々 × 455内々…）」。径は本数行と同じ通常の太さ */
   spec: ReactNode
@@ -164,6 +165,59 @@ function KakouchouInput({
   )
 }
 
+/**
+ * 筋種類名（「コーナー筋」など）の手入力欄。加工長と同じく確定までは
+ * ローカルの文字列で持ち、空欄または元の名前で確定すると手入力を解除する。
+ * 全角文字は ch で幅を決められないので、同じ文字列を見えない span に置いて
+ * 入力欄の幅をそれに合わせる。
+ */
+function LabelInput({
+  defaultLabel,
+  overrideLabel,
+  onChange,
+}: {
+  defaultLabel: string
+  overrideLabel: string | undefined
+  onChange: (value: string | null) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? overrideLabel ?? defaultLabel
+
+  const commit = () => {
+    if (draft == null) return
+    setDraft(null)
+    const value = draft.trim()
+    onChange(value === '' || value === defaultLabel ? null : value)
+  }
+
+  return (
+    <span className="inline-grid align-baseline">
+      <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-pre">
+        {text || defaultLabel}
+      </span>
+      <input
+        type="text"
+        aria-label={`${defaultLabel}の表示名`}
+        title={`元の名前: ${defaultLabel}（空欄で元に戻す）`}
+        placeholder={defaultLabel}
+        value={text}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            setDraft(null)
+            e.currentTarget.blur()
+          }
+        }}
+        className={`col-start-1 row-start-1 w-full min-w-0 border-0 bg-transparent p-0 outline-none focus:underline focus:decoration-primary/40 ${
+          overrideLabel != null ? 'text-primary print:text-inherit' : ''
+        }`}
+      />
+    </span>
+  )
+}
+
 /** 特殊コーナー筋: 括弧内は加工長のみ（辺寸法は形状図） */
 function SpecWithKakouchou({
   row,
@@ -198,9 +252,23 @@ function SpecWithKakouchou({
 function buildSheetRows(
   groups: AdditionalRebarGroup[],
   kakouchouOverrides: Readonly<Record<string, number>>,
-  onKakouchouOverrideChange?: (rowKey: string, value: number | null) => void,
+  onKakouchouOverrideChange: ((rowKey: string, value: number | null) => void) | undefined,
+  labelOverrides: Readonly<Record<string, string>>,
+  onLabelOverrideChange: ((rowKey: string, value: string | null) => void) | undefined,
 ): SheetRow[] {
   const rows: SheetRow[] = []
+
+  /** 筋種類名。手入力できるときは入力欄、できないときは手入力した名前か元の名前 */
+  const labelFor = (rowKey: string, defaultLabel: string): ReactNode =>
+    onLabelOverrideChange ? (
+      <LabelInput
+        defaultLabel={defaultLabel}
+        overrideLabel={labelOverrides[rowKey]}
+        onChange={(value) => onLabelOverrideChange(rowKey, value)}
+      />
+    ) : (
+      (labelOverrides[rowKey] ?? defaultLabel)
+    )
 
   for (const group of groups) {
     if (hasStandardSizes(group.category)) {
@@ -212,7 +280,7 @@ function buildSheetRows(
       sorted.forEach((row, i) => {
         rows.push({
           key: row.key,
-          label: group.label,
+          label: labelFor(row.key, group.label),
           isGroupStart: i === 0,
           spec: <SpecWithDiameter row={row} />,
           result: <QuantityText quantity={row.quantity} />,
@@ -248,7 +316,7 @@ function buildSheetRows(
       block.rows.forEach((row, i) => {
         rows.push({
           key: row.key,
-          label: block.heading,
+          label: labelFor(row.key, block.heading),
           isGroupStart: i === 0,
           spec: (
             <SpecWithKakouchou
@@ -277,26 +345,61 @@ function buildSheetRows(
 /**
  * 資料の手書きスケッチに当たる形状図。集計行ごとに 1 つ描き、各辺に寸法と寸法基準を書く。
  */
+/** 形状図の viewBox・文字・余白の寸法（viewBox 単位） */
+type FigureMetrics = {
+  width: number
+  height: number
+  /** ラベルは path の外側に置くので、その分の余白を確保する。
+   *  広げると形状が縮んで辺の中点どうしが近づくため、必要最小限にとどめる */
+  pad: number
+  /** ラベルの縁と自分の辺とのすき間 */
+  labelGap: number
+  /** 寸法の文字サイズ / 寸法基準の文字サイズ / 2 行目のずれ（倍率 1 のとき） */
+  dimFont: number
+  measurementFont: number
+  lineDy: number
+}
+
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
-const FIGURE_W = 280
-const FIGURE_H = 120
-/** ラベルは path の外側に置くので、その分の余白を確保する。
- *  広げると形状が縮んで辺の中点どうしが近づくため、必要最小限にとどめる */
-const FIGURE_PAD = 27
-/** 辺の中点からラベルまでの距離 */
-const FIGURE_LABEL_GAP = 13
-/** 寸法ラベルの 1 文字あたりの幅と行の高さ（fontSize 12 の概算） */
-const FIGURE_LABEL_CHAR_W = 7
-const FIGURE_LABEL_LINE_H = 14
-/** 寸法の文字サイズ / 寸法基準の文字サイズ / 2 行目のずれ（倍率 1 のとき） */
-const FIGURE_DIM_FONT = 14
-const FIGURE_MEASUREMENT_FONT = 11
-const FIGURE_LINE_DY = 14
+const SCREEN_FIGURE_METRICS: FigureMetrics = {
+  width: 280,
+  height: 120,
+  pad: 27,
+  labelGap: 3,
+  dimFont: 14,
+  measurementFont: 11,
+  lineDy: 14,
+}
+
+/**
+ * 印刷では形状図が右列の残り幅（A4 で 110px 前後）まで縮むので、
+ * viewBox 上の文字を大きめにして紙の上で読める大きさにする。
+ */
+const PRINT_FIGURE_METRICS: FigureMetrics = {
+  width: 280,
+  height: 180,
+  pad: 30,
+  labelGap: 4,
+  dimFont: 20,
+  measurementFont: 15,
+  lineDy: 19,
+}
+
 /**
  * ラベルが収まらないときに順に試す文字の倍率。
  * 辺が多く短い形状（階段形など）でも、小さくすれば数字のまま書ける。
  */
 const FIGURE_LABEL_SCALES = [1, 0.85, 0.7, 0.6, 0.5]
+
+/** 形状の線の太さ（viewBox 単位） */
+const FIGURE_STROKE_WIDTH = 2.5
+
+/** 文字幅の概算（em 比）。寸法は数字、寸法基準は「内々」などの全角 */
+const DIGIT_WIDTH_EM = 0.6
+const FULL_WIDTH_EM = 1
+/** 字面の高さ（em 比）。上下の余白を除いたぶんだけ線に寄せられる */
+const DIGIT_HEIGHT_EM = 0.72
+const FULL_WIDTH_HEIGHT_EM = 0.88
 
 function segmentLabelFor(row: AdditionalRebarSpecRow, index: number): string {
   const length = row.segments[index]?.lengthMm
@@ -309,7 +412,7 @@ function segmentMeasurementLabelFor(row: AdditionalRebarSpecRow, index: number):
 }
 
 /** 特殊コーナー等の縦長形状を、結果表では横長になる向きに回転する */
-function pickSummaryFigureRotation(shape: CornerBarShapeDef): number {
+function pickSummaryFigureRotation(shape: CornerBarShapeDef, pad: number): number {
   let best = 0
   let bestScore = -1
   const probeSize = 160
@@ -318,7 +421,7 @@ function pickSummaryFigureRotation(shape: CornerBarShapeDef): number {
       shape,
       probeSize,
       probeSize,
-      FIGURE_PAD,
+      pad,
       rotation,
       false,
     )
@@ -344,6 +447,50 @@ function bitCount(value: number): number {
   return count
 }
 
+/** 倍率 scale のときの各ラベルの縦横の半分の大きさ */
+function labelHalfSizes(
+  textLines: string[][],
+  metrics: FigureMetrics,
+  scale: number,
+): { halfWidth: number[]; halfHeight: number[] } {
+  const halfWidth = textLines.map((lines) => {
+    const dimWidth = (lines[0]?.length ?? 1) * metrics.dimFont * DIGIT_WIDTH_EM
+    const measurementWidth =
+      (lines[1]?.length ?? 0) * metrics.measurementFont * FULL_WIDTH_EM
+    return (Math.max(dimWidth, measurementWidth) * scale) / 2 + 1
+  })
+  // 2 行のときは 1 行目と 2 行目の中心が lineDy 離れ、その上下に字面の半分ずつ載る
+  const digitHeight = metrics.dimFont * DIGIT_HEIGHT_EM
+  const measurementHeight = metrics.measurementFont * FULL_WIDTH_HEIGHT_EM
+  const halfHeight = textLines.map((lines) =>
+    lines.length > 1
+      ? ((metrics.lineDy + (digitHeight + measurementHeight) / 2) / 2) * scale
+      : (digitHeight / 2) * scale,
+  )
+  return { halfWidth, halfHeight }
+}
+
+/**
+ * 辺の中点から外向きへ、ラベルの枠が自分の辺にかからない距離だけずらす。
+ * 横の辺ならラベルの高さの半分、縦の辺なら幅の半分に gap を足した距離になる。
+ */
+function offsetAnchors(
+  anchors: LabelAnchor[],
+  halfWidth: number[],
+  halfHeight: number[],
+  gap: number,
+): LabelAnchor[] {
+  return anchors.map((anchor, i) => {
+    const dx = anchor.x - anchor.mx
+    const dy = anchor.y - anchor.my
+    const len = Math.hypot(dx, dy) || 1
+    const nx = dx / len
+    const ny = dy / len
+    const distance = Math.abs(nx) * halfWidth[i]! + Math.abs(ny) * halfHeight[i]! + gap
+    return { ...anchor, x: anchor.mx + nx * distance, y: anchor.my + ny * distance }
+  })
+}
+
 /**
  * 寸法ラベルが互いに重ならず、他の辺にもかからない置き方を探す。
  *
@@ -355,15 +502,12 @@ function resolveLabelAnchors(
   anchors: LabelAnchor[],
   textLines: string[][],
   points: Array<{ x: number; y: number }>,
+  metrics: FigureMetrics,
   scale = 1,
 ): LabelAnchor[] | null {
-  const halfWidth = textLines.map((lines) => {
-    const longest = Math.max(...lines.map((line) => line.length), 1)
-    return (longest * FIGURE_LABEL_CHAR_W * scale) / 2 + 2
-  })
-  const halfHeight = textLines.map((lines) =>
-    (lines.length > 1 ? FIGURE_LABEL_LINE_H : FIGURE_LABEL_LINE_H / 2) * scale,
-  )
+  const { halfWidth, halfHeight } = labelHalfSizes(textLines, metrics, scale)
+  const gap = metrics.labelGap * scale
+  const outside = offsetAnchors(anchors, halfWidth, halfHeight, gap)
 
   const fits = (candidate: LabelAnchor[]): boolean => {
     for (let i = 0; i < candidate.length; i += 1) {
@@ -377,16 +521,18 @@ function resolveLabelAnchors(
           return false
         }
       }
-      // 自分の辺は中点から gap だけ離しているので判定しない
+      // 自分の辺からはラベルの大きさ分だけ離しているので判定しない。
+      // 他の辺は線の太さの半分だけ外側まで判定し、文字が線に触れて見えないようにする
+      const clearance = FIGURE_STROKE_WIDTH / 2
       for (let k = 0; k < points.length - 1; k += 1) {
         if (k === a.index) continue
         const p1 = points[k]!
         const p2 = points[k + 1]!
         if (
-          Math.max(p1.x, p2.x) > a.x - halfWidth[i]! &&
-          Math.min(p1.x, p2.x) < a.x + halfWidth[i]! &&
-          Math.max(p1.y, p2.y) > a.y - halfHeight[i]! &&
-          Math.min(p1.y, p2.y) < a.y + halfHeight[i]!
+          Math.max(p1.x, p2.x) > a.x - halfWidth[i]! - clearance &&
+          Math.min(p1.x, p2.x) < a.x + halfWidth[i]! + clearance &&
+          Math.max(p1.y, p2.y) > a.y - halfHeight[i]! - clearance &&
+          Math.min(p1.y, p2.y) < a.y + halfHeight[i]! + clearance
         ) {
           return false
         }
@@ -395,11 +541,11 @@ function resolveLabelAnchors(
     return true
   }
 
-  const masks = Array.from({ length: 1 << anchors.length }, (_, mask) => mask).sort(
+  const masks = Array.from({ length: 1 << outside.length }, (_, mask) => mask).sort(
     (a, b) => bitCount(a) - bitCount(b) || a - b,
   )
   for (const mask of masks) {
-    const candidate = anchors.map((anchor, i) =>
+    const candidate = outside.map((anchor, i) =>
       (mask >> i) & 1
         ? { ...anchor, x: 2 * anchor.mx - anchor.x, y: 2 * anchor.my - anchor.y }
         : anchor,
@@ -417,24 +563,50 @@ function layoutLabels(
   anchors: LabelAnchor[],
   textLines: string[][],
   points: Array<{ x: number; y: number }>,
+  metrics: FigureMetrics,
 ): { anchors: LabelAnchor[]; scale: number } {
   for (const scale of FIGURE_LABEL_SCALES) {
-    const placed = resolveLabelAnchors(anchors, textLines, points, scale)
+    const placed = resolveLabelAnchors(anchors, textLines, points, metrics, scale)
     if (placed) return { anchors: placed, scale }
   }
-  return { anchors, scale: FIGURE_LABEL_SCALES[FIGURE_LABEL_SCALES.length - 1]! }
+  const scale = FIGURE_LABEL_SCALES[FIGURE_LABEL_SCALES.length - 1]!
+  const { halfWidth, halfHeight } = labelHalfSizes(textLines, metrics, scale)
+  return {
+    anchors: offsetAnchors(anchors, halfWidth, halfHeight, metrics.labelGap * scale),
+    scale,
+  }
 }
 
+/** 画面用と印刷用の形状図を両方描き、媒体に応じて片方だけ見せる */
 function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
+  return (
+    <>
+      <div className="print:hidden">
+        <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
+      </div>
+      <div className="hidden print:block">
+        <ShapeFigureSvg row={row} metrics={PRINT_FIGURE_METRICS} />
+      </div>
+    </>
+  )
+}
+
+function ShapeFigureSvg({
+  row,
+  metrics,
+}: {
+  row: AdditionalRebarSpecRow
+  metrics: FigureMetrics
+}) {
   const shape = getCornerBarShape(row.shapeType)
   if (!shape) return null
 
-  const rotation = pickSummaryFigureRotation(shape)
+  const rotation = pickSummaryFigureRotation(shape, metrics.pad)
   const points = cornerBarThumbPoints(
     shape,
-    FIGURE_W,
-    FIGURE_H,
-    FIGURE_PAD,
+    metrics.width,
+    metrics.height,
+    metrics.pad,
     rotation,
     false,
   )
@@ -444,7 +616,8 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
     .join(' ')
 
-  const anchors = cornerBarSegmentLabelAnchors(points, FIGURE_LABEL_GAP)
+  // 外向きの向きだけ受け取り、中点からの距離は layoutLabels がラベルの大きさで決める
+  const anchors = cornerBarSegmentLabelAnchors(points, 1)
   const dimTexts = anchors.map((anchor) => segmentLabelFor(row, anchor.index))
   const measurementTexts = anchors.map((anchor) =>
     segmentMeasurementLabelFor(row, anchor.index),
@@ -452,15 +625,20 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
   const labelLines = dimTexts.map((dimension, index) =>
     measurementTexts[index] ? [dimension, measurementTexts[index]!] : [dimension],
   )
-  const { anchors: drawnAnchors, scale } = layoutLabels(anchors, labelLines, points)
-  const lineDy = FIGURE_LINE_DY * scale
+  const { anchors: drawnAnchors, scale } = layoutLabels(
+    anchors,
+    labelLines,
+    points,
+    metrics,
+  )
+  const lineDy = metrics.lineDy * scale
 
   return (
     <div className="corner-summary-figure flex flex-col items-start">
       <svg
-        width={FIGURE_W}
-        height={FIGURE_H}
-        viewBox={`0 0 ${FIGURE_W} ${FIGURE_H}`}
+        width={metrics.width}
+        height={metrics.height}
+        viewBox={`0 0 ${metrics.width} ${metrics.height}`}
         // 余白を詰めているので、端の寸法ラベルが切れないように外へはみ出させる
         overflow="visible"
         role="img"
@@ -470,7 +648,7 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
           d={path}
           fill="none"
           stroke="#0f172a"
-          strokeWidth={2.5}
+          strokeWidth={FIGURE_STROKE_WIDTH}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
@@ -482,10 +660,11 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
           <text
             key={anchor.index}
             x={anchor.x}
-            y={measurementTexts[i] ? anchor.y - lineDy / 2 + 2 * scale : anchor.y}
+            y={measurementTexts[i] ? anchor.y - lineDy / 2 : anchor.y}
             textAnchor="middle"
-            dominantBaseline="middle"
-            fontSize={FIGURE_DIM_FONT * scale}
+            // middle だと数字が上に寄るので、数字も漢字も字面の中心が揃う central にする
+            dominantBaseline="central"
+            fontSize={metrics.dimFont * scale}
             fill="#0f172a"
           >
             <tspan x={anchor.x}>{dimTexts[i]}</tspan>
@@ -493,7 +672,7 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
               <tspan
                 x={anchor.x}
                 dy={lineDy}
-                fontSize={FIGURE_MEASUREMENT_FONT * scale}
+                fontSize={metrics.measurementFont * scale}
                 fontWeight={400}
                 fill="#0f172a"
               >
@@ -594,16 +773,34 @@ export function CornerBarSummarySections({
   placements,
   kakouchouOverrides = EMPTY_OVERRIDES,
   onKakouchouOverrideChange,
+  labelOverrides = EMPTY_LABEL_OVERRIDES,
+  onLabelOverrideChange,
 }: {
   placements: AdditionalRebarPlacementLike[]
   /** 集計行 key → 手入力した加工長(mm)。無い行は自動計算の値 */
   kakouchouOverrides?: Readonly<Record<string, number>>
   onKakouchouOverrideChange?: (rowKey: string, value: number | null) => void
+  /** 集計行 key → 手入力した筋種類名。無い行は「コーナー筋」などの元の名前 */
+  labelOverrides?: Readonly<Record<string, string>>
+  onLabelOverrideChange?: (rowKey: string, value: string | null) => void
 }) {
   const summary = useMemo(() => aggregateAdditionalRebars(placements), [placements])
   const rows = useMemo(
-    () => buildSheetRows(summary.groups, kakouchouOverrides, onKakouchouOverrideChange),
-    [summary, kakouchouOverrides, onKakouchouOverrideChange],
+    () =>
+      buildSheetRows(
+        summary.groups,
+        kakouchouOverrides,
+        onKakouchouOverrideChange,
+        labelOverrides,
+        onLabelOverrideChange,
+      ),
+    [
+      summary,
+      kakouchouOverrides,
+      onKakouchouOverrideChange,
+      labelOverrides,
+      onLabelOverrideChange,
+    ],
   )
 
   if (rows.length === 0) {

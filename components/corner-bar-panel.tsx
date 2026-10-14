@@ -12,7 +12,9 @@ import {
   CORNER_BAR_DIAMETERS,
   cornerBarCategoryLabel,
   cornerBarDiameterOptionLabel,
+  cornerBarFixedVertexForEdge,
   cornerBarLegacyFieldsFromBars,
+  cornerBarMeasurementDeductions,
   cornerBarFlipLabel,
   cornerBarRotationLabel,
   normalizeCornerBarFlip,
@@ -39,13 +41,16 @@ import {
   normalizeCornerBarBars,
   normalizeCornerBarRotation,
   resolveCategoryShape,
+  setCornerBarMeasurementDeductions,
   type CornerBarBarItem,
   type CornerBarCategory,
   type CornerBarPlacementDraft,
   type CornerBarSegment,
   type CornerBarShapeDef,
+  type MeasurementDeductionsMm,
   type MeasurementType,
 } from '@/lib/corner-bar-presets'
+import { cornerBarKakouchouMm } from '@/lib/corner-bar-kakouchou'
 import {
   getSegmentStrokeHex,
   normalizeSegmentColor,
@@ -98,6 +103,8 @@ export function CornerBarPanel({
   onPatchCornerBarBars: (
     id: string,
     patch: (bars: CornerBarBarItem[]) => CornerBarBarItem[],
+    /** keepVertexIndex: 図面上で動かさない頂点。辺の長さを変えるときに渡す */
+    options?: { keepVertexIndex?: number },
   ) => void
   onGoToSummary: (href: string) => void
   onDelete: (id: string) => void
@@ -159,9 +166,12 @@ export function CornerBarPanel({
   }
 
   /** 鉄筋リストを保存する。patch は DB 直前の最新 bars に適用される */
-  function commitSelectedBars(patch: (bars: CornerBarBarItem[]) => CornerBarBarItem[]) {
+  function commitSelectedBars(
+    patch: (bars: CornerBarBarItem[]) => CornerBarBarItem[],
+    options?: { keepVertexIndex?: number },
+  ) {
     if (!selected) return
-    onPatchCornerBarBars(selected.id, patch)
+    onPatchCornerBarBars(selected.id, patch, options)
   }
 
   function adjustSelectedDrawScale(factor: number) {
@@ -169,15 +179,18 @@ export function CornerBarPanel({
       return
     }
     const segIndex = activeSegIndex
-    commitSelectedBars((bars) =>
-      bars.map((bar) => ({
-        ...bar,
-        segments: bar.segments.map((seg, j) =>
-          j === segIndex
-            ? { ...seg, drawScale: scaleCornerBarDrawScale(seg.drawScale, factor) }
-            : seg,
-        ),
-      })),
+    commitSelectedBars(
+      (bars) =>
+        bars.map((bar) => ({
+          ...bar,
+          segments: bar.segments.map((seg, j) =>
+            j === segIndex
+              ? { ...seg, drawScale: scaleCornerBarDrawScale(seg.drawScale, factor) }
+              : seg,
+          ),
+        })),
+      // 選んだ辺の付け根を止め、図面上の他の部分がずれないようにする
+      { keepVertexIndex: cornerBarFixedVertexForEdge(segIndex) },
     )
   }
 
@@ -230,6 +243,7 @@ export function CornerBarPanel({
         id: bar.id,
         quantity: bar.quantity,
         segments: shapeChanged ? undefined : bar.segments,
+        measurementDeductionsMm: bar.measurementDeductionsMm,
       }),
     )
     const updates: Partial<DrawingCornerBar> = {
@@ -286,8 +300,14 @@ export function CornerBarPanel({
       ...bars,
       makeCornerBarBar(selectedShape, selected.category as CornerBarCategory, barType, {
         id: nextCornerBarBarId(bars),
+        // 減りは配置で 1 組なので、追加した鉄筋にも同じ値を入れる
+        measurementDeductionsMm: bars[0]?.measurementDeductionsMm,
       }),
     ])
+  }
+
+  function handleSelectedDeductionsChange(deductions: MeasurementDeductionsMm) {
+    commitSelectedBars((bars) => setCornerBarMeasurementDeductions(bars, deductions))
   }
 
   function handleRemoveSelectedBar(index: number) {
@@ -354,8 +374,14 @@ export function CornerBarPanel({
       ...placementDraft.bars,
       makeCornerBarBar(placementShape, placementDraft.category, barType, {
         id: nextCornerBarBarId(placementDraft.bars),
+        measurementDeductionsMm: placementDraft.bars[0]?.measurementDeductionsMm,
       }),
     ])
+  }
+
+  function handlePlacementDeductionsChange(deductions: MeasurementDeductionsMm) {
+    if (!placementDraft) return
+    commitPlacementBars(setCornerBarMeasurementDeductions(placementDraft.bars, deductions))
   }
 
   function handleRemovePlacementBar(index: number) {
@@ -507,6 +533,13 @@ export function CornerBarPanel({
             {!isCornerBarBarsFullyDimensioned(selectedBars) && (
               <p className="text-[10px] text-amber-700">寸法が未入力の辺があります。</p>
             )}
+
+            {selected.category === 'SPECIAL_CORNER' ? (
+              <MeasurementDeductionsField
+                bars={selectedBars}
+                onChange={handleSelectedDeductionsChange}
+              />
+            ) : null}
 
             <label className="text-[10px] text-muted">
               色
@@ -670,6 +703,13 @@ export function CornerBarPanel({
                 <p className="text-[10px] text-amber-700">寸法が未入力の辺があります。</p>
               )
             )}
+
+            {placementCategory === 'SPECIAL_CORNER' && placementDraft ? (
+              <MeasurementDeductionsField
+                bars={placementDraft.bars}
+                onChange={handlePlacementDeductionsChange}
+              />
+            ) : null}
 
             <label className="text-[10px] text-muted">
               色
@@ -898,6 +938,59 @@ function CornerBarBarsField({
           ) : null}
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * 特殊コーナー筋の加工長で、辺 1 本あたり引く長さを寸法基準ごとに入れる欄。
+ * 配置ごとに 1 組（全ての鉄筋に同じ値を書く）。下に径ごとの加工長を出して確かめられるようにする。
+ */
+function MeasurementDeductionsField({
+  bars,
+  onChange,
+}: {
+  bars: CornerBarBarItem[]
+  onChange: (deductions: MeasurementDeductionsMm) => void
+}) {
+  const deductions = cornerBarMeasurementDeductions(bars)
+
+  return (
+    <div className="space-y-1.5">
+      <span className="block text-[10px] font-medium text-foreground">
+        寸法の減り（辺 1 本あたり）
+      </span>
+      <div className="grid grid-cols-3 gap-1.5">
+        {MEASUREMENT_TYPES.map((m) => (
+          <label key={m.id} className="flex items-center gap-1 text-[10px] text-muted">
+            <span className="shrink-0">{m.label}</span>
+            <span className="shrink-0">−</span>
+            <input
+              type="number"
+              min={0}
+              value={deductions[m.id]}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10)
+                onChange({ ...deductions, [m.id]: Number.isFinite(n) && n >= 0 ? n : 0 })
+              }}
+              aria-label={`${m.label}の辺 1 本あたりの減り(mm)`}
+              // 欄が狭く数字が隠れるので、数値入力の上下ボタンは出さない
+              className="min-w-0 flex-1 rounded border border-border bg-white px-1 py-1 text-xs text-foreground outline-none [appearance:textfield] focus:border-primary [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+          </label>
+        ))}
+      </div>
+      <div className="space-y-0.5 text-right text-[10px] text-muted">
+        {bars.map((bar) => {
+          const kakouchou = cornerBarKakouchouMm(bar.segments, deductions)
+          return (
+            <div key={bar.id}>
+              {bars.length > 1 ? `${bar.barType} ` : ''}寸法{' '}
+              {kakouchou == null ? '—' : `${kakouchou.toLocaleString('ja-JP')} mm`}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

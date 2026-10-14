@@ -18,6 +18,7 @@ import {
 import type { UnitShapeLegendPosition } from '@/components/unit-client'
 import {
   DEFAULT_PIECE_LENGTH_ADJUSTMENT_MM,
+  cornerBarLabelOverrideStorageKey,
   kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
   tateCountOverrideStorageKey,
@@ -295,6 +296,59 @@ export function OptimizeClient({
       return { ...prev, [rowKey]: value }
     })
   }, [])
+
+  const cornerBarLabelStorageKey = useMemo(
+    () => cornerBarLabelOverrideStorageKey(projectId),
+    [projectId],
+  )
+  const [cornerBarLabelOverrides, setCornerBarLabelOverrides] = useState<
+    Record<string, string>
+  >({})
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.localStorage.getItem(cornerBarLabelStorageKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      const next: Record<string, string> = {}
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === 'string' && value.trim() !== '') next[key] = value
+        }
+      }
+      setCornerBarLabelOverrides(next)
+    } catch {
+      setCornerBarLabelOverrides({})
+    }
+  }, [cornerBarLabelStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(
+        cornerBarLabelStorageKey,
+        JSON.stringify(cornerBarLabelOverrides),
+      )
+    } catch {
+      // ignore
+    }
+  }, [cornerBarLabelOverrides, cornerBarLabelStorageKey])
+
+  const handleCornerBarLabelOverrideChange = useCallback(
+    (rowKey: string, value: string | null) => {
+      setCornerBarLabelOverrides((prev) => {
+        if (value == null) {
+          if (!(rowKey in prev)) return prev
+          const next = { ...prev }
+          delete next[rowKey]
+          return next
+        }
+        if (prev[rowKey] === value) return prev
+        return { ...prev, [rowKey]: value }
+      })
+    },
+    [],
+  )
 
   const unitCalculationRows = useMemo(
     () =>
@@ -585,6 +639,8 @@ export function OptimizeClient({
                 placements={cornerBars}
                 kakouchouOverrides={kakouchouOverrides}
                 onKakouchouOverrideChange={handleKakouchouOverrideChange}
+                labelOverrides={cornerBarLabelOverrides}
+                onLabelOverrideChange={handleCornerBarLabelOverrideChange}
               />
             </section>
           )}

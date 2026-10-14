@@ -573,6 +573,59 @@ export interface CornerBarBarItem {
   /** 本数 */
   quantity: number
   segments: CornerBarSegment[]
+  /**
+   * 特殊コーナー筋: 加工長を出すときに辺 1 本あたり引く長さ(mm)を寸法基準ごとに持つ。
+   * 配置ごとに 1 組だけ入力するが、集計は鉄筋ごとに行うので全ての bars に同じ値を書く。
+   * 無い（古いデータ・未入力）ときは全て 0 として扱う。
+   */
+  measurementDeductionsMm?: MeasurementDeductionsMm
+}
+
+/** 寸法基準ごとの辺 1 本あたりの減り(mm) */
+export type MeasurementDeductionsMm = Record<MeasurementType, number>
+
+export const ZERO_MEASUREMENT_DEDUCTIONS: MeasurementDeductionsMm = {
+  UCHI_UCHI: 0,
+  SOTO_SOTO: 0,
+  SHIN_SHIN: 0,
+}
+
+/** 保存値を 0 以上の整数に揃える。どれも入っていなければ undefined */
+export function normalizeMeasurementDeductions(
+  value: unknown,
+): MeasurementDeductionsMm | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const rec = value as Partial<Record<MeasurementType, unknown>>
+  let found = false
+  const out = { ...ZERO_MEASUREMENT_DEDUCTIONS }
+  for (const { id } of MEASUREMENT_TYPES) {
+    const n = Math.floor(Number(rec[id]))
+    if (rec[id] == null || !Number.isFinite(n)) continue
+    out[id] = Math.max(0, n)
+    found = true
+  }
+  return found ? out : undefined
+}
+
+/** 配置の鉄筋に入っている減りの値（先頭の鉄筋を代表にする）。無ければ全て 0 */
+export function cornerBarMeasurementDeductions(
+  bars: CornerBarBarItem[],
+): MeasurementDeductionsMm {
+  return bars[0]?.measurementDeductionsMm ?? ZERO_MEASUREMENT_DEDUCTIONS
+}
+
+/** 減りの値を配置の全ての鉄筋に書く */
+export function setCornerBarMeasurementDeductions(
+  bars: CornerBarBarItem[],
+  deductions: MeasurementDeductionsMm,
+): CornerBarBarItem[] {
+  return bars.map((bar) => ({ ...bar, measurementDeductionsMm: { ...deductions } }))
+}
+
+function withDeductions(
+  deductions: MeasurementDeductionsMm | undefined,
+): Pick<CornerBarBarItem, 'measurementDeductionsMm'> {
+  return deductions ? { measurementDeductionsMm: { ...deductions } } : {}
 }
 
 export const DEFAULT_CORNER_BAR_DIAMETER = 'D13'
@@ -599,13 +652,16 @@ export function makeCornerBarBar(
   shape: CornerBarShapeDef,
   category: CornerBarCategory,
   barType: string,
-  base?: Partial<Pick<CornerBarBarItem, 'id' | 'quantity' | 'segments'>>,
+  base?: Partial<
+    Pick<CornerBarBarItem, 'id' | 'quantity' | 'segments' | 'measurementDeductionsMm'>
+  >,
 ): CornerBarBarItem {
   return {
     id: base?.id ?? 'b1',
     barType,
     quantity: normalizeBarQuantity(base?.quantity),
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
+    ...withDeductions(base?.measurementDeductionsMm),
   }
 }
 
@@ -647,6 +703,7 @@ export function changeCornerBarBarDiameter(
           : {}),
       }
     }),
+    ...withDeductions(bar.measurementDeductionsMm),
   }
 }
 
@@ -670,6 +727,7 @@ export function normalizeCornerBarBars(
         barType,
         quantity: normalizeBarQuantity(rec.quantity),
         segments: normalizeCornerBarSegments(shape, rec.segments),
+        ...withDeductions(normalizeMeasurementDeductions(rec.measurementDeductionsMm)),
       }
     })
     .filter((bar): bar is CornerBarBarItem => bar != null)
@@ -706,6 +764,7 @@ export function remapCornerBarBarsToShape(
       id: bar.id,
       quantity: bar.quantity,
       segments: preserveSegments ? bar.segments : undefined,
+      measurementDeductionsMm: bar.measurementDeductionsMm,
     }),
   )
 }
@@ -1049,6 +1108,116 @@ export function cornerBarCanvasGeometry(
   const cy = (Math.min(...ys) + Math.max(...ys)) / 2
   return {
     points: rotated.map((p) => ({ x: originX + (p.x - cx), y: originY + (p.y - cy) })),
+  }
+}
+
+/**
+ * 辺 1 本の図面上の長さ（drawScale）を変えるとき、図面上で動かさない頂点の番号。
+ *
+ * 辺は形状の残りにつながっている側を止め、反対側（自由端の側）へ伸び縮みさせる。
+ * 先頭の辺は終点、それ以外の辺は始点が残りの形状とつながっている。
+ * たとえば L 形で横の辺を伸ばすと、角（横の辺の左端）は動かず右へ伸びる。
+ */
+export function cornerBarFixedVertexForEdge(edgeIndex: number): number {
+  return edgeIndex === 0 ? 1 : edgeIndex
+}
+
+/**
+ * 辺の drawScale を before → after に変えても、vertexIndex の頂点が図面上で
+ * 同じ位置に残る配置点。配置点は bbox の中心なので、何もしないと形状全体がずれる。
+ */
+export function cornerBarOriginKeepingVertex(
+  shape: CornerBarShapeDef,
+  before: CornerBarSegment[],
+  after: CornerBarSegment[],
+  origin: { x: number; y: number },
+  rotationSteps: number,
+  sizePx: number,
+  flipped: boolean,
+  vertexIndex: number,
+): { x: number; y: number } {
+  const prev = cornerBarCanvasGeometry(
+    shape, before, origin.x, origin.y, rotationSteps, sizePx, flipped,
+  ).points[vertexIndex]
+  const next = cornerBarCanvasGeometry(
+    shape, after, origin.x, origin.y, rotationSteps, sizePx, flipped,
+  ).points[vertexIndex]
+  if (!prev || !next) return origin
+  return { x: origin.x + prev.x - next.x, y: origin.y + prev.y - next.y }
+}
+
+/**
+ * 図面上でドラッグして伸び縮みできる辺と、掴む端点。
+ * 掴めるのは形状の両端（先頭の辺の始点と最後の辺の終点）だけで、
+ * 反対側の端は cornerBarFixedVertexForEdge の頂点として止まる。
+ */
+export function cornerBarDraggableEnds(
+  shape: CornerBarShapeDef,
+): Array<{ edgeIndex: number; vertexIndex: number }> {
+  const last = shape.directions.length - 1
+  if (last < 1) return []
+  return [
+    { edgeIndex: 0, vertexIndex: 0 },
+    { edgeIndex: last, vertexIndex: last + 1 },
+  ]
+}
+
+/**
+ * 端点を point までドラッグしたときの、その辺の drawScale と配置点。
+ *
+ * 辺の向きは変えず、止める頂点から辺の向きに測った point までの距離を新しい長さにする。
+ * 辺が短すぎて下限（applyMinSegmentLengthFloor）に当たっていると drawScale と
+ * 長さが比例しないので、数回当て直してマウスに合わせる。
+ */
+export function resizeCornerBarEdgeToPoint(
+  shape: CornerBarShapeDef,
+  segments: CornerBarSegment[],
+  origin: { x: number; y: number },
+  rotationSteps: number,
+  sizePx: number,
+  flipped: boolean,
+  edgeIndex: number,
+  point: { x: number; y: number },
+): { segments: CornerBarSegment[]; origin: { x: number; y: number } } | null {
+  const fixedIndex = cornerBarFixedVertexForEdge(edgeIndex)
+  const movingIndex = edgeIndex === 0 ? 0 : edgeIndex + 1
+  const geometryOf = (segs: CornerBarSegment[]) =>
+    cornerBarCanvasGeometry(shape, segs, origin.x, origin.y, rotationSteps, sizePx, flipped)
+  const edgeLength = (segs: CornerBarSegment[]) => {
+    const pts = geometryOf(segs).points
+    const a = pts[fixedIndex]
+    const b = pts[movingIndex]
+    return a && b ? Math.hypot(b.x - a.x, b.y - a.y) : 0
+  }
+
+  const points = geometryOf(segments).points
+  const fixed = points[fixedIndex]
+  const moving = points[movingIndex]
+  const startLength = edgeLength(segments)
+  if (!fixed || !moving || startLength <= 0) return null
+  const dirX = (moving.x - fixed.x) / startLength
+  const dirY = (moving.y - fixed.y) / startLength
+  // 止める頂点を越えて反対側へ引いた分は 0 とみなし、最小倍率で止める
+  const target = Math.max(0, (point.x - fixed.x) * dirX + (point.y - fixed.y) * dirY)
+
+  const withScale = (drawScale: number) =>
+    segments.map((seg, i) => (i === edgeIndex ? { ...seg, drawScale } : seg))
+  let drawScale = clampCornerBarDrawScale(segments[edgeIndex]?.drawScale)
+  let next = segments
+  for (let pass = 0; pass < 4; pass += 1) {
+    const length = edgeLength(next)
+    if (length <= 0) break
+    const adjusted = clampCornerBarDrawScale((drawScale * target) / length)
+    if (Math.abs(adjusted - drawScale) < 1e-4 && pass > 0) break
+    drawScale = adjusted
+    next = withScale(drawScale)
+  }
+
+  return {
+    segments: next,
+    origin: cornerBarOriginKeepingVertex(
+      shape, segments, next, origin, rotationSteps, sizePx, flipped, fixedIndex,
+    ),
   }
 }
 
