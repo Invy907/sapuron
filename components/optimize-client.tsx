@@ -128,8 +128,6 @@ export function OptimizeClient({
   const [customerDate, setCustomerDate] = useState('')
   /** 到着日（日付＋時刻, datetime-local の YYYY-MM-DDTHH:mm） */
   const [customerArrival, setCustomerArrival] = useState('')
-  /** 製作担当者 */
-  const [customerProduction, setCustomerProduction] = useState('')
   /** 予定・注意事項などの自由記入メモ（製作図リストの右側） */
   const [customerMemo, setCustomerMemo] = useState('')
   const [customerMemoFontPx, setCustomerMemoFontPx] = useState(MEMO_FONT_PX_DEFAULT)
@@ -423,7 +421,6 @@ export function OptimizeClient({
         name?: string
         date?: string
         arrival?: string
-        production?: string
         memo?: string
         memoFontPx?: number
       }
@@ -432,7 +429,6 @@ export function OptimizeClient({
       setCustomerName(parsed.name ?? '')
       setCustomerDate(parsed.date ?? '')
       setCustomerArrival(parsed.arrival ?? '')
-      setCustomerProduction(parsed.production ?? '')
       setCustomerMemo(parsed.memo ?? '')
       setCustomerMemoFontPx(
         parsed.memoFontPx == null
@@ -455,7 +451,6 @@ export function OptimizeClient({
           name: customerName,
           date: customerDate,
           arrival: customerArrival,
-          production: customerProduction,
           memo: customerMemo,
           memoFontPx: customerMemoFontPx,
         }),
@@ -472,7 +467,6 @@ export function OptimizeClient({
     customerMemo,
     customerMemoFontPx,
     customerName,
-    customerProduction,
   ])
 
   useEffect(() => {
@@ -579,8 +573,6 @@ export function OptimizeClient({
             onCustomerDateChange={setCustomerDate}
             customerArrival={customerArrival}
             onCustomerArrivalChange={setCustomerArrival}
-            customerProduction={customerProduction}
-            onCustomerProductionChange={setCustomerProduction}
             customerMemo={customerMemo}
             onCustomerMemoChange={setCustomerMemo}
             memoFontPx={customerMemoFontPx}
