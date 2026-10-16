@@ -37,15 +37,14 @@ const COL_SHAPE = 336
 const COL_LEN = 118
 const COL_QTY = 46
 const COL_TATE = 54
-/** 印刷時に「製作」と自由記入メモを置く、表の右外に残る余白の幅(px)。
+/** 印刷時に自由記入メモを置く、表の右外に残る余白の幅(px)。
  *  A4 縦・左右余白 10mm で使える幅は約 698px、表は 554px なので右に約 144px 残る */
 const RIGHT_COL_WIDTH = 140
 /** ヘッダー（会社名・現場名）と表のあいだに空ける距離。印刷で 5mm ほど空ける指示 */
 const HEADER_TABLE_GAP_MM = 5
-/** 「製作」と自由記入メモを置く、ヘッダー上端からのオフセット(px)。
+/** 自由記入メモを置く、ヘッダー上端からのオフセット(px)。
  *  絶対配置なので、日付ブロックの高さを変えたらここも合わせる */
-const PRODUCTION_BOX_TOP = 96
-const MEMO_BOX_TOP = 150
+const MEMO_BOX_TOP = 96
 /** 自由記入メモの文字サイズ(px)。利用者が −/＋ で調整する */
 export const MEMO_FONT_PX_MIN = 9
 export const MEMO_FONT_PX_MAX = 24
@@ -339,8 +338,6 @@ export function ManufactureListView({
   onCustomerDateChange,
   customerArrival,
   onCustomerArrivalChange,
-  customerProduction,
-  onCustomerProductionChange,
   customerMemo,
   onCustomerMemoChange,
   memoFontPx,
@@ -366,8 +363,6 @@ export function ManufactureListView({
   onCustomerDateChange: (value: string) => void
   customerArrival: string
   onCustomerArrivalChange: (value: string) => void
-  customerProduction: string
-  onCustomerProductionChange: (value: string) => void
   customerMemo: string
   onCustomerMemoChange: (value: string) => void
   memoFontPx: number
@@ -468,18 +463,6 @@ export function ManufactureListView({
             onChange={onCustomerArrivalChange}
           />
         </div>
-        {/* 手書き伝票と同じく「製作」は日付より下げた位置に置く。
-            絶対配置にして、入力が複数行に増えてもヘッダーが高くならない
-            （行内に置くと表が下へ押され、会社名の行と表の間が空いてしまう） */}
-        <label className="absolute right-0 top-[72px] inline-flex items-start gap-1 rounded-md border border-dashed border-slate-300 bg-slate-50/80 px-2 py-1 text-sm text-muted shadow-sm transition-colors focus-within:border-primary/50 focus-within:bg-primary/5 focus-within:text-foreground print:hidden">
-          <span className="whitespace-nowrap">製作:</span>
-          <AutoGrowTextarea
-            value={customerProduction}
-            onChange={onCustomerProductionChange}
-            ariaLabel="製作"
-            className="w-28 font-medium text-foreground"
-          />
-        </label>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
           <div className="flex flex-col items-end">
             {formatReiwaDate(customerDate) ? (
@@ -496,24 +479,10 @@ export function ManufactureListView({
             ) : null}
           </div>
         </div>
-        {/* 「製作」は絶対配置にしてヘッダーの高さに影響させない。
-            行内に置くと文字が増えるほどヘッダーが高くなり、表が下へ押されてしまう。
-            幅は表の右外の余白ぶんに固定し、長い文字列は折り返す */}
-        {customerProduction ? (
-          <div
-            className="absolute right-0 hidden flex-col items-center pt-0.5 leading-tight print:flex"
-            style={{ width: RIGHT_COL_WIDTH, top: PRODUCTION_BOX_TOP }}
-          >
-            <span className="text-xs font-medium">製作</span>
-            <span className="w-full whitespace-pre-wrap break-all text-[13px] font-bold leading-tight">
-              {customerProduction}
-            </span>
-          </div>
-        ) : null}
       </div>
 
       {/* 予定・注意事項などを自由に書き込む欄。md 以上の幅は RIGHT_COL_WIDTH (140px) と揃える。
-          「製作」と同じく絶対配置にしてヘッダーや表の高さに影響させない。
+          絶対配置にしてヘッダーや表の高さに影響させない。
           画面が狭いと表に重なるので、md 未満では絶対配置を外してヘッダーの下に流す */}
       <div
         className="rounded-md border border-dashed border-slate-300 bg-slate-50/80 px-2 py-1.5 shadow-sm focus-within:border-primary/50 focus-within:bg-primary/5 md:absolute md:right-0 md:w-[140px] print:hidden"
@@ -721,7 +690,7 @@ export function ManufactureListView({
 
 /**
  * 入力内容に合わせて高さが伸びる複数行入力。
- * 「製作」は長くなりがちで 1 行入力だと入れた文字が見えなくなるため、
+ * 1 行入力だと長い文字が見えなくなるため、
  * 画面では折り返して全文を表示する（幅は className の w-* で指定）。
  * 高さは非表示のミラー要素に合わせるので JS でのリサイズは不要。
  */
