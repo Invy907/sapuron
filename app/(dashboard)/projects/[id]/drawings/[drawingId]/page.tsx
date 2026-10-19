@@ -4,7 +4,8 @@ import type {
   Drawing,
   DrawingCornerBar,
   DrawingSegment,
-  DrawingSlabRegion,
+  DrawingDomaBar,
+  DrawingDomaDimension,
   Project,
   Unit,
 } from '@/lib/types/database'
@@ -54,12 +55,19 @@ export default async function DrawingDetailPage({
     .order('created_at', { ascending: true })
     .returns<DrawingCornerBar[]>()
 
-  const { data: slabRegions } = await supabase
-    .from('drawing_slab_regions')
+  const { data: domaDimensions } = await supabase
+    .from('drawing_doma_dimensions')
     .select('*')
     .eq('drawing_id', drawingId)
     .order('created_at', { ascending: true })
-    .returns<DrawingSlabRegion[]>()
+    .returns<DrawingDomaDimension[]>()
+
+  const { data: domaBars } = await supabase
+    .from('drawing_doma_bars')
+    .select('*')
+    .eq('drawing_id', drawingId)
+    .order('created_at', { ascending: true })
+    .returns<DrawingDomaBar[]>()
 
   const { data: units } = await supabase
     .from('units')
@@ -85,7 +93,8 @@ export default async function DrawingDetailPage({
         initialSegments={segments ?? []}
         initialSelectedSegmentId={segmentId}
         initialCornerBars={cornerBars ?? []}
-        initialSlabRegions={slabRegions ?? []}
+        initialDomaDimensions={domaDimensions ?? []}
+        initialDomaBars={domaBars ?? []}
         units={units ?? []}
       />
     </div>

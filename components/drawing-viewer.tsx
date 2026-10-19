@@ -7,17 +7,34 @@ import { createClient } from '@/lib/supabase/client'
 import { startGlobalLoading } from '@/lib/global-loading'
 import { loadPdfDocument } from '@/lib/pdfjs'
 import { useRouter } from 'next/navigation'
-import type { DrawingCornerBar, DrawingSegment, DrawingSlabRegion } from '@/lib/types/database'
+import type {
+  DrawingCornerBar,
+  DrawingDomaBar,
+  DrawingDomaDimension,
+  DrawingSegment,
+} from '@/lib/types/database'
 import type { Unit } from '@/lib/types/database'
 import { getSegmentLabelMap } from '@/lib/segment-labels'
 import { SegmentPanel } from '@/components/segment-panel'
 import { CornerBarPanel } from '@/components/corner-bar-panel'
 import {
-  SlabRegionPanel,
-  slabRegionDisplayLabel,
-  type SlabRegionDraft,
-} from '@/components/slab-region-panel'
-import { isPointInSlabRegion, paintSlabRegion } from '@/lib/slab-rebar-paint'
+  DomaInputModal,
+  DomaPanel,
+  domaDimensionValues,
+  type DomaInputModalState,
+  type DomaSelection,
+  type DomaTool,
+} from '@/components/doma-panel'
+import {
+  DOMA_DIRECTION_COLORS,
+  distanceToDomaLine,
+  estimateLengthMm,
+  paintDomaBar,
+  paintDomaDimension,
+  paintDomaDraftLine,
+  type DomaLine,
+} from '@/lib/doma-paint'
+import { DEFAULT_DOMA_BAR_SETTINGS, type DomaBarSettings } from '@/lib/slab-rebar'
 import {
   clampCornerBarSizePx,
   cornerBarCanvasGeometry,
@@ -358,14 +375,14 @@ type DrawingPaintOptions = {
   interactiveHighlight: boolean
   /** ユニット描画中・分割ホバー（ユニットタブの操作フィードバック） */
   showUnitInteractionOverlay?: boolean
-  showSlabRegions?: boolean
+  showDoma?: boolean
 }
 
-type SlabRegionDragState = {
+type DomaDragState = {
+  type: 'dimension' | 'bar'
   id: string
   origin: Point
-  start: { x: number; y: number }
-  snapshot: DrawingSlabRegion
+  start: DomaLine
 }
 
 const REFERENCE_LAYER_ALPHA = 0.45
@@ -431,7 +448,8 @@ export function DrawingViewer({
   initialSegments,
   initialSelectedSegmentId,
   initialCornerBars = [],
-  initialSlabRegions = [],
+  initialDomaDimensions = [],
+  initialDomaBars = [],
   units: serverUnits = [],
 }: {
   drawingId: string
@@ -441,7 +459,8 @@ export function DrawingViewer({
   initialSegments: DrawingSegment[]
   initialSelectedSegmentId?: string
   initialCornerBars?: DrawingCornerBar[]
-  initialSlabRegions?: DrawingSlabRegion[]
+  initialDomaDimensions?: DrawingDomaDimension[]
+  initialDomaBars?: DrawingDomaBar[]
   units?: Unit[]
 }) {
   const enableTemplateVariantFlow = process.env.NEXT_PUBLIC_TEMPLATE_VARIANT_FLOW !== '0'
@@ -632,12 +651,46 @@ export function DrawingViewer({
   const [cornerBarsOnlyView, setCornerBarsOnlyView] = useState(false)
   const [domaBarKind, setDomaBarKind] = useState<DomaBarKind>('standard')
   const [domaBarDirection, setDomaBarDirection] = useState<DomaBarDirection>('tate')
-  const [slabRegions, setSlabRegions] = useState<DrawingSlabRegion[]>(initialSlabRegions)
-  const [selectedSlabRegionId, setSelectedSlabRegionId] = useState<string | null>(null)
-  /** 図面クリックで配置する土間筋領域（パネルの「図面に配置」で設定） */
-  const [slabPlacementDraft, setSlabPlacementDraft] = useState<SlabRegionDraft | null>(null)
-  const [slabRegionDrag, setSlabRegionDrag] = useState<SlabRegionDragState | null>(null)
-  const slabRegionDragMovedRef = useRef(false)
+  const [domaDimensions, setDomaDimensions] = useState<DrawingDomaDimension[]>(initialDomaDimensions)
+  const [domaBars, setDomaBars] = useState<DrawingDomaBar[]>(initialDomaBars)
+  const [domaTool, setDomaTool] = useState<DomaTool>('select')
+  const [domaSelection, setDomaSelection] = useState<DomaSelection>(null)
+  /** 寸法線・土間筋を描いている途中の線 */
+  const [domaDraftLine, setDomaDraftLine] = useState<DomaLine | null>(null)
+  const [domaInputModal, setDomaInputModal] = useState<DomaInputModalState | null>(null)
+  const [domaDrag, setDomaDrag] = useState<DomaDragState | null>(null)
+  const domaDragMovedRef = useRef(false)
+  /** これから描く土間筋の設定（タテ／ヨコ別。localStorage に保存） */
+  const domaSettingsStorageKey = `project:${projectId}:domaBarSettings:v1`
+  const [domaSettingsByDirection, setDomaSettingsByDirection] = useState<
+    Record<DomaBarDirection, DomaBarSettings>
+  >(() => {
+    const defaults = { tate: DEFAULT_DOMA_BAR_SETTINGS, yoko: DEFAULT_DOMA_BAR_SETTINGS }
+    // 土間筋パネルは初期表示では出ないため、クライアントで直接読んでもハイドレーションに影響しない
+    if (typeof window === 'undefined') return defaults
+    try {
+      const raw = window.localStorage.getItem(domaSettingsStorageKey)
+      if (!raw) return defaults
+      const parsed = JSON.parse(raw) as Partial<Record<DomaBarDirection, Partial<DomaBarSettings>>>
+      return {
+        tate: { ...DEFAULT_DOMA_BAR_SETTINGS, ...parsed.tate },
+        yoko: { ...DEFAULT_DOMA_BAR_SETTINGS, ...parsed.yoko },
+      }
+    } catch {
+      return defaults
+    }
+  })
+  function changeDomaSettings(direction: DomaBarDirection, next: DomaBarSettings) {
+    setDomaSettingsByDirection((prev) => {
+      const merged = { ...prev, [direction]: next }
+      try {
+        window.localStorage.setItem(domaSettingsStorageKey, JSON.stringify(merged))
+      } catch {
+        // ignore
+      }
+      return merged
+    })
+  }
   /** これから配置する付加筋の色（配置設定で選ぶ） */
   const [cornerPlacementColor, setCornerPlacementColor] = useState<SegmentColor>('red')
   /** 選択モードで空白をドラッグしたときのトースト */
@@ -743,7 +796,7 @@ export function DrawingViewer({
   const reloadDrawingDataFromDb = useCallback(async () => {
     if (pendingCornerBarSaveCountRef.current > 0) return
 
-    const [cornerResult, segmentResult, slabResult] = await Promise.all([
+    const [cornerResult, segmentResult, domaDimResult, domaBarResult] = await Promise.all([
       supabase
         .from('drawing_corner_bars')
         .select('*')
@@ -757,11 +810,17 @@ export function DrawingViewer({
         .order('created_at', { ascending: true })
         .returns<DrawingSegment[]>(),
       supabase
-        .from('drawing_slab_regions')
+        .from('drawing_doma_dimensions')
         .select('*')
         .eq('drawing_id', drawingId)
         .order('created_at', { ascending: true })
-        .returns<DrawingSlabRegion[]>(),
+        .returns<DrawingDomaDimension[]>(),
+      supabase
+        .from('drawing_doma_bars')
+        .select('*')
+        .eq('drawing_id', drawingId)
+        .order('created_at', { ascending: true })
+        .returns<DrawingDomaBar[]>(),
     ])
 
     if (pendingCornerBarSaveCountRef.current > 0) return
@@ -773,8 +832,11 @@ export function DrawingViewer({
     if (!segmentResult.error && segmentResult.data) {
       setSegments(segmentResult.data)
     }
-    if (!slabResult.error && slabResult.data) {
-      setSlabRegions(slabResult.data)
+    if (!domaDimResult.error && domaDimResult.data) {
+      setDomaDimensions(domaDimResult.data)
+    }
+    if (!domaBarResult.error && domaBarResult.data) {
+      setDomaBars(domaBarResult.data)
     }
   }, [drawingId, supabase])
 
@@ -1447,81 +1509,160 @@ export function DrawingViewer({
       setPlacementDraft(null)
     }
     if (next !== 'doma') {
-      setSelectedSlabRegionId(null)
-      setSlabPlacementDraft(null)
-      setSlabRegionDrag(null)
+      setDomaTool('select')
+      setDomaSelection(null)
+      setDomaDraftLine(null)
+      setDomaDrag(null)
     }
   }
 
-  function defaultSlabRegionSizePx(): number {
-    const img = imgRef.current
-    if (!img) return 320
-    return Math.max(120, Math.round(Math.min(img.width, img.height) * 0.4))
+  function changeDomaTool(next: DomaTool) {
+    setDomaTool(next)
+    setDomaDraftLine(null)
+    if (next !== 'select') setDomaSelection(null)
   }
 
-  async function insertSlabRegionAt(draft: SlabRegionDraft, pt: Point) {
-    const row = {
-      drawing_id: drawingId,
-      page_no: 1,
-      kind: 'standard' as const,
-      shape: draft.shape,
-      settings: draft.settings,
-      x: pt.x,
-      y: pt.y,
-      size_px: defaultSlabRegionSizePx(),
-      label: null as string | null,
+  /**
+   * 寸法線は水平・垂直のうち近い方、土間筋はタテ＝画面の縦／ヨコ＝画面の横に固定する。
+   * 図面を 90° 回転表示しているときは画像座標の縦横が入れ替わる。
+   */
+  function constrainDomaLine(start: Point, pt: Point): DomaLine {
+    let horizontal: boolean
+    if (domaTool === 'bar') {
+      const screenHorizontal = domaBarDirection === 'yoko'
+      horizontal = rotationSteps % 2 === 0 ? screenHorizontal : !screenHorizontal
+    } else {
+      horizontal = Math.abs(pt.x - start.x) >= Math.abs(pt.y - start.y)
     }
+    return horizontal
+      ? { x1: start.x, y1: start.y, x2: pt.x, y2: start.y }
+      : { x1: start.x, y1: start.y, x2: start.x, y2: pt.y }
+  }
+
+  /** 線を引き終えたら寸法・長さの入力を開く。短すぎる線は捨てる */
+  function finishDomaDraftLine(line: DomaLine) {
+    const px = Math.hypot(line.x2 - line.x1, line.y2 - line.y1)
+    if (px * scale < 8) {
+      setDomaDraftLine(null)
+      return
+    }
+    const estimateMm = estimateLengthMm(px, domaDimensions)
+    setDomaDraftLine(line)
+    setDomaInputModal(
+      domaTool === 'dimension'
+        ? { type: 'dimension', line, estimateMm }
+        : { type: 'bar', direction: domaBarDirection, line, estimateMm },
+    )
+  }
+
+  function closeDomaInputModal() {
+    setDomaInputModal(null)
+    setDomaDraftLine(null)
+  }
+
+  async function insertDomaDimension(line: DomaLine, lengthMm: number) {
     const { data, error } = await supabase
-      .from('drawing_slab_regions')
-      .insert(row)
+      .from('drawing_doma_dimensions')
+      .insert({ drawing_id: drawingId, page_no: 1, ...line, length_mm: lengthMm })
       .select('*')
-      .single<DrawingSlabRegion>()
+      .single<DrawingDomaDimension>()
+    if (error || !data) {
+      alert(`寸法線の保存に失敗しました: ${error?.message ?? ''}`)
+      return
+    }
+    setDomaDimensions((prev) => [...prev, data])
+  }
+
+  async function insertDomaBar(
+    line: DomaLine,
+    direction: DomaBarDirection,
+    runLengthMm: number,
+    spanMm: number,
+  ) {
+    const { data, error } = await supabase
+      .from('drawing_doma_bars')
+      .insert({
+        drawing_id: drawingId,
+        page_no: 1,
+        kind: 'standard',
+        direction,
+        ...line,
+        run_length_mm: runLengthMm,
+        span_mm: spanMm,
+        settings: domaSettingsByDirection[direction],
+      })
+      .select('*')
+      .single<DrawingDomaBar>()
     if (error || !data) {
       alert(`土間筋の保存に失敗しました: ${error?.message ?? ''}`)
       return
     }
-    setSlabRegions((prev) => [...prev, data])
-    setSelectedSlabRegionId(data.id)
+    setDomaBars((prev) => [...prev, data])
   }
 
-  async function patchSlabRegion(
+  async function updateDomaDimension(
     id: string,
-    patch: Partial<Pick<DrawingSlabRegion, 'shape' | 'settings' | 'x' | 'y' | 'size_px'>>,
-    snapshot?: DrawingSlabRegion,
+    patch: Partial<Pick<DrawingDomaDimension, 'length_mm' | 'x1' | 'y1' | 'x2' | 'y2'>>,
+    before?: DrawingDomaDimension,
   ) {
-    const before = snapshot ?? slabRegions.find((r) => r.id === id)
-    if (!before) return
-    setSlabRegions((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
-    const { error } = await supabase.from('drawing_slab_regions').update(patch).eq('id', id)
+    const snapshot = before ?? domaDimensions.find((d) => d.id === id)
+    if (!snapshot) return
+    setDomaDimensions((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)))
+    const { error } = await supabase.from('drawing_doma_dimensions').update(patch).eq('id', id)
     if (error) {
-      setSlabRegions((prev) => prev.map((r) => (r.id === id ? before : r)))
+      setDomaDimensions((prev) => prev.map((d) => (d.id === id ? snapshot : d)))
+      alert(`寸法線の更新に失敗しました: ${error.message}`)
+    }
+  }
+
+  async function updateDomaBar(
+    id: string,
+    patch: Partial<
+      Pick<DrawingDomaBar, 'run_length_mm' | 'span_mm' | 'settings' | 'x1' | 'y1' | 'x2' | 'y2'>
+    >,
+    before?: DrawingDomaBar,
+  ) {
+    const snapshot = before ?? domaBars.find((b) => b.id === id)
+    if (!snapshot) return
+    setDomaBars((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)))
+    const { error } = await supabase.from('drawing_doma_bars').update(patch).eq('id', id)
+    if (error) {
+      setDomaBars((prev) => prev.map((b) => (b.id === id ? snapshot : b)))
       alert(`土間筋の更新に失敗しました: ${error.message}`)
     }
   }
 
-  async function deleteSlabRegion(id: string) {
-    const target = slabRegions.find((r) => r.id === id)
-    if (!target) return
-    if (!window.confirm(`${slabRegionDisplayLabel(slabRegions, id)} を削除しますか？`)) return
-    const { error } = await supabase.from('drawing_slab_regions').delete().eq('id', id)
+  async function deleteDomaItem(sel: NonNullable<DomaSelection>) {
+    const table = sel.type === 'dimension' ? 'drawing_doma_dimensions' : 'drawing_doma_bars'
+    const { error } = await supabase.from(table).delete().eq('id', sel.id)
     if (error) {
-      alert(`土間筋の削除に失敗しました: ${error.message}`)
+      alert(`削除に失敗しました: ${error.message}`)
       return
     }
-    setSlabRegions((prev) => prev.filter((r) => r.id !== id))
-    if (selectedSlabRegionId === id) setSelectedSlabRegionId(null)
+    if (sel.type === 'dimension') setDomaDimensions((prev) => prev.filter((d) => d.id !== sel.id))
+    else setDomaBars((prev) => prev.filter((b) => b.id !== sel.id))
+    setDomaSelection((cur) => (cur?.id === sel.id ? null : cur))
   }
 
-  function findSlabRegionAtPoint(pt: Point): DrawingSlabRegion | null {
-    for (let i = slabRegions.length - 1; i >= 0; i--) {
-      if (isPointInSlabRegion(slabRegions[i], pt)) return slabRegions[i]
-    }
+  /** 表示中の方向の土間筋を優先し、次に寸法線を探す */
+  function findDomaItemAtPoint(pt: Point): { sel: NonNullable<DomaSelection>; line: DomaLine } | null {
+    const tol = 8 / scale
+    const bar = [...domaBars]
+      .reverse()
+      .find((b) => b.direction === domaBarDirection && distanceToDomaLine(pt, b) < tol)
+    if (bar) return { sel: { type: 'bar', id: bar.id }, line: bar }
+    const dim = [...domaDimensions].reverse().find((d) => distanceToDomaLine(pt, d) < tol)
+    if (dim) return { sel: { type: 'dimension', id: dim.id }, line: dim }
     return null
   }
 
   useEffect(() => {
-    if (!slabRegionDrag) return
-    const drag = slabRegionDrag
+    if (!domaDrag) return
+    const drag = domaDrag
+    const before =
+      drag.type === 'dimension'
+        ? domaDimensions.find((d) => d.id === drag.id)
+        : domaBars.find((b) => b.id === drag.id)
 
     function pointFromClient(clientX: number, clientY: number): Point {
       const canvas = canvasRef.current
@@ -1540,28 +1681,39 @@ export function DrawingViewer({
       return { x: w - yr, y: xr }
     }
 
+    const moved = (dx: number, dy: number): DomaLine => ({
+      x1: drag.start.x1 + dx,
+      y1: drag.start.y1 + dy,
+      x2: drag.start.x2 + dx,
+      y2: drag.start.y2 + dy,
+    })
+
     function handleMove(ev: MouseEvent) {
       const pt = pointFromClient(ev.clientX, ev.clientY)
       const dx = pt.x - drag.origin.x
       const dy = pt.y - drag.origin.y
-      if (!slabRegionDragMovedRef.current && Math.hypot(dx, dy) < 2 / scale) return
-      slabRegionDragMovedRef.current = true
-      setSlabRegions((prev) =>
-        prev.map((r) => (r.id === drag.id ? { ...r, x: drag.start.x + dx, y: drag.start.y + dy } : r)),
-      )
+      if (!domaDragMovedRef.current && Math.hypot(dx, dy) < 2 / scale) return
+      domaDragMovedRef.current = true
+      const next = moved(dx, dy)
+      if (drag.type === 'dimension') {
+        setDomaDimensions((prev) => prev.map((d) => (d.id === drag.id ? { ...d, ...next } : d)))
+      } else {
+        setDomaBars((prev) => prev.map((b) => (b.id === drag.id ? { ...b, ...next } : b)))
+      }
     }
 
     function handleUp(ev: MouseEvent) {
       const pt = pointFromClient(ev.clientX, ev.clientY)
-      if (slabRegionDragMovedRef.current) {
-        void patchSlabRegion(
-          drag.id,
-          { x: drag.start.x + pt.x - drag.origin.x, y: drag.start.y + pt.y - drag.origin.y },
-          drag.snapshot,
-        )
+      if (domaDragMovedRef.current && before) {
+        const next = moved(pt.x - drag.origin.x, pt.y - drag.origin.y)
+        if (drag.type === 'dimension') {
+          void updateDomaDimension(drag.id, next, before as DrawingDomaDimension)
+        } else {
+          void updateDomaBar(drag.id, next, before as DrawingDomaBar)
+        }
       }
-      slabRegionDragMovedRef.current = false
-      setSlabRegionDrag(null)
+      domaDragMovedRef.current = false
+      setDomaDrag(null)
     }
 
     window.addEventListener('mousemove', handleMove)
@@ -1571,7 +1723,7 @@ export function DrawingViewer({
       window.removeEventListener('mouseup', handleUp)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ドラッグ開始時の表示状態で固定する
-  }, [slabRegionDrag])
+  }, [domaDrag])
 
   async function insertCornerBarAt(
     draft: CornerBarPlacementDraft,
@@ -2198,15 +2350,29 @@ export function DrawingViewer({
         ctx.restore()
       }
 
-    if (options.showSlabRegions) {
-      slabRegions.forEach((region) => {
-        paintSlabRegion(ctx, region, {
-          direction: domaBarDirection,
-          selected: options.interactiveHighlight && region.id === selectedSlabRegionId,
-          viewScale: scale,
-          label: slabRegionDisplayLabel(slabRegions, region.id),
-        })
+    if (options.showDoma) {
+      const isSelected = (type: 'dimension' | 'bar', id: string) =>
+        options.interactiveHighlight && domaSelection?.type === type && domaSelection.id === id
+      domaDimensions.forEach((dim) => {
+        paintDomaDimension(ctx, dim, { viewScale: scale, selected: isSelected('dimension', dim.id) })
       })
+      domaBars
+        .filter((bar) => bar.direction === domaBarDirection)
+        .forEach((bar) => {
+          paintDomaBar(ctx, bar, { viewScale: scale, selected: isSelected('bar', bar.id) })
+        })
+      if (domaDraftLine) {
+        if (domaTool === 'dimension') {
+          const px = Math.hypot(domaDraftLine.x2 - domaDraftLine.x1, domaDraftLine.y2 - domaDraftLine.y1)
+          paintDomaDimension(
+            ctx,
+            { ...domaDraftLine, length_mm: estimateLengthMm(px, domaDimensions) },
+            { viewScale: scale, preview: true },
+          )
+        } else {
+          paintDomaDraftLine(ctx, domaDraftLine, DOMA_DIRECTION_COLORS[domaBarDirection], scale)
+        }
+      }
     }
 
     if (
@@ -2261,8 +2427,11 @@ export function DrawingViewer({
       cornerBars,
       selectedCornerBarId,
       cornerBarGeometryOf,
-      slabRegions,
-      selectedSlabRegionId,
+      domaDimensions,
+      domaBars,
+      domaSelection,
+      domaDraftLine,
+      domaTool,
       domaBarDirection,
     ],
   )
@@ -2291,7 +2460,7 @@ export function DrawingViewer({
             cornerEmphasis: 'hidden',
             interactiveHighlight: true,
             showUnitInteractionOverlay: false,
-            showSlabRegions: true,
+            showDoma: true,
           }
         : {
             showSegments: !cornerBarsOnlyView,
@@ -2441,8 +2610,10 @@ export function DrawingViewer({
           return
         }
         if (layer === 'doma') {
-          if (slabPlacementDraft) setSlabPlacementDraft(null)
-          else setSelectedSlabRegionId(null)
+          if (domaInputModal) closeDomaInputModal()
+          else if (domaDraftLine) setDomaDraftLine(null)
+          else if (domaTool !== 'select') setDomaTool('select')
+          else setDomaSelection(null)
           return
         }
         setSplitArmedSegmentId(null)
@@ -2586,6 +2757,28 @@ export function DrawingViewer({
         setIsFullscreen((prev) => !prev)
         return
       }
+      if (layer === 'doma' && domaBarKind === 'standard' && !domaInputModal) {
+        if (isKey('m')) {
+          e.preventDefault()
+          changeDomaTool('dimension')
+          return
+        }
+        if (isKey('d')) {
+          e.preventDefault()
+          changeDomaTool('bar')
+          return
+        }
+        if (isKey('s')) {
+          e.preventDefault()
+          changeDomaTool('select')
+          return
+        }
+        if ((isKey('z') || e.key === 'Delete' || e.key === 'Backspace') && domaSelection) {
+          e.preventDefault()
+          void deleteDomaItem(domaSelection)
+          return
+        }
+      }
       // 描画ツールの切り替えはユニットレイヤー専用
       if (isKey('d') && layer === 'unit') {
         e.preventDefault()
@@ -2659,7 +2852,11 @@ export function DrawingViewer({
     cornerTool,
     selectedCornerBarId,
     cornerBarShapeSelectModalOpen,
-    slabPlacementDraft,
+    domaTool,
+    domaDraftLine,
+    domaSelection,
+    domaInputModal,
+    domaBarKind,
   ])
 
   useEffect(() => {
@@ -2858,19 +3055,17 @@ export function DrawingViewer({
     }
 
     if (layer === 'doma') {
-      if (e.button !== 0 || domaBarKind !== 'standard') return
+      if (e.button !== 0 || domaBarKind !== 'standard' || domaInputModal) return
       const pt = screenToCanvas(e)
-      if (slabPlacementDraft) {
-        const draft = slabPlacementDraft
-        setSlabPlacementDraft(null)
-        void insertSlabRegionAt(draft, pt)
+      if (domaTool !== 'select') {
+        setDomaDraftLine({ x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y })
         return
       }
-      const hit = findSlabRegionAtPoint(pt)
-      setSelectedSlabRegionId(hit?.id ?? null)
+      const hit = findDomaItemAtPoint(pt)
+      setDomaSelection(hit?.sel ?? null)
       if (hit) {
-        slabRegionDragMovedRef.current = false
-        setSlabRegionDrag({ id: hit.id, origin: pt, start: { x: hit.x, y: hit.y }, snapshot: hit })
+        domaDragMovedRef.current = false
+        setDomaDrag({ type: hit.sel.type, id: hit.sel.id, origin: pt, start: { ...hit.line } })
       }
       return
     }
@@ -3031,6 +3226,13 @@ export function DrawingViewer({
     if (segmentDrag || segmentLabelDrag || cornerBarDrag || cornerBarEdgeDrag) {
       return
     }
+    if (layer === 'doma') {
+      if (domaDraftLine && !domaInputModal) {
+        const pt = screenToCanvas(e)
+        setDomaDraftLine(constrainDomaLine({ x: domaDraftLine.x1, y: domaDraftLine.y1 }, pt))
+      }
+      return
+    }
     if (layer === 'corner') {
       const pt = screenToCanvas(e)
       const end = cornerTool === 'select' ? findCornerBarEndAtPoint(pt, 8 / scale) : null
@@ -3087,6 +3289,12 @@ export function DrawingViewer({
       return
     }
     if (segmentDrag || segmentLabelDrag || cornerBarDrag) {
+      return
+    }
+    if (layer === 'doma') {
+      if (domaDraftLine && !domaInputModal) {
+        finishDomaDraftLine(constrainDomaLine({ x: domaDraftLine.x1, y: domaDraftLine.y1 }, screenToCanvas(e)))
+      }
       return
     }
     if (layer !== 'unit') return
@@ -5107,7 +5315,11 @@ export function DrawingViewer({
                     <button
                       key={d.id}
                       type="button"
-                      onClick={() => setDomaBarDirection(d.id)}
+                      onClick={() => {
+                        setDomaBarDirection(d.id)
+                        setDomaDraftLine(null)
+                        setDomaSelection((cur) => (cur?.type === 'bar' ? null : cur))
+                      }}
                       aria-pressed={domaBarDirection === d.id}
                       className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
                         isFullscreen ? 'w-full text-[11px]' : 'text-xs'
@@ -5121,6 +5333,34 @@ export function DrawingViewer({
                     </button>
                   ))}
                 </div>
+              ) : null}
+              {domaBarKind === 'standard' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => changeDomaTool('select')}
+                    className={toolButtonClass(domaTool === 'select')}
+                    title="選択・ドラッグで移動 (S)"
+                  >
+                    選択
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => changeDomaTool('dimension')}
+                    className={toolButtonClass(domaTool === 'dimension')}
+                    title="各辺の寸法線を描く (M)"
+                  >
+                    寸法線
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => changeDomaTool('bar')}
+                    className={toolButtonClass(domaTool === 'bar')}
+                    title={`${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}筋を描く (D)`}
+                  >
+                    {domaBarDirection === 'tate' ? 'タテ筋を描く' : 'ヨコ筋を描く'}
+                  </button>
+                </>
               ) : null}
             </>
           ) : (
@@ -5239,7 +5479,7 @@ export function DrawingViewer({
             {layer === 'corner'
               ? 'Sキー: 修正／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
               : layer === 'doma'
-              ? 'クリック: 選択／ドラッグ: 移動／Escキー: 配置をやめる・選択解除／Fキー: 全画面'
+              ? 'Mキー: 寸法線／Dキー: 土間筋を描く／Sキー: 選択・移動／Zキー: 削除／Escキー: 描画をやめる／Fキー: 全画面'
               : splitArmedSegmentId
                 ? 'Escキー: 分割をキャンセル'
                 : 'Escキー: 描画取消／Dキー: 描画／Sキー: 選択／Fキー: 全画面／Zキー: 削除／Shift+描画: 水平・垂直'}
@@ -5281,9 +5521,9 @@ export function DrawingViewer({
                         ? 'pointer'
                         : 'default'
                 : layer === 'doma'
-                ? slabRegionDrag
+                ? domaDrag
                   ? 'move'
-                  : slabPlacementDraft
+                  : domaTool !== 'select' && domaBarKind === 'standard'
                     ? 'crosshair'
                     : 'default'
                 : tool === 'draw'
@@ -5350,27 +5590,46 @@ export function DrawingViewer({
         onUndo={handleUndo}
       />
       ) : layer === 'doma' ? (
-      <SlabRegionPanel
-        regions={slabRegions}
+      <>
+      {domaInputModal ? (
+        <DomaInputModal
+          state={domaInputModal}
+          settings={domaSettingsByDirection[domaBarDirection]}
+          dimensionValues={domaDimensionValues(domaDimensions)}
+          onCancel={closeDomaInputModal}
+          onConfirmDimension={(mm) => {
+            const line = domaInputModal.line
+            closeDomaInputModal()
+            void insertDomaDimension(line, mm)
+          }}
+          onConfirmBar={(runMm, spanMm) => {
+            if (domaInputModal.type !== 'bar') return
+            const { line, direction } = domaInputModal
+            closeDomaInputModal()
+            void insertDomaBar(line, direction, runMm, spanMm)
+          }}
+        />
+      ) : null}
+      <DomaPanel
         kind={domaBarKind}
         direction={domaBarDirection}
-        selectedId={selectedSlabRegionId}
-        placementDraft={slabPlacementDraft}
-        onSelect={setSelectedSlabRegionId}
-        onArmPlacement={(draft) => {
-          setSelectedSlabRegionId(null)
-          setSlabPlacementDraft(draft)
+        tool={domaTool}
+        settings={domaSettingsByDirection[domaBarDirection]}
+        dimensions={domaDimensions}
+        bars={domaBars}
+        selection={domaSelection}
+        onToolChange={changeDomaTool}
+        onSettingsChange={(next) => changeDomaSettings(domaBarDirection, next)}
+        onSelect={(sel) => {
+          setDomaTool('select')
+          setDomaSelection(sel)
         }}
-        onCancelPlacement={() => setSlabPlacementDraft(null)}
-        onUpdate={(id, draft) => void patchSlabRegion(id, draft)}
-        onResize={(id, factor) => {
-          const region = slabRegions.find((r) => r.id === id)
-          if (!region) return
-          const next = Math.min(4000, Math.max(60, Math.round(region.size_px * factor)))
-          void patchSlabRegion(id, { size_px: next })
-        }}
-        onDelete={(id) => void deleteSlabRegion(id)}
+        onUpdateDimension={(id, mm) => void updateDomaDimension(id, { length_mm: mm })}
+        onUpdateBar={(id, patch) => void updateDomaBar(id, patch)}
+        onDeleteDimension={(id) => void deleteDomaItem({ type: 'dimension', id })}
+        onDeleteBar={(id) => void deleteDomaItem({ type: 'bar', id })}
       />
+      </>
       ) : (
       <SegmentPanel
         segments={segments}

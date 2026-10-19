@@ -1,6 +1,9 @@
 import assert from 'node:assert'
 import {
+  DEFAULT_DOMA_BAR_SETTINGS,
   DEFAULT_SLAB_REBAR_SETTINGS,
+  aggregateSchedule,
+  computeDomaBar,
   buildSchedule,
   countBars,
   decomposeBands,
@@ -81,6 +84,27 @@ test('decomposeBands: 長方形は 1 帯', () => {
 
 test('buildSchedule: 資料A の集計を再現', () => {
   const rows = buildSchedule(shapeA, settings).schedule.map((r) => [r.kind, r.lengthMm, r.quantity])
+  assert.deepStrictEqual(rows, [
+    ['BENT', 6000, 106],
+    ['STRAIGHT', 6000, 28],
+    ['BENT', 3090, 32],
+    ['BENT', 2240, 28],
+    ['BENT', 1270, 14],
+    ['BENT', 360, 32],
+  ])
+})
+
+test('computeDomaBar: 資料A を代表線 4 本で描いた場合も同じ集計', () => {
+  const s = DEFAULT_DOMA_BAR_SETTINGS
+  const bars = [
+    { run: 5460, span: 6370 },
+    { run: 8190, span: 6370 },
+    { run: 6370, span: 2730 },
+    { run: 12740, span: 5460 },
+  ]
+  const rows = aggregateSchedule(
+    bars.map((b) => ({ diameter: s.diameter, runs: [computeDomaBar(b.run, b.span, s)] })),
+  ).map((r) => [r.kind, r.lengthMm, r.quantity])
   assert.deepStrictEqual(rows, [
     ['BENT', 6000, 106],
     ['STRAIGHT', 6000, 28],

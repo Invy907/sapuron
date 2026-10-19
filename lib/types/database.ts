@@ -2,7 +2,7 @@ import type { SegmentColor } from '@/lib/segment-colors'
 import type { ExtendedShapeType, LocationType, UnitBar } from '@/lib/unit-types'
 import type { UnitDetailGeometry, UnitDetailSpec } from '@/lib/unit-detail-shape'
 import type { CornerBarBarItem, CornerBarSegment } from '@/lib/corner-bar-presets'
-import type { SlabRebarSettings, SlabShape } from '@/lib/slab-rebar'
+import type { DomaBarSettings, SlabBarDirection } from '@/lib/slab-rebar'
 
 export interface Project {
   id: string
@@ -83,23 +83,36 @@ export interface DrawingCornerBar {
   created_at: string
 }
 
+/** 土間筋タブで描いた各辺の寸法線（両端に 90° の短い線を付けて描く） */
+export interface DrawingDomaDimension {
+  id: string
+  drawing_id: string
+  page_no: number
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  length_mm: number
+  created_at: string
+}
+
 /**
- * 図面詳細画面の「土間筋」タブに配置したスラブ領域。
- * 外形と配筋条件だけを持ち、加工本・数量は lib/slab-rebar.ts で毎回計算する。
+ * 土間筋タブで描いた土間筋の代表線。タテ／ヨコは別々に描く。
+ * 加工本・本数は lib/slab-rebar.ts で毎回計算する。
  */
-export interface DrawingSlabRegion {
+export interface DrawingDomaBar {
   id: string
   drawing_id: string
   page_no: number
   kind: 'standard' | 'special'
-  shape: SlabShape
-  settings: SlabRebarSettings
-  /** 配置点（図面座標系。外形 bbox の中心を合わせる） */
-  x: number
-  y: number
-  /** 図面上の大きさ（bbox の長辺, px） */
-  size_px: number
-  label: string | null
+  direction: SlabBarDirection
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  run_length_mm: number
+  span_mm: number
+  settings: DomaBarSettings
   created_at: string
 }
 

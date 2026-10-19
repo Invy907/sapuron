@@ -27,6 +27,23 @@ export type SlabRebarSettings = {
   lapMm: number
 }
 
+/** 図面に描いた土間筋 1 本（代表線）ごとの配筋条件 */
+export type DomaBarSettings = {
+  diameter: string
+  pitchMm: number
+  bendMm: number
+  stockMm: number
+  lapMm: number
+}
+
+export const DEFAULT_DOMA_BAR_SETTINGS: DomaBarSettings = {
+  diameter: 'D13',
+  pitchMm: 200,
+  bendMm: 150,
+  stockMm: 6000,
+  lapMm: 600,
+}
+
 export const DEFAULT_SLAB_REBAR_SETTINGS: SlabRebarSettings = {
   diameter: 'D13',
   pitchTateMm: 200,
@@ -263,8 +280,17 @@ export function buildRuns(
   return runs
 }
 
+/** 描いた土間筋 1 本（代表線）の本数と加工本 */
+export function computeDomaBar(
+  runLengthMm: number,
+  spanMm: number,
+  settings: DomaBarSettings
+): { count: number; pieces: FabricationPiece[]; warnings: SlabRunWarning[] } {
+  return { count: countBars(spanMm, settings.pitchMm), ...splitRun(runLengthMm, settings) }
+}
+
 export function aggregateSchedule(
-  items: Array<{ diameter: string; runs: BarRun[] }>
+  items: Array<{ diameter: string; runs: Array<Pick<BarRun, 'count' | 'pieces'>> }>
 ): ScheduleRow[] {
   const map = new Map<string, ScheduleRow>()
   for (const { diameter, runs } of items) {
