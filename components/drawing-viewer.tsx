@@ -7,11 +7,17 @@ import { createClient } from '@/lib/supabase/client'
 import { startGlobalLoading } from '@/lib/global-loading'
 import { loadPdfDocument } from '@/lib/pdfjs'
 import { useRouter } from 'next/navigation'
-import type { DrawingCornerBar, DrawingSegment } from '@/lib/types/database'
+import type { DrawingCornerBar, DrawingSegment, DrawingSlabRegion } from '@/lib/types/database'
 import type { Unit } from '@/lib/types/database'
 import { getSegmentLabelMap } from '@/lib/segment-labels'
 import { SegmentPanel } from '@/components/segment-panel'
 import { CornerBarPanel } from '@/components/corner-bar-panel'
+import {
+  SlabRegionPanel,
+  slabRegionDisplayLabel,
+  type SlabRegionDraft,
+} from '@/components/slab-region-panel'
+import { isPointInSlabRegion, paintSlabRegion } from '@/lib/slab-rebar-paint'
 import {
   clampCornerBarSizePx,
   cornerBarCanvasGeometry,
@@ -352,6 +358,14 @@ type DrawingPaintOptions = {
   interactiveHighlight: boolean
   /** ユニット描画中・分割ホバー（ユニットタブの操作フィードバック） */
   showUnitInteractionOverlay?: boolean
+  showSlabRegions?: boolean
+}
+
+type SlabRegionDragState = {
+  id: string
+  origin: Point
+  start: { x: number; y: number }
+  snapshot: DrawingSlabRegion
 }
 
 const REFERENCE_LAYER_ALPHA = 0.45
@@ -417,6 +431,7 @@ export function DrawingViewer({
   initialSegments,
   initialSelectedSegmentId,
   initialCornerBars = [],
+  initialSlabRegions = [],
   units: serverUnits = [],
 }: {
   drawingId: string
@@ -426,6 +441,7 @@ export function DrawingViewer({
   initialSegments: DrawingSegment[]
   initialSelectedSegmentId?: string
   initialCornerBars?: DrawingCornerBar[]
+  initialSlabRegions?: DrawingSlabRegion[]
   units?: Unit[]
 }) {
   const enableTemplateVariantFlow = process.env.NEXT_PUBLIC_TEMPLATE_VARIANT_FLOW !== '0'
@@ -616,6 +632,12 @@ export function DrawingViewer({
   const [cornerBarsOnlyView, setCornerBarsOnlyView] = useState(false)
   const [domaBarKind, setDomaBarKind] = useState<DomaBarKind>('standard')
   const [domaBarDirection, setDomaBarDirection] = useState<DomaBarDirection>('tate')
+  const [slabRegions, setSlabRegions] = useState<DrawingSlabRegion[]>(initialSlabRegions)
+  const [selectedSlabRegionId, setSelectedSlabRegionId] = useState<string | null>(null)
+  /** 図面クリックで配置する土間筋領域（パネルの「図面に配置」で設定） */
+  const [slabPlacementDraft, setSlabPlacementDraft] = useState<SlabRegionDraft | null>(null)
+  const [slabRegionDrag, setSlabRegionDrag] = useState<SlabRegionDragState | null>(null)
+  const slabRegionDragMovedRef = useRef(false)
   /** これから配置する付加筋の色（配置設定で選ぶ） */
   const [cornerPlacementColor, setCornerPlacementColor] = useState<SegmentColor>('red')
   /** 選択モードで空白をドラッグしたときのトースト */
@@ -721,7 +743,7 @@ export function DrawingViewer({
   const reloadDrawingDataFromDb = useCallback(async () => {
     if (pendingCornerBarSaveCountRef.current > 0) return
 
-    const [cornerResult, segmentResult] = await Promise.all([
+    const [cornerResult, segmentResult, slabResult] = await Promise.all([
       supabase
         .from('drawing_corner_bars')
         .select('*')
@@ -734,6 +756,12 @@ export function DrawingViewer({
         .eq('drawing_id', drawingId)
         .order('created_at', { ascending: true })
         .returns<DrawingSegment[]>(),
+      supabase
+        .from('drawing_slab_regions')
+        .select('*')
+        .eq('drawing_id', drawingId)
+        .order('created_at', { ascending: true })
+        .returns<DrawingSlabRegion[]>(),
     ])
 
     if (pendingCornerBarSaveCountRef.current > 0) return
@@ -744,6 +772,9 @@ export function DrawingViewer({
     }
     if (!segmentResult.error && segmentResult.data) {
       setSegments(segmentResult.data)
+    }
+    if (!slabResult.error && slabResult.data) {
+      setSlabRegions(slabResult.data)
     }
   }, [drawingId, supabase])
 
@@ -1415,7 +1446,132 @@ export function DrawingViewer({
       setSelectedCornerBarId(null)
       setPlacementDraft(null)
     }
+    if (next !== 'doma') {
+      setSelectedSlabRegionId(null)
+      setSlabPlacementDraft(null)
+      setSlabRegionDrag(null)
+    }
   }
+
+  function defaultSlabRegionSizePx(): number {
+    const img = imgRef.current
+    if (!img) return 320
+    return Math.max(120, Math.round(Math.min(img.width, img.height) * 0.4))
+  }
+
+  async function insertSlabRegionAt(draft: SlabRegionDraft, pt: Point) {
+    const row = {
+      drawing_id: drawingId,
+      page_no: 1,
+      kind: 'standard' as const,
+      shape: draft.shape,
+      settings: draft.settings,
+      x: pt.x,
+      y: pt.y,
+      size_px: defaultSlabRegionSizePx(),
+      label: null as string | null,
+    }
+    const { data, error } = await supabase
+      .from('drawing_slab_regions')
+      .insert(row)
+      .select('*')
+      .single<DrawingSlabRegion>()
+    if (error || !data) {
+      alert(`土間筋の保存に失敗しました: ${error?.message ?? ''}`)
+      return
+    }
+    setSlabRegions((prev) => [...prev, data])
+    setSelectedSlabRegionId(data.id)
+  }
+
+  async function patchSlabRegion(
+    id: string,
+    patch: Partial<Pick<DrawingSlabRegion, 'shape' | 'settings' | 'x' | 'y' | 'size_px'>>,
+    snapshot?: DrawingSlabRegion,
+  ) {
+    const before = snapshot ?? slabRegions.find((r) => r.id === id)
+    if (!before) return
+    setSlabRegions((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+    const { error } = await supabase.from('drawing_slab_regions').update(patch).eq('id', id)
+    if (error) {
+      setSlabRegions((prev) => prev.map((r) => (r.id === id ? before : r)))
+      alert(`土間筋の更新に失敗しました: ${error.message}`)
+    }
+  }
+
+  async function deleteSlabRegion(id: string) {
+    const target = slabRegions.find((r) => r.id === id)
+    if (!target) return
+    if (!window.confirm(`${slabRegionDisplayLabel(slabRegions, id)} を削除しますか？`)) return
+    const { error } = await supabase.from('drawing_slab_regions').delete().eq('id', id)
+    if (error) {
+      alert(`土間筋の削除に失敗しました: ${error.message}`)
+      return
+    }
+    setSlabRegions((prev) => prev.filter((r) => r.id !== id))
+    if (selectedSlabRegionId === id) setSelectedSlabRegionId(null)
+  }
+
+  function findSlabRegionAtPoint(pt: Point): DrawingSlabRegion | null {
+    for (let i = slabRegions.length - 1; i >= 0; i--) {
+      if (isPointInSlabRegion(slabRegions[i], pt)) return slabRegions[i]
+    }
+    return null
+  }
+
+  useEffect(() => {
+    if (!slabRegionDrag) return
+    const drag = slabRegionDrag
+
+    function pointFromClient(clientX: number, clientY: number): Point {
+      const canvas = canvasRef.current
+      if (!canvas) return { x: 0, y: 0 }
+      const rect = canvas.getBoundingClientRect()
+      const xr = (clientX - rect.left - offset.x) / scale
+      const yr = (clientY - rect.top - offset.y) / scale
+      const img = imgRef.current
+      if (!img) return { x: xr, y: yr }
+      const w = img.width
+      const h = img.height
+      const steps = ((rotationSteps % 4) + 4) % 4
+      if (steps === 0) return { x: xr, y: yr }
+      if (steps === 1) return { x: yr, y: h - xr }
+      if (steps === 2) return { x: w - xr, y: h - yr }
+      return { x: w - yr, y: xr }
+    }
+
+    function handleMove(ev: MouseEvent) {
+      const pt = pointFromClient(ev.clientX, ev.clientY)
+      const dx = pt.x - drag.origin.x
+      const dy = pt.y - drag.origin.y
+      if (!slabRegionDragMovedRef.current && Math.hypot(dx, dy) < 2 / scale) return
+      slabRegionDragMovedRef.current = true
+      setSlabRegions((prev) =>
+        prev.map((r) => (r.id === drag.id ? { ...r, x: drag.start.x + dx, y: drag.start.y + dy } : r)),
+      )
+    }
+
+    function handleUp(ev: MouseEvent) {
+      const pt = pointFromClient(ev.clientX, ev.clientY)
+      if (slabRegionDragMovedRef.current) {
+        void patchSlabRegion(
+          drag.id,
+          { x: drag.start.x + pt.x - drag.origin.x, y: drag.start.y + pt.y - drag.origin.y },
+          drag.snapshot,
+        )
+      }
+      slabRegionDragMovedRef.current = false
+      setSlabRegionDrag(null)
+    }
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ドラッグ開始時の表示状態で固定する
+  }, [slabRegionDrag])
 
   async function insertCornerBarAt(
     draft: CornerBarPlacementDraft,
@@ -2042,6 +2198,17 @@ export function DrawingViewer({
         ctx.restore()
       }
 
+    if (options.showSlabRegions) {
+      slabRegions.forEach((region) => {
+        paintSlabRegion(ctx, region, {
+          direction: domaBarDirection,
+          selected: options.interactiveHighlight && region.id === selectedSlabRegionId,
+          viewScale: scale,
+          label: slabRegionDisplayLabel(slabRegions, region.id),
+        })
+      })
+    }
+
     if (
       options.showUnitInteractionOverlay &&
       options.interactiveHighlight &&
@@ -2094,6 +2261,9 @@ export function DrawingViewer({
       cornerBars,
       selectedCornerBarId,
       cornerBarGeometryOf,
+      slabRegions,
+      selectedSlabRegionId,
+      domaBarDirection,
     ],
   )
 
@@ -2119,8 +2289,9 @@ export function DrawingViewer({
             showCornerBars: false,
             segmentEmphasis: 'hidden',
             cornerEmphasis: 'hidden',
-            interactiveHighlight: false,
+            interactiveHighlight: true,
             showUnitInteractionOverlay: false,
+            showSlabRegions: true,
           }
         : {
             showSegments: !cornerBarsOnlyView,
@@ -2269,7 +2440,11 @@ export function DrawingViewer({
           }
           return
         }
-        if (layer === 'doma') return
+        if (layer === 'doma') {
+          if (slabPlacementDraft) setSlabPlacementDraft(null)
+          else setSelectedSlabRegionId(null)
+          return
+        }
         setSplitArmedSegmentId(null)
         setSplitHoverPoint(null)
         if (drawing) {
@@ -2484,6 +2659,7 @@ export function DrawingViewer({
     cornerTool,
     selectedCornerBarId,
     cornerBarShapeSelectModalOpen,
+    slabPlacementDraft,
   ])
 
   useEffect(() => {
@@ -2681,7 +2857,23 @@ export function DrawingViewer({
       return
     }
 
-    if (layer === 'doma') return
+    if (layer === 'doma') {
+      if (e.button !== 0 || domaBarKind !== 'standard') return
+      const pt = screenToCanvas(e)
+      if (slabPlacementDraft) {
+        const draft = slabPlacementDraft
+        setSlabPlacementDraft(null)
+        void insertSlabRegionAt(draft, pt)
+        return
+      }
+      const hit = findSlabRegionAtPoint(pt)
+      setSelectedSlabRegionId(hit?.id ?? null)
+      if (hit) {
+        slabRegionDragMovedRef.current = false
+        setSlabRegionDrag({ id: hit.id, origin: pt, start: { x: hit.x, y: hit.y }, snapshot: hit })
+      }
+      return
+    }
 
     if (layer === 'corner') {
       if (e.button !== 0) return
@@ -5047,7 +5239,7 @@ export function DrawingViewer({
             {layer === 'corner'
               ? 'Sキー: 修正／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
               : layer === 'doma'
-              ? 'Fキー: 全画面'
+              ? 'クリック: 選択／ドラッグ: 移動／Escキー: 配置をやめる・選択解除／Fキー: 全画面'
               : splitArmedSegmentId
                 ? 'Escキー: 分割をキャンセル'
                 : 'Escキー: 描画取消／Dキー: 描画／Sキー: 選択／Fキー: 全画面／Zキー: 削除／Shift+描画: 水平・垂直'}
@@ -5089,7 +5281,11 @@ export function DrawingViewer({
                         ? 'pointer'
                         : 'default'
                 : layer === 'doma'
-                ? 'default'
+                ? slabRegionDrag
+                  ? 'move'
+                  : slabPlacementDraft
+                    ? 'crosshair'
+                    : 'default'
                 : tool === 'draw'
                   ? 'crosshair'
                   : segmentLabelDrag
@@ -5154,19 +5350,27 @@ export function DrawingViewer({
         onUndo={handleUndo}
       />
       ) : layer === 'doma' ? (
-      <div className="w-72 shrink-0 flex flex-col rounded-lg border border-border bg-white overflow-hidden">
-        <div className="border-b border-border px-4 py-3">
-          <h3 className="text-sm font-semibold">土間筋</h3>
-          <p className="mt-0.5 text-xs text-muted">
-            {domaBarKind === 'standard'
-              ? `標準・${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}`
-              : '特殊'}
-          </p>
-        </div>
-        <p className="px-4 py-6 text-center text-xs text-muted">
-          土間筋はまだありません。
-        </p>
-      </div>
+      <SlabRegionPanel
+        regions={slabRegions}
+        kind={domaBarKind}
+        direction={domaBarDirection}
+        selectedId={selectedSlabRegionId}
+        placementDraft={slabPlacementDraft}
+        onSelect={setSelectedSlabRegionId}
+        onArmPlacement={(draft) => {
+          setSelectedSlabRegionId(null)
+          setSlabPlacementDraft(draft)
+        }}
+        onCancelPlacement={() => setSlabPlacementDraft(null)}
+        onUpdate={(id, draft) => void patchSlabRegion(id, draft)}
+        onResize={(id, factor) => {
+          const region = slabRegions.find((r) => r.id === id)
+          if (!region) return
+          const next = Math.min(4000, Math.max(60, Math.round(region.size_px * factor)))
+          void patchSlabRegion(id, { size_px: next })
+        }}
+        onDelete={(id) => void deleteSlabRegion(id)}
+      />
       ) : (
       <SegmentPanel
         segments={segments}

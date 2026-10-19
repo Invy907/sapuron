@@ -2,6 +2,7 @@ import type { SegmentColor } from '@/lib/segment-colors'
 import type { ExtendedShapeType, LocationType, UnitBar } from '@/lib/unit-types'
 import type { UnitDetailGeometry, UnitDetailSpec } from '@/lib/unit-detail-shape'
 import type { CornerBarBarItem, CornerBarSegment } from '@/lib/corner-bar-presets'
+import type { SlabRebarSettings, SlabShape } from '@/lib/slab-rebar'
 
 export interface Project {
   id: string
@@ -78,6 +79,26 @@ export interface DrawingCornerBar {
   /** 特殊コーナー筋: 左右反転（回転の前に適用） */
   flipped?: boolean
   color: SegmentColor
+  label: string | null
+  created_at: string
+}
+
+/**
+ * 図面詳細画面の「土間筋」タブに配置したスラブ領域。
+ * 外形と配筋条件だけを持ち、加工本・数量は lib/slab-rebar.ts で毎回計算する。
+ */
+export interface DrawingSlabRegion {
+  id: string
+  drawing_id: string
+  page_no: number
+  kind: 'standard' | 'special'
+  shape: SlabShape
+  settings: SlabRebarSettings
+  /** 配置点（図面座標系。外形 bbox の中心を合わせる） */
+  x: number
+  y: number
+  /** 図面上の大きさ（bbox の長辺, px） */
+  size_px: number
   label: string | null
   created_at: string
 }

@@ -4,6 +4,7 @@ import type {
   Drawing,
   DrawingCornerBar,
   DrawingSegment,
+  DrawingSlabRegion,
   Project,
   Unit,
 } from '@/lib/types/database'
@@ -53,6 +54,13 @@ export default async function DrawingDetailPage({
     .order('created_at', { ascending: true })
     .returns<DrawingCornerBar[]>()
 
+  const { data: slabRegions } = await supabase
+    .from('drawing_slab_regions')
+    .select('*')
+    .eq('drawing_id', drawingId)
+    .order('created_at', { ascending: true })
+    .returns<DrawingSlabRegion[]>()
+
   const { data: units } = await supabase
     .from('units')
     .select('*')
@@ -77,6 +85,7 @@ export default async function DrawingDetailPage({
         initialSegments={segments ?? []}
         initialSelectedSegmentId={segmentId}
         initialCornerBars={cornerBars ?? []}
+        initialSlabRegions={slabRegions ?? []}
         units={units ?? []}
       />
     </div>
