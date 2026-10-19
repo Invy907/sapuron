@@ -2,7 +2,7 @@ import type { SegmentColor } from '@/lib/segment-colors'
 import type { ExtendedShapeType, LocationType, UnitBar } from '@/lib/unit-types'
 import type { UnitDetailGeometry, UnitDetailSpec } from '@/lib/unit-detail-shape'
 import type { CornerBarBarItem, CornerBarSegment } from '@/lib/corner-bar-presets'
-import type { DomaBarSettings, SlabBarDirection } from '@/lib/slab-rebar'
+import type { DomaBarSettings, DomaBendEnd, SlabBarDirection } from '@/lib/slab-rebar'
 
 export interface Project {
   id: string
@@ -97,8 +97,8 @@ export interface DrawingDomaDimension {
 }
 
 /**
- * 土間筋タブで描いた土間筋の代表線。タテ／ヨコは別々に描く。
- * 加工本・本数は lib/slab-rebar.ts で毎回計算する。
+ * 土間筋タブで描いた土間筋 1 本 ＝ 加工本 1 本。タテ／ヨコは別々に描く。
+ * 加工長さ = straight_mm + 端部曲げ（bend_end の側だけ）。本数は span_mm ÷ ピッチ。
  */
 export interface DrawingDomaBar {
   id: string
@@ -110,7 +110,8 @@ export interface DrawingDomaBar {
   y1: number
   x2: number
   y2: number
-  run_length_mm: number
+  straight_mm: number
+  bend_end: DomaBendEnd
   span_mm: number
   settings: DomaBarSettings
   created_at: string

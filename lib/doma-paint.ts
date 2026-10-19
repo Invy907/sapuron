@@ -1,7 +1,12 @@
 // 土間筋タブのキャンバス描画: 各辺の寸法線と、タテ／ヨコの土間筋代表線。
 // 座標は図面座標（drawing_segments と同じ）。線幅・文字は viewScale で割って画面上の大きさを一定にする。
 
-import { computeDomaBar, type DomaBarSettings, type SlabBarDirection } from './slab-rebar'
+import {
+  computeDomaPiece,
+  type DomaBarSettings,
+  type DomaBendEnd,
+  type SlabBarDirection,
+} from './slab-rebar'
 
 type Pt = { x: number; y: number }
 
@@ -107,118 +112,117 @@ export function paintDomaDimension(
   }
 }
 
-/** 土間筋の代表線を、加工本の分割・重ね・端部の曲げ付きで描く */
+export type DomaBarShape = DomaLine & {
+  direction: SlabBarDirection
+  straight_mm: number
+  bend_end: DomaBendEnd
+  span_mm: number
+  settings: DomaBarSettings
+}
+
+/** 図面上の px / mm（描いた線の長さ ÷ 直線部の mm） */
+function barPxPerMm(bar: DomaBarShape): number {
+  const len = Math.hypot(bar.x2 - bar.x1, bar.y2 - bar.y1)
+  return bar.straight_mm > 0 ? len / bar.straight_mm : 0
+}
+
+/** 加工本 1 本: 直線部 + 片側の端部曲げ + 寸法・本数 */
 export function paintDomaBar(
   ctx: CanvasRenderingContext2D,
-  bar: DomaLine & {
-    direction: SlabBarDirection
-    run_length_mm: number
-    span_mm: number
-    settings: DomaBarSettings
-  },
+  bar: DomaBarShape,
   opts: { viewScale: number; selected?: boolean },
 ) {
   const s = opts.viewScale
   const f = frame(bar)
-  const L = bar.run_length_mm
-  if (f.len <= 0 || !(L > 0)) return
-  const k = f.len / L
+  if (f.len <= 0) return
+  const k = barPxPerMm(bar)
   const color = DOMA_DIRECTION_COLORS[bar.direction]
-  const { count, pieces } = computeDomaBar(L, bar.span_mm, bar.settings)
-  const { bendMm, lapMm } = bar.settings
-
-  if (opts.selected) strokeHighlight(ctx, f.at(0, 0), f.at(f.len, 0), s)
-
-  if (pieces.length === 0) {
-    ctx.save()
-    ctx.strokeStyle = color
-    ctx.lineWidth = 2.5 / s
-    ctx.beginPath()
-    const a = f.at(0, 0)
-    const b = f.at(f.len, 0)
-    ctx.moveTo(a.x, a.y)
-    ctx.lineTo(b.x, b.y)
-    ctx.stroke()
-    ctx.restore()
-    return
-  }
-
-  // 設置区間 [0, L] 上の各加工本の直線部。重ねは隣の本と lap だけ重なる
-  const straight = pieces.map((p) => (p.kind === 'BENT' ? p.lengthMm - bendMm : p.lengthMm))
-  const intervals: Array<[number, number]> = []
-  let prevEnd = 0
-  straight.forEach((len, i) => {
-    const isLast = i === straight.length - 1
-    const start = i === 0 ? 0 : isLast ? L - len : prevEnd - lapMm
-    const end = i === 0 ? len : start + len
-    intervals.push([Math.max(0, start), Math.min(L, end)])
-    prevEnd = end
-  })
-
-  const gap = 3 / s
+  const { count, piece, warnings } = computeDomaPiece(bar.straight_mm, bar.span_mm, bar.bend_end, bar.settings)
+  const { bendMm } = bar.settings
   const hookPx = Math.max(bendMm * k, 10 / s)
   const fontPx = 11 / s
+
+  if (opts.selected) strokeHighlight(ctx, f.at(0, 0), f.at(f.len, 0), s)
 
   ctx.save()
   ctx.strokeStyle = color
   ctx.lineWidth = 2.5 / s
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
-  intervals.forEach(([a, b], i) => {
-    const off = i % 2 === 0 ? gap : -gap
-    const p0 = f.at(a * k, off)
-    const p1 = f.at(b * k, off)
-    ctx.beginPath()
-    if (i === 0 && pieces[i].kind === 'BENT') {
-      const h = f.at(a * k, off - hookPx)
-      ctx.moveTo(h.x, h.y)
-      ctx.lineTo(p0.x, p0.y)
-    } else {
-      ctx.moveTo(p0.x, p0.y)
-    }
-    ctx.lineTo(p1.x, p1.y)
-    if (i === intervals.length - 1 && pieces[i].kind === 'BENT') {
-      const h = f.at(b * k, off - hookPx)
-      ctx.lineTo(h.x, h.y)
-    }
-    ctx.stroke()
-  })
+  ctx.beginPath()
+  const a = f.at(0, 0)
+  const b = f.at(f.len, 0)
+  if (bar.bend_end === 'start') {
+    const h = f.at(0, -hookPx)
+    ctx.moveTo(h.x, h.y)
+    ctx.lineTo(a.x, a.y)
+  } else {
+    ctx.moveTo(a.x, a.y)
+  }
+  ctx.lineTo(b.x, b.y)
+  if (bar.bend_end === 'end') {
+    const h = f.at(f.len, -hookPx)
+    ctx.lineTo(h.x, h.y)
+  }
+  ctx.stroke()
   ctx.restore()
 
-  // 寸法: 曲げ・各本の直線部・重ね（線の反対側に出す）
-  const side = -16 / s
-  drawText(ctx, String(bendMm), f.at(0, -hookPx - 10 / s), { fontPx, color, angle: f.angle })
-  drawText(ctx, String(bendMm), f.at(f.len, -hookPx - 10 / s), { fontPx, color, angle: f.angle })
-  intervals.forEach(([a, b], i) => {
-    drawText(ctx, String(Math.round(straight[i])), f.at(((a + b) / 2) * k, side + (i % 2 === 0 ? 0 : -12 / s)), {
-      fontPx,
-      color,
-      angle: f.angle,
-    })
-    if (i > 0) {
-      const lapStart = a
-      const lapEnd = Math.min(intervals[i - 1][1], L)
-      drawText(ctx, String(lapMm), f.at(((lapStart + lapEnd) / 2) * k, 14 / s), {
-        fontPx: 10 / s,
-        color: '#475569',
-        angle: f.angle,
-      })
-    }
-  })
+  if (bar.bend_end !== 'none') {
+    const t = bar.bend_end === 'start' ? 0 : f.len
+    drawText(ctx, String(bendMm), f.at(t, -hookPx - 10 / s), { fontPx, color, angle: f.angle })
+  }
+  drawText(ctx, String(bar.straight_mm), f.at(f.len / 2, -14 / s), { fontPx, color, angle: f.angle })
 
-  // 本数と加工本の内訳
-  const labelAt = f.at(f.len / 2, 32 / s)
-  drawText(ctx, `${bar.settings.diameter} @${bar.settings.pitchMm} × ${count}本`, labelAt, {
+  const warn = warnings.includes('EXCEEDS_STOCK') ? ' ⚠定尺超え' : ''
+  drawText(ctx, `${bar.settings.diameter} @${bar.settings.pitchMm} × ${count}本`, f.at(f.len / 2, 16 / s), {
     fontPx: 12 / s,
     color,
     angle: f.angle,
     bold: true,
   })
-  drawText(ctx, pieces.map((p) => p.lengthMm).join(' + '), f.at(f.len / 2, 47 / s), {
+  drawText(ctx, `${piece.kind === 'BENT' ? '曲' : '直'} ${piece.lengthMm}${warn}`, f.at(f.len / 2, 31 / s), {
     fontPx,
-    color,
+    color: warn ? '#b45309' : color,
     angle: f.angle,
   })
+}
+
+/**
+ * 同じ方向で同じ線上に重なっている加工本どうしの重ね長さ(mm)を表示する。
+ * 長さは重なっている 2 本の縮尺の平均で換算する。
+ */
+export function paintDomaLaps(ctx: CanvasRenderingContext2D, bars: DomaBarShape[], viewScale: number) {
+  const s = viewScale
+  const tol = 6 / s
+  for (let i = 0; i < bars.length; i++) {
+    for (let j = i + 1; j < bars.length; j++) {
+      const a = bars[i]
+      const b = bars[j]
+      if (a.direction !== b.direction) continue
+      const horizontal = Math.abs(a.y2 - a.y1) < Math.abs(a.x2 - a.x1)
+      const bHorizontal = Math.abs(b.y2 - b.y1) < Math.abs(b.x2 - b.x1)
+      if (horizontal !== bHorizontal) continue
+      const perpA = horizontal ? a.y1 : a.x1
+      const perpB = horizontal ? b.y1 : b.x1
+      if (Math.abs(perpA - perpB) > tol) continue
+      const [a0, a1] = horizontal ? [a.x1, a.x2] : [a.y1, a.y2]
+      const [b0, b1] = horizontal ? [b.x1, b.x2] : [b.y1, b.y2]
+      const lo = Math.max(Math.min(a0, a1), Math.min(b0, b1))
+      const hi = Math.min(Math.max(a0, a1), Math.max(b0, b1))
+      if (hi - lo <= 1 / s) continue
+      const k = (barPxPerMm(a) + barPxPerMm(b)) / 2
+      if (!(k > 0)) continue
+      const mm = Math.round((hi - lo) / k / 10) * 10
+      const mid = (lo + hi) / 2
+      const offset = 14 / s
+      const p = horizontal ? { x: mid, y: (perpA + perpB) / 2 + offset } : { x: (perpA + perpB) / 2 + offset, y: mid }
+      drawText(ctx, `重ね${mm}`, p, {
+        fontPx: 10 / s,
+        color: '#475569',
+        angle: horizontal ? 0 : -Math.PI / 2,
+      })
+    }
+  }
 }
 
 export function paintDomaDraftLine(

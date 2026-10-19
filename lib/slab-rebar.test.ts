@@ -5,7 +5,8 @@ import {
   domaSettingsWithDiameter,
   DEFAULT_SLAB_REBAR_SETTINGS,
   aggregateSchedule,
-  computeDomaBar,
+  computeDomaPiece,
+  defaultDomaStraightMm,
   buildSchedule,
   countBars,
   decomposeBands,
@@ -102,16 +103,33 @@ test('domaDiameterOptionLabel: 径ごとの標準重ね', () => {
   assert.strictEqual(domaSettingsWithDiameter('D16').lapMm, 750)
 })
 
-test('computeDomaBar: 資料A を代表線 4 本で描いた場合も同じ集計', () => {
+test('defaultDomaStraightMm: 定尺 6000 − 端部曲げ 150 = 5850', () => {
+  assert.strictEqual(defaultDomaStraightMm(DEFAULT_DOMA_BAR_SETTINGS, 'start'), 5850)
+  assert.strictEqual(defaultDomaStraightMm(DEFAULT_DOMA_BAR_SETTINGS, 'none'), 6000)
+})
+
+test('computeDomaPiece: 資料A を加工本ごとに描いた場合の集計', () => {
   const s = DEFAULT_DOMA_BAR_SETTINGS
-  const bars = [
-    { run: 5460, span: 6370 },
-    { run: 8190, span: 6370 },
-    { run: 6370, span: 2730 },
-    { run: 12740, span: 5460 },
+  const pieces: Array<{ straight: number; span: number; bend: 'start' | 'end' | 'none' }> = [
+    // タテ左（5460）: 150+5850 / 210+150
+    { straight: 5850, span: 6370, bend: 'start' },
+    { straight: 210, span: 6370, bend: 'end' },
+    // タテ右（8190）: 150+5850 / 2940+150
+    { straight: 5850, span: 6370, bend: 'start' },
+    { straight: 2940, span: 6370, bend: 'end' },
+    // ヨコ上（6370）: 150+5850 / 1120+150
+    { straight: 5850, span: 2730, bend: 'start' },
+    { straight: 1120, span: 2730, bend: 'end' },
+    // ヨコ下（12740）: 150+5850 / 6000 / 2090+150
+    { straight: 5850, span: 5460, bend: 'start' },
+    { straight: 6000, span: 5460, bend: 'none' },
+    { straight: 2090, span: 5460, bend: 'end' },
   ]
   const rows = aggregateSchedule(
-    bars.map((b) => ({ diameter: s.diameter, runs: [computeDomaBar(b.run, b.span, s)] })),
+    pieces.map((p) => {
+      const { count, piece } = computeDomaPiece(p.straight, p.span, p.bend, s)
+      return { diameter: s.diameter, runs: [{ count, pieces: [piece] }] }
+    }),
   ).map((r) => [r.kind, r.lengthMm, r.quantity])
   assert.deepStrictEqual(rows, [
     ['BENT', 6000, 106],

@@ -31,10 +31,15 @@ import {
   estimateLengthMm,
   paintDomaBar,
   paintDomaDimension,
+  paintDomaLaps,
   paintDomaDraftLine,
   type DomaLine,
 } from '@/lib/doma-paint'
-import { DEFAULT_DOMA_BAR_SETTINGS, type DomaBarSettings } from '@/lib/slab-rebar'
+import {
+  DEFAULT_DOMA_BAR_SETTINGS,
+  type DomaBarSettings,
+  type DomaBendEnd,
+} from '@/lib/slab-rebar'
 import {
   clampCornerBarSizePx,
   cornerBarCanvasGeometry,
@@ -660,6 +665,8 @@ export function DrawingViewer({
   const [domaInputModal, setDomaInputModal] = useState<DomaInputModalState | null>(null)
   const [domaDrag, setDomaDrag] = useState<DomaDragState | null>(null)
   const domaDragMovedRef = useRef(false)
+  /** 描画中の土間筋が既存の本から重ねて続けたものか */
+  const domaContinuationRef = useRef(false)
   /** これから描く土間筋の設定（タテ／ヨコ別。localStorage に保存） */
   const domaSettingsStorageKey = `project:${projectId}:domaBarSettings:v1`
   const [domaSettingsByDirection, setDomaSettingsByDirection] = useState<
@@ -1546,13 +1553,43 @@ export function DrawingViewer({
       setDomaDraftLine(null)
       return
     }
-    const estimateMm = estimateLengthMm(px, domaDimensions)
     setDomaDraftLine(line)
-    setDomaInputModal(
-      domaTool === 'dimension'
-        ? { type: 'dimension', line, estimateMm }
-        : { type: 'bar', direction: domaBarDirection, line, estimateMm },
-    )
+    if (domaTool === 'dimension') {
+      setDomaInputModal({ type: 'dimension', line, estimateMm: estimateLengthMm(px, domaDimensions) })
+      return
+    }
+    const lastSameDirection = [...domaBars].reverse().find((b) => b.direction === domaBarDirection)
+    setDomaInputModal({
+      type: 'bar',
+      direction: domaBarDirection,
+      line,
+      defaultBendEnd: domaContinuationRef.current ? 'end' : 'start',
+      defaultSpanMm: domaContinuationRef.current ? (lastSameDirection?.span_mm ?? null) : null,
+    })
+  }
+
+  /**
+   * 同じ方向の既存の本の端点近くから描き始めたら、その本の内側へ重ね長さだけ戻した点を始点にする。
+   * 戻す距離はその本の縮尺（描いた長さ ÷ 直線部 mm）で換算する。
+   */
+  function snapDomaBarStart(pt: Point): { start: Point; continued: boolean } {
+    const tol = 10 / scale
+    const lapMm = domaSettingsByDirection[domaBarDirection].lapMm
+    for (const bar of [...domaBars].reverse()) {
+      if (bar.direction !== domaBarDirection) continue
+      const len = Math.hypot(bar.x2 - bar.x1, bar.y2 - bar.y1)
+      if (len <= 0 || !(bar.straight_mm > 0)) continue
+      const back = Math.min(len, (lapMm * len) / bar.straight_mm)
+      const ux = (bar.x2 - bar.x1) / len
+      const uy = (bar.y2 - bar.y1) / len
+      if (Math.hypot(pt.x - bar.x2, pt.y - bar.y2) < tol) {
+        return { start: { x: bar.x2 - ux * back, y: bar.y2 - uy * back }, continued: true }
+      }
+      if (Math.hypot(pt.x - bar.x1, pt.y - bar.y1) < tol) {
+        return { start: { x: bar.x1 + ux * back, y: bar.y1 + uy * back }, continued: true }
+      }
+    }
+    return { start: pt, continued: false }
   }
 
   function closeDomaInputModal() {
@@ -1576,7 +1613,8 @@ export function DrawingViewer({
   async function insertDomaBar(
     line: DomaLine,
     direction: DomaBarDirection,
-    runLengthMm: number,
+    straightMm: number,
+    bendEnd: DomaBendEnd,
     spanMm: number,
   ) {
     const { data, error } = await supabase
@@ -1587,7 +1625,8 @@ export function DrawingViewer({
         kind: 'standard',
         direction,
         ...line,
-        run_length_mm: runLengthMm,
+        straight_mm: straightMm,
+        bend_end: bendEnd,
         span_mm: spanMm,
         settings: domaSettingsByDirection[direction],
       })
@@ -1618,7 +1657,10 @@ export function DrawingViewer({
   async function updateDomaBar(
     id: string,
     patch: Partial<
-      Pick<DrawingDomaBar, 'run_length_mm' | 'span_mm' | 'settings' | 'x1' | 'y1' | 'x2' | 'y2'>
+      Pick<
+        DrawingDomaBar,
+        'straight_mm' | 'bend_end' | 'span_mm' | 'settings' | 'x1' | 'y1' | 'x2' | 'y2'
+      >
     >,
     before?: DrawingDomaBar,
   ) {
@@ -2356,11 +2398,11 @@ export function DrawingViewer({
       domaDimensions.forEach((dim) => {
         paintDomaDimension(ctx, dim, { viewScale: scale, selected: isSelected('dimension', dim.id) })
       })
-      domaBars
-        .filter((bar) => bar.direction === domaBarDirection)
-        .forEach((bar) => {
-          paintDomaBar(ctx, bar, { viewScale: scale, selected: isSelected('bar', bar.id) })
-        })
+      const visibleBars = domaBars.filter((bar) => bar.direction === domaBarDirection)
+      visibleBars.forEach((bar) => {
+        paintDomaBar(ctx, bar, { viewScale: scale, selected: isSelected('bar', bar.id) })
+      })
+      paintDomaLaps(ctx, visibleBars, scale)
       if (domaDraftLine) {
         if (domaTool === 'dimension') {
           const px = Math.hypot(domaDraftLine.x2 - domaDraftLine.x1, domaDraftLine.y2 - domaDraftLine.y1)
@@ -3058,7 +3100,10 @@ export function DrawingViewer({
       if (e.button !== 0 || domaBarKind !== 'standard' || domaInputModal) return
       const pt = screenToCanvas(e)
       if (domaTool !== 'select') {
-        setDomaDraftLine({ x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y })
+        const { start, continued } =
+          domaTool === 'bar' ? snapDomaBarStart(pt) : { start: pt, continued: false }
+        domaContinuationRef.current = continued
+        setDomaDraftLine({ x1: start.x, y1: start.y, x2: start.x, y2: start.y })
         return
       }
       const hit = findDomaItemAtPoint(pt)
@@ -5602,11 +5647,11 @@ export function DrawingViewer({
             closeDomaInputModal()
             void insertDomaDimension(line, mm)
           }}
-          onConfirmBar={(runMm, spanMm) => {
+          onConfirmBar={(straightMm, bendEnd, spanMm) => {
             if (domaInputModal.type !== 'bar') return
             const { line, direction } = domaInputModal
             closeDomaInputModal()
-            void insertDomaBar(line, direction, runMm, spanMm)
+            void insertDomaBar(line, direction, straightMm, bendEnd, spanMm)
           }}
         />
       ) : null}

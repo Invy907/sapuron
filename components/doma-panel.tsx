@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { DrawingDomaBar, DrawingDomaDimension } from '@/lib/types/database'
 import {
   aggregateSchedule,
-  computeDomaBar,
+  computeDomaPiece,
+  defaultDomaStraightMm,
   DOMA_BAR_DIAMETERS,
   domaDiameterOptionLabel,
   domaSettingsWithDiameter,
   type DomaBarSettings,
+  type DomaBendEnd,
   type SlabBarDirection,
 } from '@/lib/slab-rebar'
 
@@ -112,10 +114,10 @@ function ScheduleTable({
   const schedule = useMemo(
     () =>
       aggregateSchedule(
-        bars.map((b) => ({
-          diameter: b.settings.diameter,
-          runs: [computeDomaBar(b.run_length_mm, b.span_mm, b.settings)],
-        })),
+        bars.map((b) => {
+          const { count, piece } = computeDomaPiece(b.straight_mm, b.span_mm, b.bend_end, b.settings)
+          return { diameter: b.settings.diameter, runs: [{ count, pieces: [piece] }] }
+        }),
       ),
     [bars],
   )
@@ -202,23 +204,28 @@ function BarEditor({
 }: {
   bar: DrawingDomaBar
   dimensionValues: number[]
-  onUpdate: (patch: Pick<DrawingDomaBar, 'run_length_mm' | 'span_mm' | 'settings'>) => void
+  onUpdate: (patch: Pick<DrawingDomaBar, 'straight_mm' | 'bend_end' | 'span_mm' | 'settings'>) => void
   onDelete: () => void
 }) {
-  const [run, setRun] = useState(String(bar.run_length_mm))
+  const [straight, setStraight] = useState(String(bar.straight_mm))
+  const [bendEnd, setBendEnd] = useState<DomaBendEnd>(bar.bend_end)
   const [span, setSpan] = useState(String(bar.span_mm))
   const [settings, setSettings] = useState(bar.settings)
 
-  const runMm = parseMm(run)
+  const straightMm = parseMm(straight)
   const spanMm = parseMm(span)
-  const preview = runMm > 0 && spanMm > 0 ? computeDomaBar(runMm, spanMm, settings) : null
+  const preview =
+    straightMm > 0 && spanMm > 0 ? computeDomaPiece(straightMm, spanMm, bendEnd, settings) : null
 
   return (
     <div className="flex flex-col gap-2">
-      <LengthAndSpanFields
-        run={run}
+      <PieceFields
+        straight={straight}
+        bendEnd={bendEnd}
         span={span}
-        onRun={setRun}
+        settings={settings}
+        onStraight={setStraight}
+        onBendEnd={setBendEnd}
         onSpan={setSpan}
         dimensionValues={dimensionValues}
       />
@@ -228,7 +235,9 @@ function BarEditor({
         <button
           type="button"
           disabled={!preview}
-          onClick={() => onUpdate({ run_length_mm: runMm, span_mm: spanMm, settings })}
+          onClick={() =>
+            onUpdate({ straight_mm: straightMm, bend_end: bendEnd, span_mm: spanMm, settings })
+          }
           className="flex-1 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
         >
           更新
@@ -263,27 +272,73 @@ function DimensionChips({ values, onPick }: { values: number[]; onPick: (mm: num
   )
 }
 
-function LengthAndSpanFields({
-  run,
+const BEND_END_OPTIONS: Array<{ id: DomaBendEnd; label: string }> = [
+  { id: 'start', label: '始点' },
+  { id: 'end', label: '終点' },
+  { id: 'none', label: 'なし' },
+]
+
+function PieceFields({
+  straight,
+  bendEnd,
   span,
-  onRun,
+  settings,
+  onStraight,
+  onBendEnd,
   onSpan,
   dimensionValues,
-  runInputRef,
+  straightInputRef,
   onEnter,
 }: {
-  run: string
+  straight: string
+  bendEnd: DomaBendEnd
   span: string
-  onRun: (v: string) => void
+  settings: DomaBarSettings
+  onStraight: (v: string) => void
+  onBendEnd: (v: DomaBendEnd) => void
   onSpan: (v: string) => void
   dimensionValues: number[]
-  runInputRef?: React.Ref<HTMLInputElement>
+  straightInputRef?: React.Ref<HTMLInputElement>
   onEnter?: () => void
 }) {
+  const changeBendEnd = (next: DomaBendEnd) => {
+    // 直線部が既定値のままなら、曲げの有無に合わせて 5850 ⇔ 6000 を切り替える
+    if (parseMm(straight) === defaultDomaStraightMm(settings, bendEnd)) {
+      onStraight(String(defaultDomaStraightMm(settings, next)))
+    }
+    onBendEnd(next)
+  }
+  const presets = Array.from(
+    new Set([defaultDomaStraightMm(settings, 'start'), defaultDomaStraightMm(settings, 'none')]),
+  )
   return (
     <>
-      <NumField label="鉄筋の長さ (mm)" value={run} onChange={onRun} inputRef={runInputRef} onEnter={onEnter} />
-      <DimensionChips values={dimensionValues} onPick={(mm) => onRun(String(mm))} />
+      <div className="flex flex-col gap-0.5 text-[11px] text-muted">
+        端部曲げ（{settings.bendMm}）
+        <div className="inline-flex rounded-md border border-border bg-white p-0.5 text-xs">
+          {BEND_END_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => changeBendEnd(opt.id)}
+              aria-pressed={bendEnd === opt.id}
+              className={`flex-1 rounded px-2 py-0.5 font-medium ${
+                bendEnd === opt.id ? 'bg-slate-700 text-white' : 'text-muted hover:bg-gray-100'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <NumField
+        label="直線部の長さ (mm)"
+        value={straight}
+        onChange={onStraight}
+        inputRef={straightInputRef}
+        onEnter={onEnter}
+      />
+      <DimensionChips values={presets} onPick={(mm) => onStraight(String(mm))} />
       <NumField label="配筋する幅 (mm)" value={span} onChange={onSpan} onEnter={onEnter} />
       <DimensionChips values={dimensionValues} onPick={(mm) => onSpan(String(mm))} />
     </>
@@ -293,22 +348,21 @@ function LengthAndSpanFields({
 function PreviewLine({
   settings,
   count,
-  pieces,
+  piece,
   warnings,
 }: {
   settings: DomaBarSettings
-} & ReturnType<typeof computeDomaBar>) {
+} & ReturnType<typeof computeDomaPiece>) {
   return (
     <div className="rounded-md bg-gray-50 px-2 py-1.5 text-[11px]">
       <div className="font-semibold">
         {settings.diameter} @{settings.pitchMm} × {count}本
       </div>
-      <div className="tabular-nums">{pieces.map((p) => p.lengthMm).join(' + ') || '—'}</div>
-      {warnings.includes('LAST_PIECE_SHORTER_THAN_LAP') ? (
-        <div className="mt-0.5 text-amber-800">最後の本の直線部が重ね長さより短いです。</div>
-      ) : null}
-      {warnings.includes('SHORT_RUN_SPLIT_EVENLY') ? (
-        <div className="mt-0.5 text-amber-800">短いため 2 本に等分しています（仕様未確定）。</div>
+      <div className="tabular-nums">
+        加工長さ {piece.kind === 'BENT' ? '曲' : '直'} {piece.lengthMm}
+      </div>
+      {warnings.includes('EXCEEDS_STOCK') ? (
+        <div className="mt-0.5 text-amber-800">定尺（{settings.stockMm}）を超えています。</div>
       ) : null}
     </div>
   )
@@ -320,7 +374,10 @@ export type DomaInputModalState =
       type: 'bar'
       direction: SlabBarDirection
       line: { x1: number; y1: number; x2: number; y2: number }
-      estimateMm: number | null
+      /** 既存の本に重ねて続けて描いたときは終点側に曲げを付ける */
+      defaultBendEnd: DomaBendEnd
+      /** 同じ方向で直前に描いた本の配筋幅（続けて描くとき引き継ぐ） */
+      defaultSpanMm: number | null
     }
 
 export function DomaInputModal({
@@ -336,11 +393,18 @@ export function DomaInputModal({
   dimensionValues: number[]
   onCancel: () => void
   onConfirmDimension: (mm: number) => void
-  onConfirmBar: (runMm: number, spanMm: number) => void
+  onConfirmBar: (straightMm: number, bendEnd: DomaBendEnd, spanMm: number) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
-  const [run, setRun] = useState(state.estimateMm != null ? String(state.estimateMm) : '')
-  const [span, setSpan] = useState('')
+  const initialBendEnd: DomaBendEnd = state.type === 'bar' ? state.defaultBendEnd : 'start'
+  const [bendEnd, setBendEnd] = useState<DomaBendEnd>(initialBendEnd)
+  const [run, setRun] = useState(() => {
+    if (state.type === 'bar') return String(defaultDomaStraightMm(settings, initialBendEnd))
+    return state.estimateMm != null ? String(state.estimateMm) : ''
+  })
+  const [span, setSpan] = useState(
+    state.type === 'bar' && state.defaultSpanMm != null ? String(state.defaultSpanMm) : '',
+  )
   useEffect(() => {
     inputRef.current?.focus()
     inputRef.current?.select()
@@ -354,11 +418,13 @@ export function DomaInputModal({
       if (runMm > 0) onConfirmDimension(runMm)
       return
     }
-    if (runMm > 0 && spanMm > 0) onConfirmBar(runMm, spanMm)
+    if (runMm > 0 && spanMm > 0) onConfirmBar(runMm, bendEnd, spanMm)
   }
 
   const preview =
-    state.type === 'bar' && runMm > 0 && spanMm > 0 ? computeDomaBar(runMm, spanMm, settings) : null
+    state.type === 'bar' && runMm > 0 && spanMm > 0
+      ? computeDomaPiece(runMm, spanMm, bendEnd, settings)
+      : null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onMouseDown={onCancel}>
@@ -379,13 +445,16 @@ export function DomaInputModal({
             <NumField label="寸法 (mm)" value={run} onChange={setRun} inputRef={inputRef} onEnter={confirm} />
           ) : (
             <>
-              <LengthAndSpanFields
-                run={run}
+              <PieceFields
+                straight={run}
+                bendEnd={bendEnd}
                 span={span}
-                onRun={setRun}
+                settings={settings}
+                onStraight={setRun}
+                onBendEnd={setBendEnd}
                 onSpan={setSpan}
                 dimensionValues={dimensionValues}
-                runInputRef={inputRef}
+                straightInputRef={inputRef}
                 onEnter={confirm}
               />
               {preview ? <PreviewLine settings={settings} {...preview} /> : null}
@@ -441,7 +510,10 @@ export function DomaPanel({
   onSettingsChange: (next: DomaBarSettings) => void
   onSelect: (sel: DomaSelection) => void
   onUpdateDimension: (id: string, mm: number) => void
-  onUpdateBar: (id: string, patch: Pick<DrawingDomaBar, 'run_length_mm' | 'span_mm' | 'settings'>) => void
+  onUpdateBar: (
+    id: string,
+    patch: Pick<DrawingDomaBar, 'straight_mm' | 'bend_end' | 'span_mm' | 'settings'>,
+  ) => void
   onDeleteDimension: (id: string) => void
   onDeleteBar: (id: string) => void
 }) {
@@ -491,7 +563,9 @@ export function DomaPanel({
             <section className="border-b border-border px-4 py-3">
               <h4 className="mb-1 text-xs font-semibold">3. {dirLabel}筋</h4>
               <p className="mb-2 text-[11px] leading-snug text-muted">
-                鉄筋 1 本分を{direction === 'tate' ? '縦' : '横'}にドラッグし、長さと配筋する幅を入力します。
+                加工本 1 本ずつ{direction === 'tate' ? '縦' : '横'}にドラッグします（既定 {settings.stockMm}−
+                {settings.bendMm}＝{settings.stockMm - settings.bendMm}）。前の本の端から描き始めると重ね
+                {settings.lapMm} だけ戻した位置から続けて描けます。
               </p>
               <button
                 type="button"
@@ -507,7 +581,7 @@ export function DomaPanel({
               {directionBars.length > 0 ? (
                 <ul className="mt-2 flex flex-col gap-1">
                   {directionBars.map((b, i) => {
-                    const { count, pieces } = computeDomaBar(b.run_length_mm, b.span_mm, b.settings)
+                    const { count, piece } = computeDomaPiece(b.straight_mm, b.span_mm, b.bend_end, b.settings)
                     const active = selection?.type === 'bar' && selection.id === b.id
                     return (
                       <li key={b.id}>
@@ -522,11 +596,12 @@ export function DomaPanel({
                             {dirLabel}
                             {i + 1}
                           </span>
-                          <span className="ml-1.5 text-muted">
-                            L={b.run_length_mm} 幅={b.span_mm} → {count}本
+                          <span className="ml-1.5 tabular-nums text-muted">
+                            {piece.kind === 'BENT' ? '曲' : '直'} {piece.lengthMm} × {count}本
                           </span>
                           <span className="block tabular-nums text-muted">
-                            {pieces.map((p) => p.lengthMm).join(' + ')}
+                            直線 {b.straight_mm}
+                            {b.bend_end !== 'none' ? ` + 曲げ ${b.settings.bendMm}` : ''}／幅 {b.span_mm}
                           </span>
                         </button>
                       </li>
@@ -548,7 +623,7 @@ export function DomaPanel({
                   />
                 ) : selectedBar ? (
                   <BarEditor
-                    key={`${selectedBar.id}-${selectedBar.run_length_mm}-${selectedBar.span_mm}-${JSON.stringify(selectedBar.settings)}`}
+                    key={`${selectedBar.id}-${selectedBar.straight_mm}-${selectedBar.bend_end}-${selectedBar.span_mm}-${JSON.stringify(selectedBar.settings)}`}
                     bar={selectedBar}
                     dimensionValues={dimensionValues}
                     onUpdate={(patch) => onUpdateBar(selectedBar.id, patch)}

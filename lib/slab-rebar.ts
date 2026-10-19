@@ -310,12 +310,33 @@ export function buildRuns(
 }
 
 /** 描いた土間筋 1 本（代表線）の本数と加工本 */
-export function computeDomaBar(
-  runLengthMm: number,
+/** 加工本の端部曲げをどちら側に付けるか（描いた線の始点／終点／なし） */
+export type DomaBendEnd = 'start' | 'end' | 'none'
+
+export type DomaPieceWarning = 'EXCEEDS_STOCK'
+
+/** 端部曲げありなら 定尺−曲げ（D13: 6000−150=5850）、なしなら定尺 */
+export function defaultDomaStraightMm(settings: DomaBarSettings, bendEnd: DomaBendEnd): number {
+  return bendEnd === 'none' ? settings.stockMm : settings.stockMm - settings.bendMm
+}
+
+/**
+ * 図面に描いた土間筋 1 本 ＝ 加工本 1 本。
+ * 加工長さ = 直線部 + 端部曲げ（片側のみ）、本数 = 配筋幅 ÷ ピッチ の切り上げ。
+ */
+export function computeDomaPiece(
+  straightMm: number,
   spanMm: number,
+  bendEnd: DomaBendEnd,
   settings: DomaBarSettings
-): { count: number; pieces: FabricationPiece[]; warnings: SlabRunWarning[] } {
-  return { count: countBars(spanMm, settings.pitchMm), ...splitRun(runLengthMm, settings) }
+): { count: number; piece: FabricationPiece; warnings: DomaPieceWarning[] } {
+  const bent = bendEnd !== 'none'
+  const lengthMm = Math.round(straightMm + (bent ? settings.bendMm : 0))
+  return {
+    count: countBars(spanMm, settings.pitchMm),
+    piece: { kind: bent ? 'BENT' : 'STRAIGHT', lengthMm },
+    warnings: lengthMm > settings.stockMm ? ['EXCEEDS_STOCK'] : [],
+  }
 }
 
 export function aggregateSchedule(
