@@ -26,9 +26,10 @@ function frame(line: DomaLine) {
     x: line.x1 + u.x * t + n.x * off,
     y: line.y1 + u.y * t + n.y * off,
   })
+  // 文字は [-90°, 90°) に収める。縦線は線を引いた向きに関係なく下から上へ読む向き（-90°）
   let angle = Math.atan2(u.y, u.x)
-  if (angle > Math.PI / 2) angle -= Math.PI
-  if (angle < -Math.PI / 2) angle += Math.PI
+  if (angle >= Math.PI / 2 - 1e-9) angle -= Math.PI
+  if (angle < -Math.PI / 2 - 1e-9) angle += Math.PI
   return { len, u, n, at, angle }
 }
 
