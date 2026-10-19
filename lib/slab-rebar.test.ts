@@ -1,6 +1,8 @@
 import assert from 'node:assert'
 import {
   DEFAULT_DOMA_BAR_SETTINGS,
+  domaDiameterOptionLabel,
+  domaSettingsWithDiameter,
   DEFAULT_SLAB_REBAR_SETTINGS,
   aggregateSchedule,
   computeDomaBar,
@@ -92,6 +94,12 @@ test('buildSchedule: 資料A の集計を再現', () => {
     ['BENT', 1270, 14],
     ['BENT', 360, 32],
   ])
+})
+
+test('domaDiameterOptionLabel: 径ごとの標準重ね', () => {
+  assert.strictEqual(domaDiameterOptionLabel('D13'), 'D13(600)')
+  assert.strictEqual(domaDiameterOptionLabel('D10'), 'D10(450)')
+  assert.strictEqual(domaSettingsWithDiameter('D16').lapMm, 750)
 })
 
 test('computeDomaBar: 資料A を代表線 4 本で描いた場合も同じ集計', () => {

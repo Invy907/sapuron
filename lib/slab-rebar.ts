@@ -36,13 +36,36 @@ export type DomaBarSettings = {
   lapMm: number
 }
 
-export const DEFAULT_DOMA_BAR_SETTINGS: DomaBarSettings = {
-  diameter: 'D13',
-  pitchMm: 200,
-  bendMm: 150,
-  stockMm: 6000,
-  lapMm: 600,
+/** 土間筋の径選択肢（付加筋と同じ） */
+export const DOMA_BAR_DIAMETERS = ['D10', 'D13', 'D16', 'D19', 'D22', 'D25'] as const
+
+/**
+ * 径ごとの標準「重ね」長さ(mm)。コーナー筋 L の片辺寸法と同じ比準（D13=600）。
+ * ドロップダウンは D13(600) のように表示し、径変更時に重ねへ反映する。
+ */
+export const DOMA_STANDARD_LAP_MM: Record<string, number> = {
+  D10: 450,
+  D13: 600,
+  D16: 750,
+  D19: 900,
+  D22: 1000,
+  D25: 1150,
 }
+
+export function domaDiameterOptionLabel(diameter: string, lapMm?: number): string {
+  const lap = lapMm ?? DOMA_STANDARD_LAP_MM[diameter]
+  return lap != null ? `${diameter}(${lap})` : diameter
+}
+
+export function domaSettingsWithDiameter(
+  diameter: string,
+  prev: DomaBarSettings = DEFAULT_DOMA_BAR_SETTINGS,
+): DomaBarSettings {
+  const lapMm = DOMA_STANDARD_LAP_MM[diameter] ?? prev.lapMm
+  return { ...prev, diameter, lapMm }
+}
+
+export const DEFAULT_DOMA_BAR_SETTINGS: DomaBarSettings = domaSettingsWithDiameter('D13')
 
 export const DEFAULT_SLAB_REBAR_SETTINGS: SlabRebarSettings = {
   diameter: 'D13',

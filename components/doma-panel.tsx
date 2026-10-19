@@ -5,6 +5,9 @@ import type { DrawingDomaBar, DrawingDomaDimension } from '@/lib/types/database'
 import {
   aggregateSchedule,
   computeDomaBar,
+  DOMA_BAR_DIAMETERS,
+  domaDiameterOptionLabel,
+  domaSettingsWithDiameter,
   type DomaBarSettings,
   type SlabBarDirection,
 } from '@/lib/slab-rebar'
@@ -12,8 +15,6 @@ import {
 export type DomaTool = 'select' | 'dimension' | 'bar'
 
 export type DomaSelection = { type: 'dimension' | 'bar'; id: string } | null
-
-const DIAMETERS = ['D10', 'D13', 'D16', 'D19', 'D22']
 
 const DIRECTION_LABEL: Record<SlabBarDirection, string> = { tate: 'タテ', yoko: 'ヨコ' }
 
@@ -83,12 +84,12 @@ function SettingsFields({
         径
         <select
           value={settings.diameter}
-          onChange={(e) => onChange({ ...settings, diameter: e.target.value })}
+          onChange={(e) => onChange(domaSettingsWithDiameter(e.target.value, settings))}
           className="rounded border border-border px-2 py-1 text-xs text-foreground"
         >
-          {DIAMETERS.map((d) => (
+          {DOMA_BAR_DIAMETERS.map((d) => (
             <option key={d} value={d}>
-              {d}
+              {domaDiameterOptionLabel(d)}
             </option>
           ))}
         </select>
