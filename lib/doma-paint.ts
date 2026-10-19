@@ -255,6 +255,27 @@ export function distanceToDomaLine(pt: Pt, line: DomaLine): number {
  * 寸法線から図面の縮尺（px/mm）を推定し、描いた長さを mm に換算する。
  * 既存の寸法値に 3% 以内で近ければその値に合わせる。寸法線がなければ null。
  */
+/**
+ * 土間筋と直交する寸法線のうち、その本の位置を範囲に含むものの寸法を配筋範囲とみなす。
+ * 全体寸法と区画寸法が重なるときは短い方（区画）を採る。
+ */
+export function findDomaSpanMm(
+  bar: DomaLine,
+  dims: Array<DomaLine & { length_mm: number }>,
+  tol: number,
+): number | null {
+  const barVertical = Math.abs(bar.y2 - bar.y1) >= Math.abs(bar.x2 - bar.x1)
+  const pos = barVertical ? (bar.x1 + bar.x2) / 2 : (bar.y1 + bar.y2) / 2
+  const candidates = dims.filter((d) => {
+    const dimVertical = Math.abs(d.y2 - d.y1) >= Math.abs(d.x2 - d.x1)
+    if (dimVertical === barVertical) return false
+    const [a, b] = barVertical ? [d.x1, d.x2] : [d.y1, d.y2]
+    return pos >= Math.min(a, b) - tol && pos <= Math.max(a, b) + tol
+  })
+  if (candidates.length === 0) return null
+  return Math.min(...candidates.map((d) => d.length_mm))
+}
+
 export function estimateLengthMm(pxLength: number, dims: Array<DomaLine & { length_mm: number }>): number | null {
   const ratios = dims
     .map((d) => Math.hypot(d.x2 - d.x1, d.y2 - d.y1) / d.length_mm)

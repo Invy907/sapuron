@@ -339,7 +339,7 @@ function PieceFields({
         onEnter={onEnter}
       />
       <DimensionChips values={presets} onPick={(mm) => onStraight(String(mm))} />
-      <NumField label="配筋する幅 (mm)" value={span} onChange={onSpan} onEnter={onEnter} />
+      <NumField label="配筋範囲 (mm)" value={span} onChange={onSpan} onEnter={onEnter} />
       <DimensionChips values={dimensionValues} onPick={(mm) => onSpan(String(mm))} />
     </>
   )
@@ -601,7 +601,7 @@ export function DomaPanel({
                           </span>
                           <span className="block tabular-nums text-muted">
                             直線 {b.straight_mm}
-                            {b.bend_end !== 'none' ? ` + 曲げ ${b.settings.bendMm}` : ''}／幅 {b.span_mm}
+                            {b.bend_end !== 'none' ? ` + 曲げ ${b.settings.bendMm}` : ''}／範囲 {b.span_mm}
                           </span>
                         </button>
                       </li>

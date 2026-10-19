@@ -32,6 +32,7 @@ import {
   paintDomaBar,
   paintDomaDimension,
   paintDomaLaps,
+  findDomaSpanMm,
   paintDomaDraftLine,
   type DomaLine,
 } from '@/lib/doma-paint'
@@ -1564,7 +1565,9 @@ export function DrawingViewer({
       direction: domaBarDirection,
       line,
       defaultBendEnd: domaContinuationRef.current ? 'end' : 'start',
-      defaultSpanMm: domaContinuationRef.current ? (lastSameDirection?.span_mm ?? null) : null,
+      defaultSpanMm:
+        findDomaSpanMm(line, domaDimensions, 4 / scale) ??
+        (domaContinuationRef.current ? (lastSameDirection?.span_mm ?? null) : null),
     })
   }
 
