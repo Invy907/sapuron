@@ -392,7 +392,6 @@ export function DrawingViewer({
     }
   }
   const [newSegmentDraft, setNewSegmentDraft] = useState<{
-    kind: 'rebar' | 'spacing'
     p1: Point
     p2: Point
     lengthMm: string
@@ -485,7 +484,7 @@ export function DrawingViewer({
       // ignore
     }
   }
-  const [tool, setTool] = useState<'select' | 'draw' | 'spacing'>('select')
+  const [tool, setTool] = useState<'select' | 'draw'>('select')
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1329,7 +1328,7 @@ export function DrawingViewer({
           setCurrentPoint(null)
           return
         }
-        if (tool === 'draw' || tool === 'spacing') {
+        if (tool === 'draw') {
           setTool('select')
           return
         }
@@ -1465,11 +1464,6 @@ export function DrawingViewer({
       if (isKey('d')) {
         e.preventDefault()
         setTool('draw')
-        return
-      }
-      if (isKey('g')) {
-        e.preventDefault()
-        setTool('spacing')
         return
       }
       if (isKey('s')) {
@@ -1706,7 +1700,7 @@ export function DrawingViewer({
       return
     }
 
-    if ((tool === 'draw' || tool === 'spacing') && e.button === 0) {
+    if (tool === 'draw' && e.button === 0) {
       const pt = screenToCanvas(e)
       setDrawing(true)
       setStartPoint(pt)
@@ -1891,10 +1885,9 @@ export function DrawingViewer({
           .map((u) => u.length_mm)
           .filter((x): x is number => typeof x === 'number' && Number.isFinite(x) && x > 0)
         const snappedLen = snapLengthMm(geomLen, drawSnapCandidates)
-        const kind = tool === 'spacing' ? 'spacing' : 'rebar'
         const useModal = e.altKey
 
-        if (kind === 'rebar' && snappedLen < MIN_REBAR_LENGTH_MM) {
+        if (snappedLen < MIN_REBAR_LENGTH_MM) {
           alert(`${MIN_REBAR_LENGTH_MM}mm未満の鉄筋線分は作成できません。`)
           setDrawing(false)
           setStartPoint(null)
@@ -1903,9 +1896,7 @@ export function DrawingViewer({
         }
 
         if (useModal) {
-          openNewSegmentForm(kind, p1, p2, { precomputedLengthMm: snappedLen })
-        } else if (kind === 'spacing') {
-          await quickInsertSpacing(p1, p2, snappedLen)
+          openNewSegmentForm(p1, p2, { precomputedLengthMm: snappedLen })
         } else {
           await quickInsertRebar(p1, p2, snappedLen)
         }
@@ -1962,17 +1953,16 @@ export function DrawingViewer({
   }, [handleWheelNative])
 
   function openNewSegmentForm(
-    kind: 'rebar' | 'spacing',
     p1: Point,
     p2: Point,
     opts?: { precomputedLengthMm?: number },
   ) {
     const last = segmentsSortedForLabels[segmentsSortedForLabels.length - 1]
     const nextLabel = computeNextSegmentLabel()
-    const unitDefaults = kind === 'rebar' ? activeUnit : null
+    const unitDefaults = activeUnit
 
     // モーダルは例外入力。ただしアクティブユニットがあれば色・鉄筋・ラベルはそこを最優先。
-    const stored = kind === 'rebar' ? readLastUsedRebarDraft() : null
+    const stored = readLastUsedRebarDraft()
 
     const lastBars = last ? getSegmentBars(last, effectiveUnits) : []
     const barsFromUnit =
@@ -1995,15 +1985,12 @@ export function DrawingViewer({
     const supportedBars = defaultBars.filter((b) => BAR_TYPES.includes(b.barType as (typeof BAR_TYPES)[number]))
     const finalBars = supportedBars.length ? supportedBars : [{ barType: 'D10', quantity: 1 }]
 
-    const defaultColor: SegmentColor =
-      kind === 'rebar'
-        ? normalizeSegmentColor(
-            activeTemplateColor ??
-              unitDefaults?.color ??
-              stored?.color ??
-              (last ? getSegmentColor(last, effectiveUnits) : 'red'),
-          )
-        : 'red'
+    const defaultColor: SegmentColor = normalizeSegmentColor(
+      activeTemplateColor ??
+        unitDefaults?.color ??
+        stored?.color ??
+        (last ? getSegmentColor(last, effectiveUnits) : 'red'),
+    )
 
     const lengthMmInit =
       opts?.precomputedLengthMm != null ? String(opts.precomputedLengthMm) : ''
@@ -2014,19 +2001,15 @@ export function DrawingViewer({
         : nextLabel
 
     setNewSegmentDraft({
-      kind,
       p1,
       p2,
       lengthMm: lengthMmInit,
       color: defaultColor,
-      bars:
-        kind === 'spacing'
-          ? []
-          : finalBars.map((b) => ({
-              barType: b.barType,
-              quantity: String(b.quantity),
-            })),
-      label: kind === 'spacing' ? '間隔' : labelForRebar,
+      bars: finalBars.map((b) => ({
+        barType: b.barType,
+        quantity: String(b.quantity),
+      })),
+      label: labelForRebar,
     })
   }
 
@@ -2714,77 +2697,37 @@ export function DrawingViewer({
     await submitQuickMarkPickUnit(data, ctx)
   }
 
-  async function quickInsertSpacing(p1: Point, p2: Point, lengthMm: number) {
-    const { data, error } = await supabase
-      .from('drawing_segments')
-      .insert({
-        drawing_id: drawingId,
-        x1: p1.x,
-        y1: p1.y,
-        x2: p2.x,
-        y2: p2.y,
-        length_mm: lengthMm,
-        quantity: 0,
-        bar_type: 'SPACING',
-        label: '間隔',
-        memo: null,
-        unit_id: null,
-        unit_code: null,
-        unit_name: null,
-        mark_number: null,
-      })
-      .select()
-      .single<DrawingSegment>()
-
-    if (error) {
-      alert('保存に失敗しました: ' + error.message)
-      return
-    }
-    if (data) {
-      setSegments((prev) => [...prev, data])
-      setSelectedSegmentIds([data.id])
-      setLastAction({ type: 'create', segment: data })
-    }
-  }
-
   async function confirmNewSegment() {
     if (!newSegmentDraft) return
     const { p1, p2 } = newSegmentDraft
     const lengthMm = parseInt(newSegmentDraft.lengthMm, 10)
-    const isSpacing = newSegmentDraft.kind === 'spacing'
-    const bars: SegmentBarItem[] = isSpacing
-      ? []
-      : newSegmentDraft.bars
-          .map((b) => ({
-            barType: b.barType,
-            quantity: Math.max(0, parseInt(b.quantity, 10) || 0),
-          }))
-          .filter((b) => b.barType && b.quantity > 0)
+    const bars: SegmentBarItem[] = newSegmentDraft.bars
+      .map((b) => ({
+        barType: b.barType,
+        quantity: Math.max(0, parseInt(b.quantity, 10) || 0),
+      }))
+      .filter((b) => b.barType && b.quantity > 0)
     if (isNaN(lengthMm) || lengthMm <= 0) {
       alert('有効な長さ (mm) を入力してください。')
       return
     }
-    if (!isSpacing && lengthMm < MIN_REBAR_LENGTH_MM) {
+    if (lengthMm < MIN_REBAR_LENGTH_MM) {
       alert(`${MIN_REBAR_LENGTH_MM}mm未満の鉄筋線分は作成できません。`)
       return
     }
-    if (!isSpacing && bars.length === 0) {
+    if (bars.length === 0) {
       alert('鉄筋種別と数量を入力してください。')
       return
     }
-    const legacy = isSpacing
-      ? { bar_type: 'SPACING', quantity: 0 }
-      : legacyFieldsFromBars(bars)
-    const memo = isSpacing
-      ? null
-      : encodeSegmentMeta({
-          v: 1,
-          color: normalizeSegmentColor(newSegmentDraft.color),
-          bars,
-          note: null,
-        })
+    const legacy = legacyFieldsFromBars(bars)
+    const memo = encodeSegmentMeta({
+      v: 1,
+      color: normalizeSegmentColor(newSegmentDraft.color),
+      bars,
+      note: null,
+    })
 
-    const unitRow = !isSpacing && activeUnit ? activeUnit : null
+    const unitRow = activeUnit ? activeUnit : null
 
     const { data, error } = await supabase
       .from('drawing_segments')
@@ -2811,15 +2754,13 @@ export function DrawingViewer({
       setSegments((prev) => [...prev, data])
       setSelectedSegmentIds([data.id])
       setLastAction({ type: 'create', segment: data })
-      if (!isSpacing) {
-        writeLastUsedRebarDraft({
-          color: normalizeSegmentColor(newSegmentDraft.color),
-          bars,
-        })
-        if (unitRow?.id) {
-          pushRecentUnitId(projectId, unitRow.id)
-          setUnitPrefsTick((x) => x + 1)
-        }
+      writeLastUsedRebarDraft({
+        color: normalizeSegmentColor(newSegmentDraft.color),
+        bars,
+      })
+      if (unitRow?.id) {
+        pushRecentUnitId(projectId, unitRow.id)
+        setUnitPrefsTick((x) => x + 1)
       }
       setNewSegmentDraft(null)
     }
@@ -3101,7 +3042,7 @@ export function DrawingViewer({
   async function splitSegmentAtPoint(segment: DrawingSegment, clickPoint: Point) {
     const a = { x: segment.x1, y: segment.y1 }
     const b = { x: segment.x2, y: segment.y2 }
-    const { t, projectedPoint } = projectPointToSegment(clickPoint, a, b)
+    const { projectedPoint } = projectPointToSegment(clickPoint, a, b)
 
     const minDistanceFromEndpoint = 10 / scale
     const distanceToA = Math.hypot(projectedPoint.x - a.x, projectedPoint.y - a.y)
@@ -3115,16 +3056,11 @@ export function DrawingViewer({
     const labelA = trimmedLabel ? `${trimmedLabel}-1` : null
     const labelB = trimmedLabel ? `${trimmedLabel}-2` : null
 
-    const isSpacingSegment = segment.bar_type === 'SPACING' && segment.quantity === 0
-
     // 鉄筋線分の length_mm はプリセット/入力で選んだ呼称。比例配分すると
     // 3,800 を 2 本に分けたつもりが 1,900 + 1,900 になるため、分割後も同じ呼称を保つ。
-    let lengthA = segment.length_mm
-    let lengthB = segment.length_mm
-    if (isSpacingSegment) {
-      lengthA = Math.max(1, Math.round(segment.length_mm * t))
-      lengthB = Math.max(1, segment.length_mm - lengthA)
-    } else if (segment.length_mm < MIN_REBAR_LENGTH_MM) {
+    const lengthA = segment.length_mm
+    const lengthB = segment.length_mm
+    if (segment.length_mm < MIN_REBAR_LENGTH_MM) {
       alert(`${MIN_REBAR_LENGTH_MM}mm未満の鉄筋線分は分割できません。`)
       return
     }
@@ -3741,12 +3677,6 @@ export function DrawingViewer({
           >
             線を描く
           </button>
-          <button
-            onClick={() => setTool('spacing')}
-            className={toolButtonClass(tool === 'spacing', 'bg-emerald-600')}
-          >
-            間隔線
-          </button>
           {!isFullscreen ? activeUnitBar : null}
           {isFullscreen ? <div className="my-0.5 border-t border-border" /> : null}
           <button
@@ -3833,7 +3763,7 @@ export function DrawingViewer({
           >
             {splitArmedSegmentId
               ? '分割: 図面上の線をクリックして分割点を選択（Escでキャンセル）'
-              : 'Escキー: 描画中の線を取り消します。もう一度押すと選択モードに戻ります。／Dキー: 描画／Gキー: 間隔線／Sキー: 選択／Fキー: 全画面／Zキー: 選択した線を削除します。／Shiftキーを押しながら描画: 線を水平または垂直にまっすぐ描けます。'}
+              : 'Escキー: 描画中の線を取り消します。もう一度押すと選択モードに戻ります。／Dキー: 描画／Sキー: 選択／Fキー: 全画面／Zキー: 選択した線を削除します。／Shiftキーを押しながら描画: 線を水平または垂直にまっすぐ描けます。'}
           </span>
           </div>
           {persistedActiveUnits.length === 0 ? (
@@ -3860,7 +3790,7 @@ export function DrawingViewer({
             width: a3BoxSize ? `${a3BoxSize.w}px` : '100%',
             height: a3BoxSize ? `${a3BoxSize.h}px` : '100%',
             cursor:
-              tool === 'draw' || tool === 'spacing'
+              tool === 'draw'
                 ? 'crosshair'
                 : panning
                   ? 'grabbing'
@@ -4425,8 +4355,7 @@ export function DrawingViewer({
           <div className="w-full max-w-md rounded-xl bg-white shadow-lg flex flex-col max-h-[90vh]">
             <div className="px-6 pt-6 pb-4 border-b border-border">
               <h2 className="text-base font-semibold">新しい線分の入力</h2>
-              {newSegmentDraft.kind === 'rebar' && (
-                <div className="mt-3">
+              <div className="mt-3">
                   <div className="text-xs font-medium text-muted mb-2">
                     登録ユニットから反映（任意）
                   </div>
@@ -4476,7 +4405,6 @@ export function DrawingViewer({
                     </p>
                   )}
                 </div>
-              )}
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
             <div className="grid grid-cols-2 gap-3">
@@ -4494,7 +4422,6 @@ export function DrawingViewer({
                   autoFocus
                 />
               </div>
-              {newSegmentDraft.kind === 'rebar' && (
                 <div>
                   <label className="block text-xs text-muted mb-1">線の色</label>
                   <select
@@ -4518,7 +4445,6 @@ export function DrawingViewer({
                     ))}
                   </select>
                 </div>
-              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -4535,7 +4461,6 @@ export function DrawingViewer({
                 />
               </div>
             </div>
-            {newSegmentDraft.kind === 'rebar' && (
               <div className="space-y-2">
                 <div className="text-xs font-medium text-muted">鉄筋（種類と本数）</div>
                 <div className="space-y-2">
@@ -4616,7 +4541,6 @@ export function DrawingViewer({
                   + 追加
                 </button>
               </div>
-            )}
             </div>{/* end overflow scroll area */}
             <div className="flex justify-end gap-2 border-t border-border px-6 pb-6 pt-4">
               <button
