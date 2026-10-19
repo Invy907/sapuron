@@ -336,7 +336,11 @@ type LastAction =
   | null
 
 /** コーナー筋レイヤーの表示・編集対象 */
-type DrawingLayer = 'unit' | 'corner'
+type DrawingLayer = 'unit' | 'corner' | 'doma'
+
+/** 土間筋の種類。タテ／ヨコは標準のときだけ選ぶ */
+type DomaBarKind = 'standard' | 'special'
+type DomaBarDirection = 'tate' | 'yoko'
 
 /** 画面・印刷キャプチャ共通の描画オプション */
 type DrawingPaintOptions = {
@@ -610,6 +614,8 @@ export function DrawingViewer({
   const [cornerTool, setCornerTool] = useState<'select' | 'place'>('select')
   /** 付加筋タブでユニット線分を隠し、付加筋だけを表示する */
   const [cornerBarsOnlyView, setCornerBarsOnlyView] = useState(false)
+  const [domaBarKind, setDomaBarKind] = useState<DomaBarKind>('standard')
+  const [domaBarDirection, setDomaBarDirection] = useState<DomaBarDirection>('tate')
   /** これから配置する付加筋の色（配置設定で選ぶ） */
   const [cornerPlacementColor, setCornerPlacementColor] = useState<SegmentColor>('red')
   /** 選択モードで空白をドラッグしたときのトースト */
@@ -1370,7 +1376,7 @@ export function DrawingViewer({
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(layerStorageKey)
-      if (raw === 'corner' || raw === 'unit') setLayer(raw)
+      if (raw === 'corner' || raw === 'unit' || raw === 'doma') setLayer(raw)
     } catch {
       // ignore
     }
@@ -1399,9 +1405,11 @@ export function DrawingViewer({
     setCornerBarEdgeDrag(null)
     setCornerBarHovering(false)
     setCornerBarEndHoverCursor(null)
-    if (next === 'corner') {
+    if (next !== 'unit') {
       setSelectedSegmentIds([])
       setTool('select')
+    }
+    if (next === 'corner') {
       setCornerTool('select')
     } else {
       setSelectedCornerBarId(null)
@@ -2105,6 +2113,15 @@ export function DrawingViewer({
             interactiveHighlight: true,
             showUnitInteractionOverlay: true,
           }
+        : layer === 'doma'
+        ? {
+            showSegments: false,
+            showCornerBars: false,
+            segmentEmphasis: 'hidden',
+            cornerEmphasis: 'hidden',
+            interactiveHighlight: false,
+            showUnitInteractionOverlay: false,
+          }
         : {
             showSegments: !cornerBarsOnlyView,
             showCornerBars: true,
@@ -2252,6 +2269,7 @@ export function DrawingViewer({
           }
           return
         }
+        if (layer === 'doma') return
         setSplitArmedSegmentId(null)
         setSplitHoverPoint(null)
         if (drawing) {
@@ -2663,6 +2681,8 @@ export function DrawingViewer({
       return
     }
 
+    if (layer === 'doma') return
+
     if (layer === 'corner') {
       if (e.button !== 0) return
       const pt = screenToCanvas(e)
@@ -2877,7 +2897,7 @@ export function DrawingViewer({
     if (segmentDrag || segmentLabelDrag || cornerBarDrag) {
       return
     }
-    if (layer === 'corner') return
+    if (layer !== 'unit') return
 
     if (drawing && startPoint && currentPoint && !newSegmentDraft) {
       const p1 = startPoint
@@ -4815,6 +4835,7 @@ export function DrawingViewer({
               [
                 { id: 'unit' as DrawingLayer, label: 'ユニット' },
                 { id: 'corner' as DrawingLayer, label: '付加筋' },
+                { id: 'doma' as DrawingLayer, label: '土間筋' },
               ]
             ).map((t) => (
               <button
@@ -4856,6 +4877,59 @@ export function DrawingViewer({
               >
                 線を描く
               </button>
+            </>
+          ) : layer === 'doma' ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setDomaBarKind('standard')}
+                className={toolButtonClass(domaBarKind === 'standard')}
+                aria-pressed={domaBarKind === 'standard'}
+              >
+                標準
+              </button>
+              <button
+                type="button"
+                onClick={() => setDomaBarKind('special')}
+                className={toolButtonClass(domaBarKind === 'special')}
+                aria-pressed={domaBarKind === 'special'}
+              >
+                特殊
+              </button>
+              {domaBarKind === 'standard' ? (
+                <div
+                  className={
+                    isFullscreen
+                      ? 'flex flex-col items-stretch gap-0.5 rounded-md border border-border bg-white px-1 py-1'
+                      : 'inline-flex items-center gap-1 rounded-md border border-border bg-white px-1 py-0.5'
+                  }
+                  role="group"
+                  aria-label="土間筋の方向"
+                >
+                  {(
+                    [
+                      { id: 'tate' as DomaBarDirection, label: 'タテ' },
+                      { id: 'yoko' as DomaBarDirection, label: 'ヨコ' },
+                    ]
+                  ).map((d) => (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => setDomaBarDirection(d.id)}
+                      aria-pressed={domaBarDirection === d.id}
+                      className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
+                        isFullscreen ? 'w-full text-[11px]' : 'text-xs'
+                      } ${
+                        domaBarDirection === d.id
+                          ? 'bg-slate-700 text-white'
+                          : 'text-muted hover:bg-gray-100 hover:text-foreground'
+                      }`}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </>
           ) : (
             <>
@@ -4945,7 +5019,7 @@ export function DrawingViewer({
           <button
             type="button"
             onClick={openPrintPreview}
-            disabled={!imgLoaded}
+            disabled={!imgLoaded || layer === 'doma'}
             className={`rounded-md bg-gray-100 text-foreground transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 ${
               isFullscreen ? 'w-full px-1 py-1.5 text-[11px]' : 'px-2 py-1.5 text-sm'
             }`}
@@ -4972,6 +5046,8 @@ export function DrawingViewer({
           >
             {layer === 'corner'
               ? 'Sキー: 修正／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
+              : layer === 'doma'
+              ? 'Fキー: 全画面'
               : splitArmedSegmentId
                 ? 'Escキー: 分割をキャンセル'
                 : 'Escキー: 描画取消／Dキー: 描画／Sキー: 選択／Fキー: 全画面／Zキー: 削除／Shift+描画: 水平・垂直'}
@@ -5012,6 +5088,8 @@ export function DrawingViewer({
                       : cornerBarHovering
                         ? 'pointer'
                         : 'default'
+                : layer === 'doma'
+                ? 'default'
                 : tool === 'draw'
                   ? 'crosshair'
                   : segmentLabelDrag
@@ -5075,6 +5153,20 @@ export function DrawingViewer({
         canUndo={!!lastAction}
         onUndo={handleUndo}
       />
+      ) : layer === 'doma' ? (
+      <div className="w-72 shrink-0 flex flex-col rounded-lg border border-border bg-white overflow-hidden">
+        <div className="border-b border-border px-4 py-3">
+          <h3 className="text-sm font-semibold">土間筋</h3>
+          <p className="mt-0.5 text-xs text-muted">
+            {domaBarKind === 'standard'
+              ? `標準・${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}`
+              : '特殊'}
+          </p>
+        </div>
+        <p className="px-4 py-6 text-center text-xs text-muted">
+          土間筋はまだありません。
+        </p>
+      </div>
       ) : (
       <SegmentPanel
         segments={segments}
