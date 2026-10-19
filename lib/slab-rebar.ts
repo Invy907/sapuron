@@ -65,7 +65,13 @@ export function domaSettingsWithDiameter(
   return { ...prev, diameter, lapMm }
 }
 
-export const DEFAULT_DOMA_BAR_SETTINGS: DomaBarSettings = domaSettingsWithDiameter('D13')
+export const DEFAULT_DOMA_BAR_SETTINGS: DomaBarSettings = {
+  diameter: 'D13',
+  pitchMm: 200,
+  bendMm: 150,
+  stockMm: 6000,
+  lapMm: DOMA_STANDARD_LAP_MM.D13,
+}
 
 export const DEFAULT_SLAB_REBAR_SETTINGS: SlabRebarSettings = {
   diameter: 'D13',
