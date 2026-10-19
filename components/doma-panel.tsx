@@ -464,7 +464,7 @@ export function DomaPanel({
         ) : (
           <>
             <section className="border-b border-border px-4 py-3">
-              <h4 className="mb-1 text-xs font-semibold">1. 各辺の寸法を描く</h4>
+              <h4 className="mb-1 text-xs font-semibold">1. 各辺の寸法</h4>
               <p className="mb-2 text-[11px] leading-snug text-muted">
                 図面上でドラッグして寸法線を引き、寸法(mm)を入力します。
               </p>
@@ -477,7 +477,7 @@ export function DomaPanel({
                     : 'border border-border hover:bg-gray-50'
                 }`}
               >
-                {tool === 'dimension' ? '寸法線を描画中（クリックで終了）' : '寸法線を描く (M)'}
+                {tool === 'dimension' ? '寸法線（描画中）' : '寸法線 (M)'}
               </button>
               <p className="mt-1.5 text-[11px] text-muted">寸法線 {dimensions.length} 本</p>
             </section>
@@ -488,7 +488,7 @@ export function DomaPanel({
             </section>
 
             <section className="border-b border-border px-4 py-3">
-              <h4 className="mb-1 text-xs font-semibold">3. {dirLabel}筋を描く</h4>
+              <h4 className="mb-1 text-xs font-semibold">3. {dirLabel}筋</h4>
               <p className="mb-2 text-[11px] leading-snug text-muted">
                 鉄筋 1 本分を{direction === 'tate' ? '縦' : '横'}にドラッグし、長さと配筋する幅を入力します。
               </p>
@@ -501,7 +501,7 @@ export function DomaPanel({
                     : 'border border-border hover:bg-gray-50'
                 }`}
               >
-                {tool === 'bar' ? `${dirLabel}筋を描画中（クリックで終了）` : `${dirLabel}筋を描く (D)`}
+                {tool === 'bar' ? `${dirLabel}筋（描画中）` : `${dirLabel}筋 (D)`}
               </button>
               {directionBars.length > 0 ? (
                 <ul className="mt-2 flex flex-col gap-1">

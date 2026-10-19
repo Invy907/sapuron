@@ -5358,7 +5358,7 @@ export function DrawingViewer({
                     className={toolButtonClass(domaTool === 'bar')}
                     title={`${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}筋を描く (D)`}
                   >
-                    {domaBarDirection === 'tate' ? 'タテ筋を描く' : 'ヨコ筋を描く'}
+                    {domaBarDirection === 'tate' ? 'タテ筋' : 'ヨコ筋'}
                   </button>
                 </>
               ) : null}
