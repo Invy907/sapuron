@@ -165,15 +165,11 @@ export function SegmentPanel({
   const rebarSegments = segments.filter(
     (s) => !(s.bar_type === 'SPACING' && s.quantity === 0),
   )
-  const spacingSegments = segments.filter(
-    (s) => s.bar_type === 'SPACING' && s.quantity === 0,
-  )
   const singleSelectedId =
     selectedSegmentIds.length === 1 ? selectedSegmentIds[0]! : null
   const selected = singleSelectedId
     ? segments.find((s) => s.id === singleSelectedId) ?? null
     : null
-  const selectedIsSpacing = selected?.bar_type === 'SPACING'
   const selectedColor: SegmentColor = selected
     ? getSegmentColor(selected, units)
     : 'red'
@@ -376,7 +372,7 @@ export function SegmentPanel({
         <div className="border-b border-border p-4 space-y-3 bg-blue-50/50">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-primary">
-              {selectedIsSpacing ? '間隔線の編集' : '線分の編集'}
+              線分の編集
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -393,36 +389,6 @@ export function SegmentPanel({
                   className="text-xs text-primary hover:underline"
                 >
                   分割
-                </button>
-              )}
-              {selectedIsSpacing && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    (() => {
-                      const bars: SegmentBarItem[] = [
-                        { barType: barTypes[0] ?? 'D10', quantity: 1 },
-                      ]
-                      const legacy = legacyFieldsFromBars(bars)
-                      const { meta, legacyNote } = decodeSegmentMeta(selected.memo)
-                      const memo = encodeSegmentMeta({
-                        v: 1,
-                        color: 'red',
-                        bars,
-                        note: meta?.note ?? legacyNote ?? null,
-                        labelPlacement: meta?.labelPlacement ?? null,
-                      })
-                      onUpdate(selected.id, {
-                        memo,
-                        bar_type: legacy.bar_type,
-                        quantity: legacy.quantity,
-                        ...CLEAR_UNIT_LINK,
-                      })
-                    })()
-                  }
-                  className="text-[11px] text-emerald-700 hover:underline"
-                >
-                  鉄筋線に変換
                 </button>
               )}
               <button
@@ -467,7 +433,7 @@ export function SegmentPanel({
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-xs text-muted mb-0.5">長さ (mm)</label>
-              {onPickLength && !selectedIsSpacing ? (
+              {onPickLength ? (
                 <button
                   type="button"
                   onClick={() => onPickLength(selected.id)}
@@ -489,8 +455,7 @@ export function SegmentPanel({
                 />
               )}
             </div>
-            {!selectedIsSpacing && (
-              <div>
+            <div>
                 <label className="block text-xs text-muted mb-0.5">線の色</label>
                 <select
                   value={normalizeSegmentColor(selectedColor)}
@@ -517,9 +482,7 @@ export function SegmentPanel({
                   ))}
                 </select>
               </div>
-            )}
           </div>
-          {!selectedIsSpacing && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="block text-xs text-muted">鉄筋（種類と本数）</label>
@@ -652,7 +615,6 @@ export function SegmentPanel({
                 )}
               </div>
             </div>
-          )}
         </div>
       )}
 
@@ -700,47 +662,6 @@ export function SegmentPanel({
           )}
         </div>
       )}
-
-      {/* Spacing marks list */}
-      {spacingSegments.length > 0 && (
-        <div className="border-t border-border px-4 py-3 text-xs">
-          <div className="mb-2 font-semibold text-muted">間隔線</div>
-          <ul className="space-y-1 max-h-32 overflow-y-auto">
-            {spacingSegments.map((seg) => (
-              <li
-                key={seg.id}
-                className={`flex items-center justify-between text-[11px] cursor-pointer ${
-                  selectedSegmentIds.includes(seg.id)
-                    ? 'text-emerald-700 bg-emerald-50 rounded px-2 py-1'
-                    : 'text-muted'
-                }`}
-                onClick={(e) => {
-                  if (e.ctrlKey || e.metaKey) {
-                    onToggleSegmentSelection(seg.id)
-                  } else {
-                    onReplaceSelection([seg.id])
-                  }
-                }}
-              >
-                <span className="truncate">
-                  {seg.label ?? '間隔'} {seg.length_mm}mm
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onDelete(seg.id)
-                  }}
-                  className="ml-2 text-[11px] text-danger hover:underline"
-                >
-                  削除
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )
-      }
 
       {/* Summary + calculation */}
       {rebarSegments.length > 0 && (
