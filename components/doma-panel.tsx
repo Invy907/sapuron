@@ -95,7 +95,7 @@ function SettingsFields({
         </select>
       </label>
       <NumField label="ピッチ (mm)" value={draft.pitchMm} onChange={(v) => commit('pitchMm', v)} />
-      <NumField label="曲げ長さ (mm)" value={draft.bendMm} onChange={(v) => commit('bendMm', v)} />
+      <NumField label="端部曲げ (mm)" value={draft.bendMm} onChange={(v) => commit('bendMm', v)} />
       <NumField label="重ね (mm)" value={draft.lapMm} onChange={(v) => commit('lapMm', v)} />
       <NumField label="定尺 (mm)" value={draft.stockMm} onChange={(v) => commit('stockMm', v)} />
     </div>
