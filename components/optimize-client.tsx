@@ -2,8 +2,9 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DrawingCornerBar, DrawingSegment, Unit } from '@/lib/types/database'
+import type { DrawingCornerBar, DrawingDomaRun, DrawingSegment, Unit } from '@/lib/types/database'
 import { CornerBarSummarySections } from '@/components/corner-bar-summary-view'
+import { DomaSummarySections } from '@/components/doma-summary-view'
 import { createClient } from '@/lib/supabase/client'
 import { getSegmentLabelMap } from '@/lib/segment-labels'
 import { optimize, type PieceInput, type OptimizationOutput } from '@/lib/optimizer'
@@ -100,6 +101,7 @@ export function OptimizeClient({
   autoRun = false,
   units: initialUnits = [],
   cornerBars = [],
+  domaRuns = [],
 }: {
   projectId: string
   segments: DrawingSegment[]
@@ -109,6 +111,8 @@ export function OptimizeClient({
   units?: Unit[]
   /** 現場内の全図面の付加筋。切断最適化とは別に、結果の最後に集計して出す */
   cornerBars?: DrawingCornerBar[]
+  /** 現場内の全図面の土間筋（設置区間）。付加筋と同じく結果の最後に集計して出す */
+  domaRuns?: DrawingDomaRun[]
 }) {
   const [units, setUnits] = useState(initialUnits)
   const segmentLabelById = getSegmentLabelMap(segments)
@@ -593,34 +597,43 @@ export function OptimizeClient({
         画面では従来どおり縦積み。印刷時だけこのまとまりを 2 列にして、
         付加筋を材料取りの右側へ配置する。
       */}
-      {!calculating && (result || cornerBars.length > 0) && (
+      {!calculating && (result || cornerBars.length > 0 || domaRuns.length > 0) && (
         <div className="optimize-print-summary-layout space-y-4">
-          {/* 結果 */}
-          {result && (
+          {/* 結果。印刷では土間筋の集計を材料取り（長さ表・フック付）の下に同じカードで続ける */}
+          {(result || domaRuns.length > 0) && (
             <section className="optimize-print-results space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-semibold">材料取り</h2>
-              </div>
-              {barSummaryTable && barSummaryTable.length > 0 && (
-                <BarSummarySection
-                  rows={barSummaryTable}
-                  adjustmentMm={pieceLengthAdjustmentMm}
-                />
-              )}
+              {result && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-semibold">材料取り</h2>
+                  </div>
+                  {barSummaryTable && barSummaryTable.length > 0 && (
+                    <BarSummarySection
+                      rows={barSummaryTable}
+                      adjustmentMm={pieceLengthAdjustmentMm}
+                    />
+                  )}
 
-              <OptimizationResultView
-                result={result}
-                stockLengthMm={DEFAULT_STOCK_LENGTH_MM}
-                projectId={projectId}
-                segmentLabelById={segmentLabelById}
-                segmentDrawingIdById={segmentDrawingIdById}
-                focusSegmentId={focusSegmentId ?? undefined}
-                unitCalculationRows={unitCalculationRows}
-                roundingMode={unitCountRoundingMode}
-                units={units}
-                onShapeLengthSave={handleShapeLengthSave}
-                manufactureTotalsByUnitId={manufactureTotalsByUnitId}
-              />
+                  <OptimizationResultView
+                    result={result}
+                    stockLengthMm={DEFAULT_STOCK_LENGTH_MM}
+                    projectId={projectId}
+                    segmentLabelById={segmentLabelById}
+                    segmentDrawingIdById={segmentDrawingIdById}
+                    focusSegmentId={focusSegmentId ?? undefined}
+                    unitCalculationRows={unitCalculationRows}
+                    roundingMode={unitCountRoundingMode}
+                    units={units}
+                    onShapeLengthSave={handleShapeLengthSave}
+                    manufactureTotalsByUnitId={manufactureTotalsByUnitId}
+                  />
+                </>
+              )}
+              {domaRuns.length > 0 && (
+                <div className="hidden print:block">
+                  <DomaSummarySections runs={domaRuns} />
+                </div>
+              )}
             </section>
           )}
 
@@ -634,6 +647,13 @@ export function OptimizeClient({
                 labelOverrides={cornerBarLabelOverrides}
                 onLabelOverrideChange={handleCornerBarLabelOverrideChange}
               />
+            </section>
+          )}
+
+          {/* 土間筋 集計結果。画面では付加筋の下に出す（印刷では上の材料取りの列に出る） */}
+          {domaRuns.length > 0 && (
+            <section className="w-fit print:hidden">
+              <DomaSummarySections runs={domaRuns} />
             </section>
           )}
         </div>

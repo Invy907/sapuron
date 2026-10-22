@@ -148,7 +148,14 @@ function layoutOf(run: DrawingDomaRun): DomaRunLayout {
  * 集計。付加筋タブの要約と同じ形（方向ごとの本数の札 + 径・形・長さごとの行）。
  * 別の土間筋から同じ長さが出たら 1 行に合算する。
  */
-function DomaSummary({ bars }: { bars: DrawingDomaRun[] }) {
+function DomaSummary({
+  bars,
+  onGoToSummary,
+}: {
+  bars: DrawingDomaRun[]
+  /** 結果ページへ（付加筋の「結果ページを見る」と同じ） */
+  onGoToSummary?: () => void
+}) {
   const layouts = useMemo(() => bars.map((b) => ({ bar: b, layout: layoutOf(b) })), [bars])
   const schedule = useMemo(
     () => aggregateSchedule(layouts.map(({ bar, layout }) => ({ diameter: bar.settings.diameter, runs: [layout] }))),
@@ -161,6 +168,15 @@ function DomaSummary({ bars }: { bars: DrawingDomaRun[] }) {
 
   return (
     <div className="space-y-2 border-t border-border px-4 py-3">
+      {onGoToSummary ? (
+        <button
+          type="button"
+          onClick={onGoToSummary}
+          className="block w-full rounded-md bg-primary px-2 py-1.5 text-center text-[11px] font-medium text-white hover:bg-primary-hover"
+        >
+          結果ページを見る
+        </button>
+      ) : null}
       <div className="flex flex-wrap gap-1">
         {(['tate', 'yoko'] as const).map((d) => {
           const count = piecesByDirection(d)
@@ -789,7 +805,9 @@ export function DomaPanel({
   onBendsChange,
   canUndo,
   onUndo,
+  onGoToSummary,
 }: {
+  onGoToSummary?: () => void
   /** これから描く土間筋の端部曲げ（条件の一部） */
   bends: DomaBends
   onBendsChange: (next: DomaBends) => void
@@ -970,9 +988,13 @@ export function DomaPanel({
               </ul>
             )}
 
-            {tool !== 'dimension' && bars.length > 0 ? <DomaSummary bars={bars} /> : null}
           </>
         )}
+
+        {/* 要約と「結果ページを見る」は、付加筋・ユニットと同じく選択中や寸法線を描いているときも出す */}
+        {kind === 'standard' && bars.length > 0 ? (
+          <DomaSummary bars={bars} onGoToSummary={onGoToSummary} />
+        ) : null}
       </div>
     </div>
   )

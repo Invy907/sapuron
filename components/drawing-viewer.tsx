@@ -2025,6 +2025,14 @@ export function DrawingViewer({
     })
   }
 
+  /** 土間筋の保存待ちを送り切ってから結果ページへ（付加筋と同じ流れ） */
+  async function goToDomaSummary() {
+    startGlobalLoading()
+    await Promise.all([...domaSaveChainsRef.current.values()])
+    router.refresh()
+    router.push(`/projects/${projectId}/optimize?run=1`)
+  }
+
   async function goToCornerBarSummary(href: string) {
     startGlobalLoading()
     await flushCornerBarSaveQueue()
@@ -5832,6 +5840,7 @@ export function DrawingViewer({
         onBendsChange={(next) => changeDomaBends(domaBarDirection, next)}
         canUndo={lastAction?.type === 'doma-create'}
         onUndo={handleUndo}
+        onGoToSummary={() => void goToDomaSummary()}
         onSelect={(sel) => {
           setDomaTool('select')
           setDomaSelection(sel)

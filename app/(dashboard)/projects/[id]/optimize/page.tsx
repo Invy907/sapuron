@@ -4,6 +4,7 @@ import Link from 'next/link'
 import type {
   Project,
   DrawingCornerBar,
+  DrawingDomaRun,
   DrawingSegment,
   Drawing,
   Unit,
@@ -59,6 +60,13 @@ export default async function OptimizePage({
     .order('created_at', { ascending: true })
     .returns<DrawingCornerBar[]>()
 
+  const { data: domaRuns } = await supabase
+    .from('drawing_doma_runs')
+    .select('*')
+    .in('drawing_id', drawingIds)
+    .order('created_at', { ascending: true })
+    .returns<DrawingDomaRun[]>()
+
   const { data: units } = await supabase
     .from('units')
     .select('*')
@@ -90,6 +98,7 @@ export default async function OptimizePage({
         autoRun={run === '1'}
         units={units ?? []}
         cornerBars={cornerBars ?? []}
+        domaRuns={domaRuns ?? []}
       />
     </div>
   )
