@@ -246,9 +246,15 @@ export function decomposeBands(outline: SlabPoint[], direction: SlabBarDirection
   return bands
 }
 
+/**
+ * 本数 = 配筋範囲 ÷ ピッチ の切り上げ。寸法・ピッチは整数 mm で扱う。
+ * 0 以下・整数でない値は計算しない（0 本）。画面を落とさないよう例外にはしない。
+ * 端の鉄筋を別に足すか（+1）は現場の規則が確認できるまで入れない（Phase3 仕様 §7.1）。
+ */
 export function countBars(spanMm: number, pitchMm: number): number {
-  if (!(spanMm > 0) || !(pitchMm > 0)) return 0
-  return Math.ceil(spanMm / pitchMm - EPS)
+  if (!Number.isSafeInteger(spanMm) || !Number.isSafeInteger(pitchMm)) return 0
+  if (spanMm <= 0 || pitchMm <= 0) return 0
+  return Math.ceil(spanMm / pitchMm)
 }
 
 /**
@@ -309,33 +315,148 @@ export function buildRuns(
   return runs
 }
 
-/** 描いた土間筋 1 本（代表線）の本数と加工本 */
-/** 加工本の端部曲げをどちら側に付けるか（描いた線の始点／終点／なし） */
-export type DomaBendEnd = 'start' | 'end' | 'none'
+/** 設置区間の両端のうち、端部曲げを付ける側 */
+export type DomaBends = 'both' | 'start' | 'end' | 'none'
 
-export type DomaPieceWarning = 'EXCEEDS_STOCK'
+export const DOMA_BENDS_OPTIONS: Array<{ id: DomaBends; label: string }> = [
+  { id: 'both', label: '両端' },
+  { id: 'start', label: '始点' },
+  { id: 'end', label: '終点' },
+  { id: 'none', label: 'なし' },
+]
 
-/** 端部曲げありなら 定尺−曲げ（D13: 6000−150=5850）、なしなら定尺 */
-export function defaultDomaStraightMm(settings: DomaBarSettings, bendEnd: DomaBendEnd): number {
-  return bendEnd === 'none' ? settings.stockMm : settings.stockMm - settings.bendMm
+/** 設置区間の中での加工本 1 本。from/to は直線部の位置（区間の始点 0 〜 終点 L, mm） */
+export type DomaRunPiece = FabricationPiece & {
+  index: number
+  bendStart: boolean
+  bendEnd: boolean
+  fromMm: number
+  toMm: number
+  /** 直線部が、つながる継手ぶんの重ね（重ね × 継手の数）に足りない */
+  lapShort: boolean
+}
+
+export type DomaRunLap = { fromMm: number; toMm: number; mm: number }
+
+export type DomaRunWarning = 'LAP_TOO_SHORT' | 'MANUAL_SUM_MISMATCH' | 'VALUE_TOO_LARGE'
+
+/** これを超える設置長さ・配筋範囲は入力ミスの可能性が高い（住宅の土間で 50 m 超） */
+export const DOMA_LARGE_VALUE_MM = 50000
+
+export type DomaRunLayout = {
+  pieces: DomaRunPiece[]
+  laps: DomaRunLap[]
+  /** 本数（配筋範囲 ÷ ピッチ の切り上げ） */
+  count: number
+  /** 必要な加工長さの合計 = L + 端部曲げ × 曲げ数 + 重ね × (本数 − 1) */
+  requiredTotalMm: number
+  source: 'auto' | 'manual'
+  warnings: DomaRunWarning[]
+}
+
+function bendCountOf(bends: DomaBends): number {
+  return bends === 'both' ? 2 : bends === 'none' ? 0 : 1
 }
 
 /**
- * 図面に描いた土間筋 1 本 ＝ 加工本 1 本。
- * 加工長さ = 直線部 + 端部曲げ（片側のみ）、本数 = 配筋幅 ÷ ピッチ の切り上げ。
+ * 設置区間 L を加工本の長さに分ける（自動）。
+ *
+ * まず 1 本で作れるか（L + 端部曲げ × 曲げ数 ≤ 定尺）を見て、作れるなら分けない。
+ * 作れないときだけ重ねを入れて分け、定尺を先に使って残りを最後の本にする。
+ *   必要総長 = L + 端部曲げ × 曲げ数 + 重ね × (n − 1)、n は 必要総長 ≤ n × 定尺 の最小値
+ * 両端曲げの 1 本は両端に曲げが付く。分けたときは始点側の曲げが 1 本目、終点側が最後の本。
+ *
+ * 残りの本の直線部が重ねより短いと継手の重ねが取れない（例 5750 → 6000 + 650 は直線部 500）。
+ * 自動で分けた結果がそうならないよう、足りない分だけ 1 つ前の本から最後の本へ移す
+ * （5750 → 5900 + 750、直線部 750 − 150 = 600）。合計は変わらない。
+ *
+ * 資料 A のメモ「5460 → 6000 + 360」は 1 本（5760）で作れる区間を分けている。
+ * 理由が確認できるまでは自動では分けず、必要なら加工本の手入力で対応する。
  */
-export function computeDomaPiece(
-  straightMm: number,
+function autoDomaPieceLengths(
+  lengthMm: number,
+  bends: DomaBends,
+  settings: Pick<DomaBarSettings, 'bendMm' | 'stockMm' | 'lapMm'>,
+): number[] {
+  const { bendMm, stockMm, lapMm } = settings
+  if (!(lengthMm > 0) || !(stockMm > lapMm)) return []
+  const required = (n: number) => lengthMm + bendCountOf(bends) * bendMm + lapMm * (n - 1)
+  let n = 1
+  while (required(n) > n * stockMm + EPS) n++
+  if (n === 1) return [Math.round(required(1))]
+  const lengths = Array.from({ length: n - 1 }, () => stockMm)
+  lengths.push(Math.round(required(n) - (n - 1) * stockMm))
+  const lastBend = bends === 'both' || bends === 'end' ? bendMm : 0
+  const shortfall = lapMm - (lengths[n - 1]! - lastBend)
+  if (shortfall > 0) {
+    lengths[n - 2]! -= shortfall
+    lengths[n - 1]! += shortfall
+  }
+  return lengths
+}
+
+/**
+ * 図面に描いた設置区間 1 つ（土間筋 1 セット）の加工本・重ね・本数。
+ *
+ * override（加工本の長さの手入力）があればそれを使い、合計が
+ * L + 端部曲げ × 曲げ数 + 重ね × (本数 − 1) と合わなければ MANUAL_SUM_MISMATCH を出す
+ * （ずれを自動で直したり隠したりしない）。
+ * 始点側の曲げは 1 本目、終点側の曲げは最後の本に付く。
+ */
+export function layoutDomaRun(
+  lengthMm: number,
   spanMm: number,
-  bendEnd: DomaBendEnd,
-  settings: DomaBarSettings
-): { count: number; piece: FabricationPiece; warnings: DomaPieceWarning[] } {
-  const bent = bendEnd !== 'none'
-  const lengthMm = Math.round(straightMm + (bent ? settings.bendMm : 0))
+  bends: DomaBends,
+  settings: DomaBarSettings,
+  override?: number[] | null,
+): DomaRunLayout {
+  const { bendMm, lapMm } = settings
+  const manual = Array.isArray(override) && override.length > 0
+  const lengths = manual
+    ? override.map((v) => Math.round(v))
+    : autoDomaPieceLengths(lengthMm, bends, settings)
+  const n = lengths.length
+  const requiredTotalMm = lengthMm + bendCountOf(bends) * bendMm + lapMm * Math.max(n - 1, 0)
+  const warnings: DomaRunWarning[] = []
+  if (manual && lengths.reduce((sum, v) => sum + v, 0) !== requiredTotalMm) {
+    warnings.push('MANUAL_SUM_MISMATCH')
+  }
+
+  const pieces: DomaRunPiece[] = []
+  let from = 0
+  lengths.forEach((len, i) => {
+    const bendStart = i === 0 && (bends === 'both' || bends === 'start')
+    const bendEnd = i === n - 1 && (bends === 'both' || bends === 'end')
+    const straight = len - (bendStart ? bendMm : 0) - (bendEnd ? bendMm : 0)
+    // 合計が合っていても、短い本は継手の重ねを取れない（中間の本は両側に重ねが要る）
+    const joints = (i > 0 ? 1 : 0) + (i < n - 1 ? 1 : 0)
+    pieces.push({
+      index: i,
+      kind: bendStart || bendEnd ? 'BENT' : 'STRAIGHT',
+      lengthMm: len,
+      bendStart,
+      bendEnd,
+      fromMm: from,
+      toMm: from + straight,
+      lapShort: straight < lapMm * joints,
+    })
+    from = from + straight - lapMm
+  })
+  if (pieces.some((p) => p.lapShort)) warnings.push('LAP_TOO_SHORT')
+  if (lengthMm > DOMA_LARGE_VALUE_MM || spanMm > DOMA_LARGE_VALUE_MM) warnings.push('VALUE_TOO_LARGE')
+  const laps: DomaRunLap[] = pieces.slice(1).map((p, i) => ({
+    fromMm: p.fromMm,
+    toMm: pieces[i]!.toMm,
+    mm: pieces[i]!.toMm - p.fromMm,
+  }))
+
   return {
+    pieces,
+    laps,
     count: countBars(spanMm, settings.pitchMm),
-    piece: { kind: bent ? 'BENT' : 'STRAIGHT', lengthMm },
-    warnings: lengthMm > settings.stockMm ? ['EXCEEDS_STOCK'] : [],
+    requiredTotalMm,
+    source: manual ? 'manual' : 'auto',
+    warnings,
   }
 }
 

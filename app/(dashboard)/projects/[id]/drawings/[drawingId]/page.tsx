@@ -4,7 +4,7 @@ import type {
   Drawing,
   DrawingCornerBar,
   DrawingSegment,
-  DrawingDomaBar,
+  DrawingDomaRun,
   DrawingDomaDimension,
   Project,
   Unit,
@@ -62,12 +62,12 @@ export default async function DrawingDetailPage({
     .order('created_at', { ascending: true })
     .returns<DrawingDomaDimension[]>()
 
-  const { data: domaBars } = await supabase
-    .from('drawing_doma_bars')
+  const { data: domaRuns } = await supabase
+    .from('drawing_doma_runs')
     .select('*')
     .eq('drawing_id', drawingId)
     .order('created_at', { ascending: true })
-    .returns<DrawingDomaBar[]>()
+    .returns<DrawingDomaRun[]>()
 
   const { data: units } = await supabase
     .from('units')
@@ -94,7 +94,7 @@ export default async function DrawingDetailPage({
         initialSelectedSegmentId={segmentId}
         initialCornerBars={cornerBars ?? []}
         initialDomaDimensions={domaDimensions ?? []}
-        initialDomaBars={domaBars ?? []}
+        initialDomaRuns={domaRuns ?? []}
         units={units ?? []}
       />
     </div>

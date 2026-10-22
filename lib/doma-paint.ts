@@ -1,10 +1,11 @@
-// 土間筋タブのキャンバス描画: 各辺の寸法線と、タテ／ヨコの土間筋代表線。
+// 土間筋タブのキャンバス描画: 各辺の寸法線と、タテ／ヨコの土間筋（設置区間 1 つ = 1 セット）。
 // 座標は図面座標（drawing_segments と同じ）。線幅・文字は viewScale で割って画面上の大きさを一定にする。
 
 import {
-  computeDomaPiece,
+  layoutDomaRun,
   type DomaBarSettings,
-  type DomaBendEnd,
+  type DomaBends,
+  type DomaRunLayout,
   type SlabBarDirection,
 } from './slab-rebar'
 
@@ -75,7 +76,14 @@ function strokeHighlight(ctx: CanvasRenderingContext2D, a: Pt, b: Pt, s: number)
 export function paintDomaDimension(
   ctx: CanvasRenderingContext2D,
   dim: DomaLine & { length_mm: number | null },
-  opts: { viewScale: number; selected?: boolean; preview?: boolean },
+  opts: {
+    viewScale: number
+    selected?: boolean
+    preview?: boolean
+    viewRotationSteps?: number
+    /** 寸法値が重なったら反対側へ逃がすための、他の線（土間筋・他の寸法線） */
+    obstacles?: DomaLine[]
+  },
 ) {
   const s = opts.viewScale
   const f = frame(dim)
@@ -103,126 +111,334 @@ export function paintDomaDimension(
   ctx.restore()
 
   if (dim.length_mm != null) {
-    drawText(ctx, String(dim.length_mm), f.at(f.len / 2, 11 / s), {
+    const viewRotationSteps = opts.viewRotationSteps ?? 0
+    const left = screenLeftNormal(f.n, viewRotationSteps)
+    // 画面上で線の左（横向きなら上）。そこに他の線がかかるときは反対側
+    drawUprightLabel(ctx, String(dim.length_mm), f.at(f.len / 2, 0), [left, negate(left)], {
       fontPx: 13 / s,
       color: DIMENSION_COLOR,
-      angle: f.angle,
       bold: true,
+      viewScale: s,
+      viewRotationSteps,
+      obstacles: opts.obstacles,
+      // 端の短い線（tick）より外に出す
+      minDistance: 7 / s,
     })
   }
 }
 
-export type DomaBarShape = DomaLine & {
-  direction: SlabBarDirection
-  straight_mm: number
-  bend_end: DomaBendEnd
-  span_mm: number
-  settings: DomaBarSettings
+/** 表示回転（時計回り 90° 単位）後の画面上の向き */
+function toScreenDirection(v: Pt, viewRotationSteps: number): Pt {
+  const steps = ((Math.round(viewRotationSteps) % 4) + 4) % 4
+  if (steps === 1) return { x: -v.y, y: v.x }
+  if (steps === 2) return { x: -v.x, y: -v.y }
+  if (steps === 3) return { x: v.y, y: -v.x }
+  return v
 }
 
-/** 図面上の px / mm（描いた線の長さ ÷ 直線部の mm） */
-function barPxPerMm(bar: DomaBarShape): number {
-  const len = Math.hypot(bar.x2 - bar.x1, bar.y2 - bar.y1)
-  return bar.straight_mm > 0 ? len / bar.straight_mm : 0
+function negate(v: Pt): Pt {
+  return { x: -v.x, y: -v.y }
 }
 
-/** 加工本 1 本: 直線部 + 片側の端部曲げ + 寸法・本数 */
-export function paintDomaBar(
+/** 線分 a-b が、中心 c・半幅 hx・半高 hy の軸平行な矩形にかかるか（Liang–Barsky） */
+function segmentHitsBox(a: Pt, b: Pt, c: Pt, hx: number, hy: number): boolean {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  let t0 = 0
+  let t1 = 1
+  const clips: Array<[number, number]> = [
+    [-dx, a.x - (c.x - hx)],
+    [dx, c.x + hx - a.x],
+    [-dy, a.y - (c.y - hy)],
+    [dy, c.y + hy - a.y],
+  ]
+  for (const [p, q] of clips) {
+    if (p === 0) {
+      if (q < 0) return false
+      continue
+    }
+    const r = q / p
+    if (p < 0) t0 = Math.max(t0, r)
+    else t1 = Math.min(t1, r)
+    if (t0 > t1) return false
+  }
+  return true
+}
+
+/**
+ * 画面上で正立させた文字を、線上の点 anchor から outward の向きへ、
+ * 文字の枠が線にかからない距離だけ離して置く。
+ *
+ * outward を複数渡すと順に試し、obstacles のどの線も文字の枠にかからない最初の向きに置く。
+ * どの向きでも重なるときは最初の向き。
+ */
+function drawUprightLabel(
   ctx: CanvasRenderingContext2D,
-  bar: DomaBarShape,
-  opts: { viewScale: number; selected?: boolean },
+  text: string,
+  anchor: Pt,
+  outwards: Pt[],
+  opts: {
+    fontPx: number
+    color: string
+    bold?: boolean
+    viewScale: number
+    viewRotationSteps: number
+    obstacles?: DomaLine[]
+    /** 線からの最小距離（寸法線の端の短い線をよけるときなど） */
+    minDistance?: number
+  },
 ) {
   const s = opts.viewScale
-  const f = frame(bar)
-  if (f.len <= 0) return
-  const k = barPxPerMm(bar)
-  const color = DOMA_DIRECTION_COLORS[bar.direction]
-  const { count, piece, warnings } = computeDomaPiece(bar.straight_mm, bar.span_mm, bar.bend_end, bar.settings)
-  const { bendMm } = bar.settings
-  const hookPx = Math.max(bendMm * k, 10 / s)
-  const fontPx = 11 / s
+  ctx.save()
+  ctx.font = `${opts.bold ? '700' : '600'} ${opts.fontPx}px sans-serif`
+  const halfWidth = ctx.measureText(text).width / 2
+  ctx.restore()
+  const halfHeight = opts.fontPx / 2
+  // 正立した文字の枠は画面の縦横に沿うので、図面座標では表示回転が奇数のとき縦横が入れ替わる
+  const odd = ((Math.round(opts.viewRotationSteps) % 2) + 2) % 2 === 1
+  const boxHalfX = odd ? halfHeight : halfWidth
+  const boxHalfY = odd ? halfWidth : halfHeight
+  const margin = 2 / s
 
-  if (opts.selected) strokeHighlight(ctx, f.at(0, 0), f.at(f.len, 0), s)
+  const centerFor = (outward: Pt): Pt => {
+    // 文字の枠を外向きに測った半分の長さ + 線の太さの半分 + すき間
+    const screen = toScreenDirection(outward, opts.viewRotationSteps)
+    const halfExtent = Math.abs(screen.x) * halfWidth + Math.abs(screen.y) * halfHeight
+    const distance = Math.max(halfExtent + 1.25 / s + 3 / s, (opts.minDistance ?? 0) + halfExtent)
+    return { x: anchor.x + outward.x * distance, y: anchor.y + outward.y * distance }
+  }
+  const isClear = (center: Pt) =>
+    !(opts.obstacles ?? []).some((line) =>
+      segmentHitsBox(
+        { x: line.x1, y: line.y1 },
+        { x: line.x2, y: line.y2 },
+        center,
+        boxHalfX + margin,
+        boxHalfY + margin,
+      ),
+    )
+
+  const centers = outwards.map(centerFor)
+  const center = centers.find(isClear) ?? centers[0]
+  if (!center) return
+  drawText(ctx, text, center, {
+    fontPx: opts.fontPx,
+    color: opts.color,
+    bold: opts.bold,
+    // 図面の表示回転を打ち消して、画面上で常に横書きの向きにする
+    angle: (-opts.viewRotationSteps * Math.PI) / 2,
+  })
+}
+
+/**
+ * 線の法線のうち、画面上で左（横向きの線なら上）を向くほう。
+ * 図面を回して表示していても、画面で見た向きで決める。
+ */
+function screenLeftNormal(n: Pt, viewRotationSteps: number): Pt {
+  const screen = toScreenDirection(n, viewRotationSteps)
+  const flip =
+    Math.abs(screen.x) >= Math.abs(screen.y) ? screen.x > 0 : screen.y > 0
+  return flip ? { x: -n.x, y: -n.y } : n
+}
+
+export type DomaRunShape = DomaLine & {
+  direction: SlabBarDirection
+  length_mm: number
+  span_mm: number
+  bends: DomaBends
+  settings: DomaBarSettings
+  pieces_override: number[] | null
+}
+
+const WARNING_COLOR = '#b45309'
+
+/**
+ * 設置区間 1 つを図面に描くための形。描いた線を L として、加工本ごとの直線部・端部曲げの位置を出す。
+ * 重ねが見えるよう、加工本を 1 本おきに画面上の右（横向きなら下）へ少しずらす。
+ * 端部曲げも同じ側に出し、寸法の文字を置く左（上）側を空けておく。
+ */
+function runGeometry(run: DomaRunShape, viewScale: number, viewRotationSteps: number) {
+  const s = viewScale
+  const f = frame(run)
+  const layout = layoutDomaRun(run.length_mm, run.span_mm, run.bends, run.settings, run.pieces_override)
+  const k = run.length_mm > 0 ? f.len / run.length_mm : 0
+  const left = screenLeftNormal(f.n, viewRotationSteps)
+  const right = negate(left)
+  const lane = 4 / s
+  const hookPx = Math.max(run.settings.bendMm * k, 10 / s)
+  const along = (mm: number, off: number): Pt => ({
+    x: run.x1 + f.u.x * mm * k + right.x * off,
+    y: run.y1 + f.u.y * mm * k + right.y * off,
+  })
+  // 規則が未確定の組み合わせ（5460 → 6000 + 360 など）では直線部が区間からはみ出す計算になる。
+  // 図面では区間の中に収めて描き、ずれは警告（色・右パネル）で知らせる
+  const clamp = (mm: number) => Math.min(Math.max(mm, 0), run.length_mm)
+  const pieces = layout.pieces.map((piece) => {
+    const off = piece.index % 2 === 1 ? lane : 0
+    const a = along(clamp(piece.fromMm), off)
+    const b = along(clamp(piece.toMm), off)
+    const hook = (p: Pt): [Pt, Pt] => [p, { x: p.x + right.x * hookPx, y: p.y + right.y * hookPx }]
+    return {
+      piece,
+      off,
+      a,
+      b,
+      hookStart: piece.bendStart ? hook(a) : null,
+      hookEnd: piece.bendEnd ? hook(b) : null,
+    }
+  })
+  return { f, k, layout, left, right, lane, along, clamp, pieces }
+}
+
+/** 設置区間の図面上の線（加工本の直線部と端部曲げ）。文字の重なり判定に使う */
+export function domaRunLines(run: DomaRunShape, viewScale: number, viewRotationSteps = 0): DomaLine[] {
+  const { pieces } = runGeometry(run, viewScale, viewRotationSteps)
+  const lines: DomaLine[] = []
+  for (const p of pieces) {
+    lines.push({ x1: p.a.x, y1: p.a.y, x2: p.b.x, y2: p.b.y })
+    for (const hook of [p.hookStart, p.hookEnd]) {
+      if (hook) lines.push({ x1: hook[0].x, y1: hook[0].y, x2: hook[1].x, y2: hook[1].y })
+    }
+  }
+  return lines
+}
+
+/**
+ * 設置区間 1 つ（土間筋 1 セット）: 加工本ごとの線・端部曲げ・重ねと、
+ * 加工本の長さ・端部曲げ・重ねの値。径・本数は右パネルで見る。
+ */
+export function paintDomaRun(
+  ctx: CanvasRenderingContext2D,
+  run: DomaRunShape,
+  opts: {
+    viewScale: number
+    selected?: boolean
+    viewRotationSteps?: number
+    /** 文字が重なったら反対側へ逃がすための、他の線（他の土間筋・寸法線） */
+    obstacles?: DomaLine[]
+    /** 右パネルの一覧と同じ名前（「タテ1」など） */
+    name?: string
+  },
+): DomaRunLayout | null {
+  const s = opts.viewScale
+  const viewRotationSteps = opts.viewRotationSteps ?? 0
+  const g = runGeometry(run, s, viewRotationSteps)
+  if (g.f.len <= 0 || g.pieces.length === 0) return null
+  const color = g.layout.warnings.length > 0 ? WARNING_COLOR : DOMA_DIRECTION_COLORS[run.direction]
+  const fontPx = 11 / s
+  const labelOpts = { fontPx, color, viewScale: s, viewRotationSteps, obstacles: opts.obstacles }
+
+  if (opts.selected) strokeHighlight(ctx, g.along(0, 0), g.along(run.length_mm, 0), s)
 
   ctx.save()
   ctx.strokeStyle = color
   ctx.lineWidth = 2.5 / s
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
-  ctx.beginPath()
-  const a = f.at(0, 0)
-  const b = f.at(f.len, 0)
-  if (bar.bend_end === 'start') {
-    const h = f.at(0, -hookPx)
-    ctx.moveTo(h.x, h.y)
-    ctx.lineTo(a.x, a.y)
-  } else {
-    ctx.moveTo(a.x, a.y)
+  for (const p of g.pieces) {
+    ctx.beginPath()
+    if (p.hookStart) {
+      ctx.moveTo(p.hookStart[1].x, p.hookStart[1].y)
+      ctx.lineTo(p.a.x, p.a.y)
+    } else {
+      ctx.moveTo(p.a.x, p.a.y)
+    }
+    ctx.lineTo(p.b.x, p.b.y)
+    if (p.hookEnd) ctx.lineTo(p.hookEnd[1].x, p.hookEnd[1].y)
+    ctx.stroke()
   }
-  ctx.lineTo(b.x, b.y)
-  if (bar.bend_end === 'end') {
-    const h = f.at(f.len, -hookPx)
-    ctx.lineTo(h.x, h.y)
-  }
-  ctx.stroke()
   ctx.restore()
 
-  if (bar.bend_end !== 'none') {
-    const t = bar.bend_end === 'start' ? 0 : f.len
-    drawText(ctx, String(bendMm), f.at(t, -hookPx - 10 / s), { fontPx, color, angle: f.angle })
+  // 端部曲げ: 曲げ辺をはさんで直線部と反対側（上端の曲げなら上、下端なら下）
+  for (const p of g.pieces) {
+    for (const [hook, outward] of [
+      [p.hookStart, negate(g.f.u)],
+      [p.hookEnd, g.f.u],
+    ] as const) {
+      if (!hook) continue
+      const mid = { x: (hook[0].x + hook[1].x) / 2, y: (hook[0].y + hook[1].y) / 2 }
+      drawUprightLabel(ctx, String(run.settings.bendMm), mid, [outward], { ...labelOpts, obstacles: undefined })
+    }
   }
-  drawText(ctx, String(bar.straight_mm), f.at(f.len / 2, -14 / s), { fontPx, color, angle: f.angle })
 
-  const warn = warnings.includes('EXCEEDS_STOCK') ? ' ⚠定尺超え' : ''
-  drawText(ctx, `${bar.settings.diameter} @${bar.settings.pitchMm} × ${count}本`, f.at(f.len / 2, 16 / s), {
-    fontPx: 12 / s,
-    color,
-    angle: f.angle,
-    bold: true,
+  // 直線部の長さ: 加工本の長さから、その本の端部曲げを除いたもの（6000 の曲げ付きなら 5850）。
+  // 線もこの長さで描いているので、図面の線と数字が一致する。加工本の長さ（曲げ込み）は右パネル・集計で見る。
+  // 重なっていない部分の中ほど、画面上で線の左（横向きなら上）に置く
+  const laps = g.layout.laps
+  g.pieces.forEach((p, i) => {
+    const from = g.clamp(i > 0 ? laps[i - 1]!.toMm : p.piece.fromMm)
+    const to = g.clamp(i < laps.length ? laps[i]!.fromMm : p.piece.toMm)
+    const straightMm = Math.round(p.piece.toMm - p.piece.fromMm)
+    drawUprightLabel(ctx, String(straightMm), g.along((from + to) / 2, p.off), [g.left, g.right], labelOpts)
   })
-  drawText(ctx, `${piece.kind === 'BENT' ? '曲' : '直'} ${piece.lengthMm}${warn}`, f.at(f.len / 2, 31 / s), {
-    fontPx,
-    color: warn ? '#b45309' : color,
-    angle: f.angle,
-  })
+
+  // 名前: 一覧のどれか分かるよう、加工本の長さとは反対側の右（横向きなら下）。
+  // 同じ側に「重ね」の文字があるので、重ねのない区間のうち一番長いところの中ほどに置く
+  if (opts.name) {
+    const edges = [0, ...laps.flatMap((lap) => [g.clamp(lap.fromMm), g.clamp(lap.toMm)]), run.length_mm]
+    let best = { from: 0, to: run.length_mm }
+    for (let i = 0; i + 1 < edges.length; i += 2) {
+      const from = edges[i]!
+      const to = edges[i + 1]!
+      if (to - from > best.to - best.from || i === 0) best = { from, to }
+    }
+    drawUprightLabel(ctx, opts.name, g.along((best.from + best.to) / 2, g.lane), [g.right, g.left], {
+      ...labelOpts,
+      fontPx: 13 / s,
+      bold: true,
+    })
+  }
+
+  // 重ね: 重なっている 2 本の外側（右・下）
+  for (const lap of laps) {
+    const mid = (g.clamp(lap.fromMm) + g.clamp(lap.toMm)) / 2
+    drawUprightLabel(ctx, `重ね${Math.round(lap.mm)}`, g.along(mid, g.lane), [g.right, g.left], {
+      ...labelOpts,
+      fontPx: 10 / s,
+    })
+  }
+  return g.layout
 }
 
 /**
- * 同じ方向で同じ線上に重なっている加工本どうしの重ね長さ(mm)を表示する。
- * 長さは重なっている 2 本の縮尺の平均で換算する。
+ * 描いている途中の土間筋の横に、寸法線から読み取れた値を出す（決まらない値は「?」）。
+ * 画面上で正立させ、線の右（横向きなら下）に置く。
  */
-export function paintDomaLaps(ctx: CanvasRenderingContext2D, bars: DomaBarShape[], viewScale: number) {
-  const s = viewScale
-  const tol = 6 / s
-  for (let i = 0; i < bars.length; i++) {
-    for (let j = i + 1; j < bars.length; j++) {
-      const a = bars[i]
-      const b = bars[j]
-      if (a.direction !== b.direction) continue
-      const horizontal = Math.abs(a.y2 - a.y1) < Math.abs(a.x2 - a.x1)
-      const bHorizontal = Math.abs(b.y2 - b.y1) < Math.abs(b.x2 - b.x1)
-      if (horizontal !== bHorizontal) continue
-      const perpA = horizontal ? a.y1 : a.x1
-      const perpB = horizontal ? b.y1 : b.x1
-      if (Math.abs(perpA - perpB) > tol) continue
-      const [a0, a1] = horizontal ? [a.x1, a.x2] : [a.y1, a.y2]
-      const [b0, b1] = horizontal ? [b.x1, b.x2] : [b.y1, b.y2]
-      const lo = Math.max(Math.min(a0, a1), Math.min(b0, b1))
-      const hi = Math.min(Math.max(a0, a1), Math.max(b0, b1))
-      if (hi - lo <= 1 / s) continue
-      const k = (barPxPerMm(a) + barPxPerMm(b)) / 2
-      if (!(k > 0)) continue
-      const mm = Math.round((hi - lo) / k / 10) * 10
-      const mid = (lo + hi) / 2
-      const offset = 14 / s
-      const p = horizontal ? { x: mid, y: (perpA + perpB) / 2 + offset } : { x: (perpA + perpB) / 2 + offset, y: mid }
-      drawText(ctx, `重ね${mm}`, p, {
-        fontPx: 10 / s,
-        color: '#475569',
-        angle: horizontal ? 0 : -Math.PI / 2,
-      })
-    }
-  }
+export function paintDomaDraftInfo(
+  ctx: CanvasRenderingContext2D,
+  line: DomaLine,
+  texts: string[],
+  opts: { viewScale: number; viewRotationSteps: number },
+) {
+  const s = opts.viewScale
+  const f = frame(line)
+  if (f.len <= 0) return
+  const right = negate(screenLeftNormal(f.n, opts.viewRotationSteps))
+  const fontPx = 12 / s
+  const lineGap = fontPx * 1.35
+  const anchor = f.at(f.len / 2, 0)
+  // 文字の枠を、外向きに測った半分の長さ（行の最大幅・行数の高さ）
+  ctx.save()
+  ctx.font = `700 ${fontPx}px sans-serif`
+  const halfWidth = Math.max(...texts.map((t) => ctx.measureText(t).width)) / 2
+  ctx.restore()
+  const halfHeight = (lineGap * texts.length) / 2
+  const screen = toScreenDirection(right, opts.viewRotationSteps)
+  const distance = Math.abs(screen.x) * halfWidth + Math.abs(screen.y) * halfHeight + 10 / s
+  const center = { x: anchor.x + right.x * distance, y: anchor.y + right.y * distance }
+  ctx.save()
+  ctx.translate(center.x, center.y)
+  ctx.rotate((-opts.viewRotationSteps * Math.PI) / 2)
+  texts.forEach((text, i) => {
+    const y = (i - (texts.length - 1) / 2) * lineGap
+    drawText(ctx, text, { x: 0, y }, {
+      fontPx,
+      color: text.includes('?') ? WARNING_COLOR : DIMENSION_COLOR,
+      angle: 0,
+      bold: true,
+    })
+  })
+  ctx.restore()
 }
 
 export function paintDomaDraftLine(
@@ -251,41 +467,103 @@ export function distanceToDomaLine(pt: Pt, line: DomaLine): number {
   return Math.hypot(pt.x - (line.x1 + t * dx), pt.y - (line.y1 + t * dy))
 }
 
-/**
- * 寸法線から図面の縮尺（px/mm）を推定し、描いた長さを mm に換算する。
- * 既存の寸法値に 3% 以内で近ければその値に合わせる。寸法線がなければ null。
- */
-/**
- * 土間筋と直交する寸法線のうち、その本の位置を範囲に含むものの寸法を配筋範囲とみなす。
- * 全体寸法と区画寸法が重なるときは短い方（区画）を採る。
- */
-export function findDomaSpanMm(
-  bar: DomaLine,
-  dims: Array<DomaLine & { length_mm: number }>,
-  tol: number,
-): number | null {
-  const barVertical = Math.abs(bar.y2 - bar.y1) >= Math.abs(bar.x2 - bar.x1)
-  const pos = barVertical ? (bar.x1 + bar.x2) / 2 : (bar.y1 + bar.y2) / 2
-  const candidates = dims.filter((d) => {
-    const dimVertical = Math.abs(d.y2 - d.y1) >= Math.abs(d.x2 - d.x1)
-    if (dimVertical === barVertical) return false
-    const [a, b] = barVertical ? [d.x1, d.x2] : [d.y1, d.y2]
-    return pos >= Math.min(a, b) - tol && pos <= Math.max(a, b) + tol
-  })
-  if (candidates.length === 0) return null
-  return Math.min(...candidates.map((d) => d.length_mm))
+export type DomaDimensionLike = DomaLine & { id: string; length_mm: number }
+
+function isVerticalLine(l: DomaLine): boolean {
+  return Math.abs(l.y2 - l.y1) >= Math.abs(l.x2 - l.x1)
 }
 
-export function estimateLengthMm(pxLength: number, dims: Array<DomaLine & { length_mm: number }>): number | null {
-  const ratios = dims
-    .map((d) => Math.hypot(d.x2 - d.x1, d.y2 - d.y1) / d.length_mm)
-    .filter((r) => Number.isFinite(r) && r > 0)
-    .sort((a, b) => a - b)
-  if (ratios.length === 0) return null
-  const ratio = ratios[Math.floor(ratios.length / 2)]
-  const raw = pxLength / ratio
-  const near = dims
-    .map((d) => d.length_mm)
-    .find((mm) => Math.abs(mm - raw) / mm <= 0.03)
-  return near ?? Math.round(raw / 10) * 10
+/** 線の向きの軸で見た範囲 [小, 大] */
+function axisRange(l: DomaLine, vertical: boolean): [number, number] {
+  const [a, b] = vertical ? [l.y1, l.y2] : [l.x1, l.x2]
+  return [Math.min(a, b), Math.max(a, b)]
 }
+
+/**
+ * 全体寸法か（6370 + 6370 = 12740 の 12740 のように、同じ向きの短い寸法線を
+ * 端から端までつなぐと埋まり、値の合計も一致する）。区画寸法と見分けるために使う。
+ */
+function isAggregateDimension(d: DomaDimensionLike, dims: DomaDimensionLike[], tol: number): boolean {
+  const vertical = isVerticalLine(d)
+  const [lo, hi] = axisRange(d, vertical)
+  // 寸法線は手で引くので端どうしが数十 px ずれる（実データで 15 px）。画面の倍率ではなく
+  // 寸法線の長さに対する割合で許す。値の合計が一致することは厳密に見るので、誤って外すことはない
+  tol = Math.max(tol, (hi - lo) * 0.03)
+  const parts = dims
+    .filter((o) => o.id !== d.id && isVerticalLine(o) === vertical && o.length_mm < d.length_mm)
+    .map((o) => ({ mm: o.length_mm, range: axisRange(o, vertical) }))
+    .filter(({ range }) => range[0] >= lo - tol && range[1] <= hi + tol)
+  const search = (pos: number, sum: number, depth: number): boolean => {
+    if (Math.abs(pos - hi) <= tol) return sum === d.length_mm
+    if (depth > 12) return false
+    return parts.some(
+      (p) => Math.abs(p.range[0] - pos) <= tol && p.range[1] > pos + tol && search(p.range[1], sum + p.mm, depth + 1),
+    )
+  }
+  return search(lo, 0, 0)
+}
+
+/**
+ * 配筋範囲の候補: 土間筋と直交し、その本の位置を範囲に含む寸法線。
+ * 全体寸法（区画寸法の合計）は外す。部分寸法（開口部の幅など）は外せないので、
+ * 候補が複数残ったら自動では決めずに選んでもらう。
+ */
+export function findDomaSpanCandidates<T extends DomaDimensionLike>(
+  bar: DomaLine,
+  dims: T[],
+  tol: number,
+): T[] {
+  const barVertical = isVerticalLine(bar)
+  const pos = barVertical ? (bar.x1 + bar.x2) / 2 : (bar.y1 + bar.y2) / 2
+  const crossing = dims.filter((d) => {
+    if (isVerticalLine(d) === barVertical) return false
+    const [lo, hi] = axisRange(d, !barVertical)
+    return pos >= lo - tol && pos <= hi + tol
+  })
+  return crossing.filter((d) => !isAggregateDimension(d, dims, tol))
+}
+
+/**
+ * L の候補: 描いた土間筋と同じ向きで、両端が描いた線の両端とほぼ同じ位置にある寸法線。
+ * 画素の長さを mm に換算するのではなく、すでに入力された寸法値を使う。
+ */
+export function findDomaRunLengthCandidates<T extends DomaDimensionLike>(
+  bar: DomaLine,
+  dims: T[],
+  tol: number,
+): T[] {
+  const barVertical = isVerticalLine(bar)
+  const [b0, b1] = axisRange(bar, barVertical)
+  return dims.filter((d) => {
+    if (isVerticalLine(d) !== barVertical) return false
+    const [d0, d1] = axisRange(d, barVertical)
+    return Math.abs(d0 - b0) <= tol && Math.abs(d1 - b1) <= tol
+  })
+}
+
+/** 候補が 1 つの値に決まるときだけその寸法線（同じ値の重複は 1 つとみなす）。決まらなければ null */
+export function pickDomaDimension<T extends DomaDimensionLike>(candidates: T[]): T | null {
+  if (candidates.length === 0) return null
+  return candidates.every((d) => d.length_mm === candidates[0]!.length_mm) ? candidates[0]! : null
+}
+
+// 寸法線の長さの自動推定は使わない（寸法値は毎回手で入力する）。
+// 戻すときはこの関数と drawing-viewer.tsx の呼び出し 2 か所のコメントを外す。
+//
+// /**
+//  * 寸法線から図面の縮尺（px/mm）を推定し、描いた長さを mm に換算する。
+//  * 既存の寸法値に 3% 以内で近ければその値に合わせる。寸法線がなければ null。
+//  */
+// export function estimateLengthMm(pxLength: number, dims: Array<DomaLine & { length_mm: number }>): number | null {
+//   const ratios = dims
+//     .map((d) => Math.hypot(d.x2 - d.x1, d.y2 - d.y1) / d.length_mm)
+//     .filter((r) => Number.isFinite(r) && r > 0)
+//     .sort((a, b) => a - b)
+//   if (ratios.length === 0) return null
+//   const ratio = ratios[Math.floor(ratios.length / 2)]
+//   const raw = pxLength / ratio
+//   const near = dims
+//     .map((d) => d.length_mm)
+//     .find((mm) => Math.abs(mm - raw) / mm <= 0.03)
+//   return near ?? Math.round(raw / 10) * 10
+// }
