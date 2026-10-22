@@ -4933,9 +4933,9 @@ export function DrawingViewer({
                 type="button"
                 onClick={() => setCornerTool('select')}
                 className={toolButtonClass(cornerTool === 'select')}
-                title="配置した部材を修正し、ドラッグで移動します (S)"
+                title="配置した部材を選択し、ドラッグで移動します (S)"
               >
-                修正
+                選択
               </button>
               <button
                 type="button"
@@ -5041,7 +5041,7 @@ export function DrawingViewer({
             }`}
           >
             {layer === 'corner'
-              ? 'Sキー: 修正／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
+              ? 'Sキー: 選択／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
               : splitArmedSegmentId
                 ? 'Escキー: 分割をキャンセル'
                 : 'Escキー: 描画取消／Dキー: 描画／Gキー: 間隔線／Sキー: 選択／Fキー: 全画面／Zキー: 削除／Shift+描画: 水平・垂直'}
