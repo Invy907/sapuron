@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx lib/optimizer.test.ts && tsx lib/unit-calculations.test.ts && tsx lib/corner-bar-summary.test.ts"
+    "test": "tsx lib/optimizer.test.ts && tsx lib/unit-calculations.test.ts && tsx lib/corner-bar-summary.test.ts && tsx lib/corner-bar-presets.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.9.0",

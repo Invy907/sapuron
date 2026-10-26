@@ -1,6 +1,7 @@
 import type { SegmentColor } from '@/lib/segment-colors'
 import type { ExtendedShapeType, LocationType, UnitBar } from '@/lib/unit-types'
 import type { UnitDetailGeometry, UnitDetailSpec } from '@/lib/unit-detail-shape'
+import type { CornerBarBarItem, CornerBarSegment } from '@/lib/corner-bar-presets'
 
 export interface Project {
   id: string
@@ -41,6 +42,43 @@ export interface DrawingSegment {
   unit_name?: string | null
   /** キャッシュ: マーク番号（円内表示）。ユニット解決時はユニット側を優先 */
   mark_number?: number | null
+  created_at: string
+}
+
+/**
+ * 図面詳細画面の「付加筋」タブに配置した鉄筋オブジェクト。
+ * ユニットとは独立した図面レベルのデータ。
+ *
+ * 1 配置に複数の鉄筋径が入る。同じ位置の D10 と D13 では実寸が違うため、
+ * 本数・各辺の寸法・寸法基準（芯々／内々／外々）は bars の要素ごとに持つ。
+ * category（筋種類）と shape_type（形状）は配置に 1 つだけなので、
+ * 1 つの配置に別の筋種類が混ざることはない。
+ */
+export interface DrawingCornerBar {
+  id: string
+  drawing_id: string
+  page_no: number
+  /** CornerBarCategory: CORNER / SOE / SPECIAL_CORNER など */
+  category: string
+  /** CornerBarShapeType: STRAIGHT / L / U / Z / STEP / T */
+  shape_type: string
+  /** 径ごとの本数と辺の寸法。要素の segments は形状の辺数と一致する */
+  bars: CornerBarBarItem[]
+  /** @deprecated bars に移行済み。bars[0] のミラーとして書くだけ */
+  diameter: string | null
+  /** @deprecated bars[i].segments に移行済み。bars[0] のミラーとして書くだけ */
+  segments: CornerBarSegment[]
+  /** 配置点（drawing_segments と同じ図面座標系。形状の bbox 中心を合わせる） */
+  x: number
+  y: number
+  /** 図面上の大きさ（bbox の長辺, px）。クリック配置の既定値または選択タブの ± で決める */
+  size_px: number
+  /** 0/1/2/3 = 0/90/180/270 度（時計回り） */
+  rotation: number
+  /** 特殊コーナー筋: 左右反転（回転の前に適用） */
+  flipped?: boolean
+  color: SegmentColor
+  label: string | null
   created_at: string
 }
 

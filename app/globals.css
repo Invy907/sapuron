@@ -162,6 +162,15 @@ button,
     gap: 14px !important;
   }
 
+  /* 画面用の space-y-6（margin-block-start）を消す。flex の gap と両方効くと
+     二重に空いてしまう（改ページを挟まない区間で特に目立つ）。
+     Tailwind の space-y は margin-top ではなく margin-block-start を使うので、
+     両方明示して確実に打ち消す。 */
+  .optimize-print-root > * {
+    margin: 0 !important;
+    margin-block: 0 !important;
+  }
+
   .optimize-print-manufacture {
     order: 1 !important;
     border: 0 !important;
@@ -183,21 +192,38 @@ button,
   }
 
   /* 計算結果は製作図リストの後、次ページから印刷する。
-     フック付は表カードの下に縦積み。
+     材料取りは左列、付加筋は縮小して右列に置き、同じページに収める。 */
+  .optimize-print-summary-layout {
+    order: 2 !important;
+    display: grid !important;
+    grid-template-columns: max-content minmax(0, 1fr) !important;
+    align-items: start !important;
+    column-gap: 12px !important;
+    width: 100% !important;
+    break-before: page;
+    break-inside: avoid;
+  }
+
+  /* 画面用の space-y を印刷用 grid の列間余白と重ねない */
+  .optimize-print-summary-layout > * {
+    margin: 0 !important;
+    margin-block: 0 !important;
+  }
+
+  /* フック付は材料取り表の下に縦積み。
      セクション自体を中身の幅（＝表カード）に縮め、左寄せする。
      その上で両カードを width:100% にすると、幅が揃い右端も揃う。 */
   .optimize-print-results {
-    order: 2 !important;
-    break-before: page;
     width: fit-content !important;
     align-self: flex-start !important;
   }
 
   /* 「鉄筋種類別の必要本数」と「フック付」を 1 ページに収めるため、
      余白・行の高さ・文字を詰め、各ボックスはページ途中で割らない。
-     両カードは同じ幅（セクション幅）にして右端を揃える。 */
+     付加筋 集計結果もこの 2 枚と同じカード（枠線・余白・幅）に揃える。 */
   .print-bar-summary,
-  .print-hook-summary {
+  .print-hook-summary,
+  .corner-summary-section {
     padding: 8px 10px !important;
     width: 100% !important;
     box-sizing: border-box !important;
@@ -264,5 +290,92 @@ button,
   .auto-width-field {
     width: auto !important;
     min-width: 0 !important;
+  }
+
+  /* 付加筋カードは材料取りの右列。文字サイズは左の材料取り表と同じ 14px に揃える */
+  .optimize-print-corner-bars {
+    min-width: 0 !important;
+    width: auto !important;
+    padding-top: 32px !important;
+    overflow: visible !important;
+  }
+
+  .optimize-print-corner-bars .corner-summary-print-root {
+    width: 100% !important;
+  }
+
+  .optimize-print-corner-bars .corner-summary-section {
+    overflow: hidden !important;
+  }
+
+  /* 文字列は内容幅、形状図は残り幅に合わせて縮める */
+  .optimize-print-corner-bars .corner-summary-print-root table {
+    width: 100% !important;
+  }
+
+  .corner-summary-figure {
+    width: 100%;
+  }
+
+  .corner-summary-figure svg {
+    width: 100% !important;
+    max-width: 280px;
+    height: auto !important;
+  }
+
+  /* 筋種類ごとのセクションと表の行が途中で割れないようにする。
+     space-y-* のマージンではなく gap で詰めたいので flex に切り替える */
+  .corner-summary-print-root {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+
+  .corner-summary-print-root > * {
+    margin: 0 !important;
+  }
+
+  .corner-summary-print-root thead {
+    display: table-header-group;
+  }
+
+  .corner-summary-print-root tr {
+    break-inside: avoid;
+  }
+
+  /* 材料取り表（.print-bar-summary table）と同じ 14px・セル余白 */
+  .corner-summary-print-root table {
+    border-color: #64748b !important;
+    width: auto !important;
+    font-size: 14px !important;
+  }
+
+  .corner-summary-print-root td,
+  .corner-summary-print-root th {
+    border-color: #64748b !important;
+    padding-top: 1px !important;
+    padding-bottom: 1px !important;
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+
+  .corner-summary-print-root td:first-child,
+  .corner-summary-print-root th:first-child {
+    padding-left: 0 !important;
+  }
+
+  .corner-summary-print-root .text-sm {
+    font-size: inherit !important;
+  }
+
+  .corner-summary-print-root .font-semibold {
+    font-weight: 500 !important;
+  }
+
+  /* 画面では辺ごとの寸法基準を 1 行で見せている（セルが nowrap）。
+     ただし A4 の幅には収まらないので、印刷だけは折り返しを許す。
+     区切りの空白は「×」の後ろにあるので、折り返しても読む順番は崩れない。 */
+  .corner-summary-dims {
+    white-space: normal !important;
   }
 }

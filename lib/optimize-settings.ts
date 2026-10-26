@@ -9,6 +9,16 @@ export function tateCountOverrideStorageKey(projectId: string) {
   return `optimize-tate-count-overrides:${projectId}`
 }
 
+/** 付加筋集計の加工長手入力（集計行 key → mm） */
+export function kakouchouOverrideStorageKey(projectId: string) {
+  return `optimize-kakouchou-overrides:${projectId}`
+}
+
+/** 付加筋集計の筋種類名の手入力（集計行 key → 表示名） */
+export function cornerBarLabelOverrideStorageKey(projectId: string) {
+  return `optimize-corner-bar-label-overrides:${projectId}`
+}
+
 export function parsePieceLengthAdjustment(
   value: string | undefined | null,
 ): number {

@@ -2,7 +2,8 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DrawingSegment, Unit } from '@/lib/types/database'
+import type { DrawingCornerBar, DrawingSegment, Unit } from '@/lib/types/database'
+import { CornerBarSummarySections } from '@/components/corner-bar-summary-view'
 import { createClient } from '@/lib/supabase/client'
 import { getSegmentLabelMap } from '@/lib/segment-labels'
 import { optimize, type PieceInput, type OptimizationOutput } from '@/lib/optimizer'
@@ -17,6 +18,8 @@ import {
 import type { UnitShapeLegendPosition } from '@/components/unit-client'
 import {
   DEFAULT_PIECE_LENGTH_ADJUSTMENT_MM,
+  cornerBarLabelOverrideStorageKey,
+  kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
@@ -96,6 +99,7 @@ export function OptimizeClient({
   initialPieceLengthAdjustmentMm = DEFAULT_PIECE_LENGTH_ADJUSTMENT_MM,
   autoRun = false,
   units: initialUnits = [],
+  cornerBars = [],
 }: {
   projectId: string
   segments: DrawingSegment[]
@@ -103,6 +107,8 @@ export function OptimizeClient({
   initialPieceLengthAdjustmentMm?: number
   autoRun?: boolean
   units?: Unit[]
+  /** 現場内の全図面の付加筋。切断最適化とは別に、結果の最後に集計して出す */
+  cornerBars?: DrawingCornerBar[]
 }) {
   const [units, setUnits] = useState(initialUnits)
   const segmentLabelById = getSegmentLabelMap(segments)
@@ -242,6 +248,105 @@ export function OptimizeClient({
       return { ...prev, [rowKey]: n }
     })
   }, [])
+
+  const kakouchouStorageKey = useMemo(
+    () => kakouchouOverrideStorageKey(projectId),
+    [projectId],
+  )
+  const [kakouchouOverrides, setKakouchouOverrides] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.localStorage.getItem(kakouchouStorageKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      const next: Record<string, number> = {}
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          const n = Number(value)
+          if (Number.isFinite(n) && n > 0) next[key] = Math.floor(n)
+        }
+      }
+      setKakouchouOverrides(next)
+    } catch {
+      setKakouchouOverrides({})
+    }
+  }, [kakouchouStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(kakouchouStorageKey, JSON.stringify(kakouchouOverrides))
+    } catch {
+      // ignore
+    }
+  }, [kakouchouOverrides, kakouchouStorageKey])
+
+  const handleKakouchouOverrideChange = useCallback((rowKey: string, value: number | null) => {
+    setKakouchouOverrides((prev) => {
+      if (value == null) {
+        if (!(rowKey in prev)) return prev
+        const next = { ...prev }
+        delete next[rowKey]
+        return next
+      }
+      if (prev[rowKey] === value) return prev
+      return { ...prev, [rowKey]: value }
+    })
+  }, [])
+
+  const cornerBarLabelStorageKey = useMemo(
+    () => cornerBarLabelOverrideStorageKey(projectId),
+    [projectId],
+  )
+  const [cornerBarLabelOverrides, setCornerBarLabelOverrides] = useState<
+    Record<string, string>
+  >({})
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.localStorage.getItem(cornerBarLabelStorageKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      const next: Record<string, string> = {}
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === 'string' && value.trim() !== '') next[key] = value
+        }
+      }
+      setCornerBarLabelOverrides(next)
+    } catch {
+      setCornerBarLabelOverrides({})
+    }
+  }, [cornerBarLabelStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(
+        cornerBarLabelStorageKey,
+        JSON.stringify(cornerBarLabelOverrides),
+      )
+    } catch {
+      // ignore
+    }
+  }, [cornerBarLabelOverrides, cornerBarLabelStorageKey])
+
+  const handleCornerBarLabelOverrideChange = useCallback(
+    (rowKey: string, value: string | null) => {
+      setCornerBarLabelOverrides((prev) => {
+        if (value == null) {
+          if (!(rowKey in prev)) return prev
+          const next = { ...prev }
+          delete next[rowKey]
+          return next
+        }
+        if (prev[rowKey] === value) return prev
+        return { ...prev, [rowKey]: value }
+      })
+    },
+    [],
+  )
 
   const unitCalculationRows = useMemo(
     () =>
@@ -426,8 +531,20 @@ export function OptimizeClient({
     })
   }
 
+  /** ページ最後の印刷ボタン。押した瞬間だけタイトルを消し、印刷ダイアログに出るファイル名をきれいにする */
+  const handlePrint = useCallback(() => {
+    const originalTitle = document.title
+    document.title = ''
+    const restoreTitle = () => {
+      document.title = originalTitle
+      window.removeEventListener('afterprint', restoreTitle)
+    }
+    window.addEventListener('afterprint', restoreTitle)
+    window.print()
+  }, [])
+
   return (
-    <div className="optimize-print-root space-y-6">
+    <div className="optimize-print-root space-y-4">
       {/* 計算中表示 */}
       {calculating && (
         <section className="rounded-lg border border-border bg-white p-8 text-center">
@@ -472,33 +589,67 @@ export function OptimizeClient({
         </section>
       )}
 
-      {/* 結果 */}
-      {result && !calculating && (
-        <section className="optimize-print-results space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">材料取り</h2>
-          </div>
-          {barSummaryTable && barSummaryTable.length > 0 && (
-            <BarSummarySection
-              rows={barSummaryTable}
-              adjustmentMm={pieceLengthAdjustmentMm}
-            />
+      {/*
+        画面では従来どおり縦積み。印刷時だけこのまとまりを 2 列にして、
+        付加筋を材料取りの右側へ配置する。
+      */}
+      {!calculating && (result || cornerBars.length > 0) && (
+        <div className="optimize-print-summary-layout space-y-4">
+          {/* 結果 */}
+          {result && (
+            <section className="optimize-print-results space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-semibold">材料取り</h2>
+              </div>
+              {barSummaryTable && barSummaryTable.length > 0 && (
+                <BarSummarySection
+                  rows={barSummaryTable}
+                  adjustmentMm={pieceLengthAdjustmentMm}
+                />
+              )}
+
+              <OptimizationResultView
+                result={result}
+                stockLengthMm={DEFAULT_STOCK_LENGTH_MM}
+                projectId={projectId}
+                segmentLabelById={segmentLabelById}
+                segmentDrawingIdById={segmentDrawingIdById}
+                focusSegmentId={focusSegmentId ?? undefined}
+                unitCalculationRows={unitCalculationRows}
+                roundingMode={unitCountRoundingMode}
+                units={units}
+                onShapeLengthSave={handleShapeLengthSave}
+                manufactureTotalsByUnitId={manufactureTotalsByUnitId}
+              />
+            </section>
           )}
 
-          <OptimizationResultView
-            result={result}
-            stockLengthMm={DEFAULT_STOCK_LENGTH_MM}
-            projectId={projectId}
-            segmentLabelById={segmentLabelById}
-            segmentDrawingIdById={segmentDrawingIdById}
-            focusSegmentId={focusSegmentId ?? undefined}
-            unitCalculationRows={unitCalculationRows}
-            roundingMode={unitCountRoundingMode}
-            units={units}
-            onShapeLengthSave={handleShapeLengthSave}
-            manufactureTotalsByUnitId={manufactureTotalsByUnitId}
-          />
-        </section>
+          {/* 付加筋 集計結果。画面では切断最適化の結果の後ろに続けて出す */}
+          {cornerBars.length > 0 && (
+            <section className="optimize-print-corner-bars space-y-4">
+              <CornerBarSummarySections
+                placements={cornerBars}
+                kakouchouOverrides={kakouchouOverrides}
+                onKakouchouOverrideChange={handleKakouchouOverrideChange}
+                labelOverrides={cornerBarLabelOverrides}
+                onLabelOverrideChange={handleCornerBarLabelOverrideChange}
+              />
+            </section>
+          )}
+        </div>
+      )}
+
+      {/* 印刷ボタン。このページの一番下に固定する */}
+      {result && !calculating && (
+        <div className="flex justify-end print:hidden">
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted hover:bg-gray-50"
+          >
+            印刷
+          </button>
+        </div>
       )}
     </div>
   )

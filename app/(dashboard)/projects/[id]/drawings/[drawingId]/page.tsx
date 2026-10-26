@@ -1,6 +1,12 @@
 import { createClient } from '@/lib/supabase/server'
 import { notFound } from 'next/navigation'
-import type { Drawing, DrawingSegment, Project, Unit } from '@/lib/types/database'
+import type {
+  Drawing,
+  DrawingCornerBar,
+  DrawingSegment,
+  Project,
+  Unit,
+} from '@/lib/types/database'
 import { DrawingViewer } from '@/components/drawing-viewer'
 import { DrawingHeader } from '@/components/drawing-header'
 
@@ -40,6 +46,13 @@ export default async function DrawingDetailPage({
     .order('created_at', { ascending: true })
     .returns<DrawingSegment[]>()
 
+  const { data: cornerBars } = await supabase
+    .from('drawing_corner_bars')
+    .select('*')
+    .eq('drawing_id', drawingId)
+    .order('created_at', { ascending: true })
+    .returns<DrawingCornerBar[]>()
+
   const { data: units } = await supabase
     .from('units')
     .select('*')
@@ -63,6 +76,7 @@ export default async function DrawingDetailPage({
         fileType={drawing.file_type}
         initialSegments={segments ?? []}
         initialSelectedSegmentId={segmentId}
+        initialCornerBars={cornerBars ?? []}
         units={units ?? []}
       />
     </div>

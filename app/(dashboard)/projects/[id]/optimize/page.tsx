@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import type {
   Project,
+  DrawingCornerBar,
   DrawingSegment,
   Drawing,
   Unit,
@@ -37,19 +38,26 @@ export default async function OptimizePage({
     .limit(1)
     .single<Pick<Drawing, 'id'> | null>()
 
+  const { data: projectDrawings } = await supabase
+    .from('drawings')
+    .select('id')
+    .eq('project_id', projectId)
+    .returns<Pick<Drawing, 'id'>[]>()
+
+  const drawingIds = projectDrawings?.map((d) => d.id) ?? []
+
   const { data: segments } = await supabase
     .from('drawing_segments')
     .select('*')
-    .in(
-      'drawing_id',
-      (
-        await supabase
-          .from('drawings')
-          .select('id')
-          .eq('project_id', projectId)
-      ).data?.map((d) => d.id) ?? [],
-    )
+    .in('drawing_id', drawingIds)
     .returns<DrawingSegment[]>()
+
+  const { data: cornerBars } = await supabase
+    .from('drawing_corner_bars')
+    .select('*')
+    .in('drawing_id', drawingIds)
+    .order('created_at', { ascending: true })
+    .returns<DrawingCornerBar[]>()
 
   const { data: units } = await supabase
     .from('units')
@@ -81,6 +89,7 @@ export default async function OptimizePage({
         initialPieceLengthAdjustmentMm={parsePieceLengthAdjustment(adjustment)}
         autoRun={run === '1'}
         units={units ?? []}
+        cornerBars={cornerBars ?? []}
       />
     </div>
   )
