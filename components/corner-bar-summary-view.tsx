@@ -734,20 +734,18 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
     ? COMPACT_PRINT_FIGURE_METRICS
     : PRINT_FIGURE_METRICS
   // 行の高さを決めてあれば、図をその高さいっぱいに描く（余白だけが増えないように）
-  // 寸法の文字を置く余白（上下の pad）より低くすると図が潰れるので、その分は残す
   const fixedHeight =
-    rowHeight != null
-      ? Math.max(baseMetrics.pad * 2 + 24, rowHeight - PRINT_ROW_FIGURE_PADDING)
-      : null
+    rowHeight != null ? Math.max(30, rowHeight - PRINT_ROW_FIGURE_PADDING) : null
   const printMetrics: FigureMetrics =
     fixedHeight != null
       ? {
-          // 行の高さを決めたときは、広い枠の中で縦横比のまま高さいっぱいに描き、
-          // 余った左右を詰める。形を変えずに図全体が大きく（小さく）なる
+          // 行の高さを決めたときは、標準の大きさ（280 幅）で寸法まで置いてから、
+          // 図を丸ごと行の高さに合わせて拡大・縮小する（線も数字も同じ比率で変わる）。
+          // 列の幅で描くと、図が広がる → 列が広がる → … と大きさが決まらないので標準の幅にする
           ...baseMetrics,
-          width: PRINT_FIGURE_FIXED_ROW_MAX_WIDTH,
-          height: fixedHeight,
-          cropHeight: false,
+          width: PRINT_FIGURE_METRICS.width,
+          height: Math.round(PRINT_FIGURE_METRICS.width * PRINT_FIGURE_HEIGHT_RATIO),
+          cropHeight: true,
           cropWidth: true,
         }
       : printWidth
@@ -767,7 +765,11 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
         ref={observePrintBox}
         className={`hidden print:block ${fixedHeight != null ? 'corner-summary-figure-fixed' : ''}`}
       >
-        <ShapeFigureSvg row={row} metrics={printMetrics} />
+        <ShapeFigureSvg
+          row={row}
+          metrics={printMetrics}
+          targetHeight={fixedHeight ?? undefined}
+        />
       </div>
     </>
   )
@@ -776,9 +778,12 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
 function ShapeFigureSvg({
   row,
   metrics,
+  targetHeight,
 }: {
   row: AdditionalRebarSpecRow
   metrics: FigureMetrics
+  /** 図を丸ごとこの高さに拡大・縮小して描く（行の高さを決めたとき）。幅は最大 480 */
+  targetHeight?: number
 }) {
   // くの字は行ごとの角度で描く
   const shape = resolveCornerBarShape(
@@ -857,8 +862,15 @@ function ShapeFigureSvg({
     layout
   if (points.length < 2) return null
   // 左右を詰めたときは詰めた幅そのもの（viewBox と 1:1）で描く
-  const displayWidth = m.cropWidth ? viewWidth : metrics.width
-  const displayHeight = (viewHeight * displayWidth) / viewWidth
+  const baseWidth = m.cropWidth ? viewWidth : metrics.width
+  const baseHeight = (viewHeight * baseWidth) / viewWidth
+  // 行の高さを決めたときは、図・数字・線をまとめて同じ比率で拡大・縮小する
+  const zoom =
+    targetHeight != null && baseHeight > 0
+      ? Math.min(targetHeight / baseHeight, PRINT_FIGURE_FIXED_ROW_MAX_WIDTH / baseWidth)
+      : 1
+  const displayWidth = baseWidth * zoom
+  const displayHeight = baseHeight * zoom
 
   const path = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
