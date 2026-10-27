@@ -455,7 +455,7 @@ const SCREEN_FIGURE_METRICS: FigureMetrics = {
 
 /**
  * 印刷の形状図。幅は実際に置かれる幅（測った値）にして viewBox と 1:1 にし、
- * 寸法・寸法基準の文字を表の文字（14px、括弧内の加工長と同じ）と同じ大きさで印刷する。
+ * 寸法・寸法基準の文字を紙の上で読める大きさ（12px）で印刷する。
  * 列の幅は端末のフォントで変わるので、狭くて重なるときだけ文字を小さくする。
  */
 const PRINT_FIGURE_METRICS: FigureMetrics = {
@@ -463,10 +463,10 @@ const PRINT_FIGURE_METRICS: FigureMetrics = {
   height: 180,
   pad: 30,
   labelGap: 4,
-  dimFont: 14,
-  measurementFont: 14,
-  lineDy: 16,
-  // 基本は 14px のまま。列が狭くて重なるときだけ少しずつ小さくする（重ねて書かない）
+  dimFont: 12,
+  measurementFont: 12,
+  lineDy: 14,
+  // 基本は 12px のまま。列が狭くて重なるときだけ少しずつ小さくする（重ねて書かない）
   labelScales: [1, 0.85, 0.7],
   cropHeight: true,
 }

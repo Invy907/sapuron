@@ -543,6 +543,13 @@ function SheetCard({
   onBoxChange: (box: Partial<PrintCardPlacement>) => void
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * 高さを決めたカードで、中身がその高さに収まらないときの縮小率（1 = そのまま）。
+   * 中身を切らずに、文字・図・行の間隔をまとめて縮めて収める
+   */
+  const [fitScale, setFitScale] = useState(1)
+  const fitScaleRef = useRef(1)
   const dragRef = useRef<{ startX: number; startY: number } | null>(null)
   const [offset, setOffset] = useState<{ dx: number; dy: number } | null>(null)
   const edgeRef = useRef<{
@@ -710,6 +717,37 @@ function SheetCard({
   const width = liveBox?.w ?? liveZoom?.box?.w ?? boxW
   const height = liveBox?.h ?? liveZoom?.box?.h ?? boxH
   const shownZoom = liveZoom?.zoom ?? zoom
+  const appliedFit = height != null ? fitScale : 1
+
+  // 中身の本来の高さを測り、カードの高さより大きければ縮小率を下げる。
+  // カードや中身の大きさが変わるたびに測り直す
+  useEffect(() => {
+    if (height == null) return
+    const card = cardRef.current
+    const body = bodyRef.current
+    if (!card || !body) return
+    const measure = () => {
+      const content = body.firstElementChild as HTMLElement | null
+      if (!content) return
+      // 行を引き伸ばす指定（height: 100%）を一時的に外して、詰めたときの高さを測る
+      card.classList.add('print-card-measuring')
+      const naturalNow = content.getBoundingClientRect().height
+      card.classList.remove('print-card-measuring')
+      const boxNow = card.getBoundingClientRect().height
+      if (naturalNow <= 0 || boxNow <= 0) return
+      // 測った高さは今の縮小率が掛かった値なので、縮小なしの高さに戻してから比べる
+      const natural = naturalNow / fitScaleRef.current
+      const next = Math.min(1, boxNow / natural)
+      if (Math.abs(next - fitScaleRef.current) > 0.005) {
+        fitScaleRef.current = next
+        setFitScale(next)
+      }
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(card)
+    if (body.firstElementChild) observer.observe(body.firstElementChild)
+    return () => observer.disconnect()
+  }, [height, shownZoom])
   const edges: CardEdge[] = positioned ? ['left', 'right', 'top', 'bottom'] : []
   const grab = EDGE_GRAB_PX / scale
 
@@ -741,7 +779,7 @@ function SheetCard({
           : {}),
       }}
     >
-      <div className="print-card-body" style={{ zoom: shownZoom }}>
+      <div ref={bodyRef} className="print-card-body" style={{ zoom: shownZoom * appliedFit }}>
         {card.node}
       </div>
 

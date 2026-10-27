@@ -395,8 +395,10 @@ button,
 
 /* 印刷レイアウトで辺をドラッグして高さを決めたカード。中身より低くはしない。
    カードの枠（青い線）を持つ要素まで高さ 100% をつなぎ、枠をその高さまで伸ばす */
+/* 中身より低くしたときは、中身をまとめて縮めて収める（print-layout-modal の fitScale）。
+   切れないよう、はみ出した分は隠さない */
 .print-card-fill {
-  min-height: min-content;
+  overflow: visible;
 }
 
 .print-card-fill > .print-card-body,
@@ -404,6 +406,21 @@ button,
 .print-card-fill > .print-card-body > * > .print-hook-summary,
 .print-card-fill > .print-card-body > * > .corner-summary-section {
   height: 100%;
+}
+
+/* 付加筋・特殊コーナー筋のカードを下の辺で高くしたら、増えた高さを各行に分けて
+   行の間隔を広げる（余白が下にまとまらないように） */
+.print-card-fill > .print-card-body > * > .corner-summary-section > table {
+  height: 100%;
+}
+
+/* 縮小率を決めるために、引き伸ばす前の中身の高さを測っている間だけ外す */
+.print-card-measuring > .print-card-body,
+.print-card-measuring > .print-card-body > *,
+.print-card-measuring > .print-card-body > * > .print-hook-summary,
+.print-card-measuring > .print-card-body > * > .corner-summary-section,
+.print-card-measuring > .print-card-body > * > .corner-summary-section > table {
+  height: auto !important;
 }
 
 /* A4 縦・余白 6mm/10mm の印刷範囲（190 × 285mm）。画面では白い用紙として見せる */
