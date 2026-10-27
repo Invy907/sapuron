@@ -10,6 +10,7 @@ import {
 import {
   CORNER_BAR_DIAMETERS,
   cornerBarSegmentLabelAnchors,
+  cornerBarLayerMark,
   cornerBarThumbPoints,
   measurementTypeLabel,
   resolveCornerBarShape,
@@ -95,6 +96,7 @@ function DimsText({ row }: { row: AdditionalRebarSpecRow }) {
 function SpecWithDiameter({ row }: { row: AdditionalRebarSpecRow }) {
   return (
     <>
+      {cornerBarLayerMark(row.layer)}
       {row.diameter}
       <span className="text-muted">（</span>
       <DimsText row={row} />
@@ -291,6 +293,7 @@ function SpecWithKakouchou({
   const shown = overrideMm ?? autoMm
   return (
     <>
+      {cornerBarLayerMark(row.layer)}
       {row.diameter}
       <span className="text-muted">（</span>
       {onOverrideChange ? (

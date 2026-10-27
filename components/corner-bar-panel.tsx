@@ -10,6 +10,8 @@ import {
   clampCornerBarSizePx,
   CORNER_BAR_CATEGORIES,
   CORNER_BAR_DIAMETERS,
+  CORNER_BAR_LAYERS,
+  cornerBarLayerMark,
   cornerBarCategoryLabel,
   cornerBarDiameterOptionLabel,
   cornerBarFixedVertexForEdge,
@@ -25,6 +27,7 @@ import {
   cornerBarThumbPath,
   cornerBarThumbPoints,
   changeCornerBarBarDiameter,
+  DEFAULT_CORNER_BAR_COLORS,
   DEFAULT_CORNER_BAR_DIAMETER,
   DEFAULT_CORNER_BAR_SIZE_PX,
   getCornerBarShape,
@@ -50,6 +53,7 @@ import {
   clampCornerBarBendAngle,
   type CornerBarBarItem,
   type CornerBarCategory,
+  type CornerBarLayer,
   type CornerBarPlacementDraft,
   type CornerBarSegment,
   type CornerBarShapeDef,
@@ -285,6 +289,11 @@ export function CornerBarPanel({
     commitSelectedBars((bars) => bars.map((b, i) => (i === index ? { ...b, quantity } : b)))
   }
 
+  function handleSelectedLayerChange(index: number, layer: CornerBarLayer | null) {
+    if (!selectedBars) return
+    commitSelectedBars((bars) => bars.map((b, i) => (i === index ? withBarLayer(b, layer) : b)))
+  }
+
   /** 鉄筋 1 件の辺の寸法・基準を 1 つだけ差し替える。順序は必ず保つ */
   function handleSelectedSegmentChange(
     barIndex: number,
@@ -362,6 +371,13 @@ export function CornerBarPanel({
     if (!placementDraft) return
     commitPlacementBars(
       placementDraft.bars.map((b, i) => (i === index ? { ...b, quantity } : b)),
+    )
+  }
+
+  function handlePlacementLayerChange(index: number, layer: CornerBarLayer | null) {
+    if (!placementDraft) return
+    commitPlacementBars(
+      placementDraft.bars.map((b, i) => (i === index ? withBarLayer(b, layer) : b)),
     )
   }
 
@@ -557,6 +573,7 @@ export function CornerBarPanel({
               onActiveSegIndexChange={setActiveSegIndex}
               onChangeBarType={handleSelectedBarTypeChange}
               onChangeQuantity={handleSelectedQuantityChange}
+              onChangeLayer={handleSelectedLayerChange}
               onChangeSegment={handleSelectedSegmentChange}
               onAdd={handleAddSelectedBar}
               onRemove={handleRemoveSelectedBar}
@@ -623,7 +640,7 @@ export function CornerBarPanel({
                       title={option.label}
                       aria-label={option.label}
                       aria-pressed={isActive}
-                      onClick={() =>
+                      onClick={() => {
                         onChangePlacementDraft(
                           isActive
                             ? null
@@ -635,7 +652,9 @@ export function CornerBarPanel({
                                 rotation: option.rotation,
                               }),
                         )
-                      }
+                        // 形状を選び直したら、色は筋種類の既定の色に戻す
+                        onPlacementColorChange(DEFAULT_CORNER_BAR_COLORS[placementCategory])
+                      }}
                       className={`flex items-center justify-center rounded border p-0.5 transition-colors ${
                         isActive
                           ? 'border-primary bg-primary/10'
@@ -728,6 +747,7 @@ export function CornerBarPanel({
               onActiveSegIndexChange={setActiveSegIndex}
               onChangeBarType={handlePlacementBarTypeChange}
               onChangeQuantity={handlePlacementQuantityChange}
+              onChangeLayer={handlePlacementLayerChange}
               onChangeSegment={handlePlacementSegmentChange}
               onAdd={handleAddPlacementBar}
               onRemove={handleRemovePlacementBar}
@@ -788,7 +808,7 @@ export function CornerBarPanel({
             <div className="space-y-0.5 border-t border-border pt-1.5">
               {printSummary.detailRows.map((row) => (
                 <div
-                  key={`${row.category}/${row.diameter}/${row.color}`}
+                  key={`${row.category}/${row.diameter}/${row.layer ?? ''}/${row.color}`}
                   className="flex items-center justify-between gap-2 text-[10px] text-muted"
                 >
                   <span className="flex min-w-0 items-center gap-1.5">
@@ -802,7 +822,8 @@ export function CornerBarPanel({
                       }}
                     />
                     <span className="truncate">
-                      {cornerBarCategoryLabel(row.category)} {row.diameter}
+                      {cornerBarCategoryLabel(row.category)} {cornerBarLayerMark(row.layer)}
+                      {row.diameter}
                     </span>
                   </span>
                   <span className="shrink-0 text-foreground">{row.qty} 本</span>
@@ -829,6 +850,7 @@ function CornerBarBarsField({
   onActiveSegIndexChange,
   onChangeBarType,
   onChangeQuantity,
+  onChangeLayer,
   onChangeSegment,
   onAdd,
   onRemove,
@@ -842,6 +864,8 @@ function CornerBarBarsField({
   onActiveSegIndexChange: (index: number | null) => void
   onChangeBarType: (index: number, barType: string) => void
   onChangeQuantity: (index: number, quantity: number) => void
+  /** 特殊コーナー筋の上・下（null = なし） */
+  onChangeLayer?: (index: number, layer: CornerBarLayer | null) => void
   onChangeSegment?: (
     barIndex: number,
     segIndex: number,
@@ -867,6 +891,25 @@ function CornerBarBarsField({
       {bars.map((bar, barIdx) => (
         <div key={bar.id} className="space-y-1.5 rounded border border-border bg-white p-1.5">
           <div className="flex items-center gap-1.5">
+            {category === 'SPECIAL_CORNER' && onChangeLayer ? (
+              <select
+                value={bar.layer ?? ''}
+                disabled={disabled}
+                onChange={(e) =>
+                  onChangeLayer(barIdx, (e.target.value || null) as CornerBarLayer | null)
+                }
+                aria-label="上・下"
+                title="上筋・下筋"
+                className="w-14 shrink-0 rounded border border-border bg-white px-1 py-1 text-xs outline-none focus:border-primary disabled:opacity-50"
+              >
+                <option value="">なし</option>
+                {CORNER_BAR_LAYERS.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.mark}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <select
               value={bar.barType}
               disabled={disabled}
@@ -1306,4 +1349,12 @@ function ColorSelect({
       ) : null}
     </div>
   )
+}
+
+/** 鉄筋 1 件の上・下を差し替える。なし（null）のときは項目ごと外す */
+function withBarLayer(bar: CornerBarBarItem, layer: CornerBarLayer | null): CornerBarBarItem {
+  const next = { ...bar }
+  if (layer) next.layer = layer
+  else delete next.layer
+  return next
 }

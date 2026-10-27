@@ -685,6 +685,31 @@ export interface CornerBarBarItem {
   measurementDeductionsMm?: MeasurementDeductionsMm
   /** くの字: 辺のあいだの角度（度）。配置ごとに 1 つで、全ての bars に同じ値を書く */
   bendAngleDeg?: number
+  /** 特殊コーナー筋: 上筋・下筋のどちらか。無い（なし）ときは付けない */
+  layer?: CornerBarLayer
+}
+
+/** 特殊コーナー筋の上筋・下筋 */
+export type CornerBarLayer = 'UPPER' | 'LOWER'
+
+/** 鉄筋径の左で選ぶ上・下。mark は丸で囲んだ表示 */
+export const CORNER_BAR_LAYERS: Array<{ id: CornerBarLayer; label: string; mark: string }> = [
+  { id: 'UPPER', label: '上', mark: '㊤' },
+  { id: 'LOWER', label: '下', mark: '㊦' },
+]
+
+export function normalizeCornerBarLayer(value: unknown): CornerBarLayer | undefined {
+  return value === 'UPPER' || value === 'LOWER' ? value : undefined
+}
+
+/** 径の前に付ける「㊤」「㊦」。なしは空 */
+export function cornerBarLayerMark(layer: unknown): string {
+  return CORNER_BAR_LAYERS.find((l) => l.id === layer)?.mark ?? ''
+}
+
+function withLayer(layer: unknown): Pick<CornerBarBarItem, 'layer'> {
+  const normalized = normalizeCornerBarLayer(layer)
+  return normalized ? { layer: normalized } : {}
 }
 
 /** 寸法基準ごとの辺 1 本あたりの減り(mm) */
@@ -769,7 +794,7 @@ export function makeCornerBarBar(
   base?: Partial<
     Pick<
       CornerBarBarItem,
-      'id' | 'quantity' | 'segments' | 'measurementDeductionsMm' | 'bendAngleDeg'
+      'id' | 'quantity' | 'segments' | 'measurementDeductionsMm' | 'bendAngleDeg' | 'layer'
     >
   >,
 ): CornerBarBarItem {
@@ -780,6 +805,8 @@ export function makeCornerBarBar(
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
     ...withDeductions(base?.measurementDeductionsMm),
     ...withBendAngle(shape, base?.bendAngleDeg),
+    // 上・下は特殊コーナー筋だけ。ほかの筋種類に変えたら外す
+    ...(category === 'SPECIAL_CORNER' ? withLayer(base?.layer) : {}),
   }
 }
 
@@ -823,6 +850,7 @@ export function changeCornerBarBarDiameter(
     }),
     ...withDeductions(bar.measurementDeductionsMm),
     ...withBendAngle(shape, bar.bendAngleDeg),
+    ...(category === 'SPECIAL_CORNER' ? withLayer(bar.layer) : {}),
   }
 }
 
@@ -848,6 +876,7 @@ export function normalizeCornerBarBars(
         segments: normalizeCornerBarSegments(shape, rec.segments),
         ...withDeductions(normalizeMeasurementDeductions(rec.measurementDeductionsMm)),
         ...withBendAngle(shape, rec.bendAngleDeg),
+        ...withLayer(rec.layer),
       }
     })
     .filter((bar): bar is CornerBarBarItem => bar != null)
@@ -886,6 +915,7 @@ export function remapCornerBarBarsToShape(
       segments: preserveSegments ? bar.segments : undefined,
       measurementDeductionsMm: bar.measurementDeductionsMm,
       bendAngleDeg: bar.bendAngleDeg,
+      layer: bar.layer,
     }),
   )
 }
@@ -930,9 +960,9 @@ export function cornerBarLegacyFieldsFromBars(bars: CornerBarBarItem[]): {
 export function cornerBarBarQuantities(source: {
   bars?: unknown
   diameter?: string | null
-}): Array<{ barType: string; quantity: number }> {
+}): Array<{ barType: string; quantity: number; layer?: CornerBarLayer }> {
   const raw = Array.isArray(source.bars) ? source.bars : []
-  const out: Array<{ barType: string; quantity: number }> = []
+  const out: Array<{ barType: string; quantity: number; layer?: CornerBarLayer }> = []
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const rec = item as Partial<CornerBarBarItem>
@@ -940,7 +970,7 @@ export function cornerBarBarQuantities(source: {
     if (!barType) continue
     const quantity = normalizeBarQuantity(rec.quantity)
     if (quantity <= 0) continue
-    out.push({ barType, quantity })
+    out.push({ barType, quantity, ...withLayer(rec.layer) })
   }
   if (out.length > 0) return out
   const legacyDiameter = (source.diameter ?? '').trim()
@@ -1465,6 +1495,8 @@ export type CornerBarPrintSummaryCategoryCount = {
 export type CornerBarPrintSummaryDetailRow = {
   category: string
   diameter: string
+  /** 特殊コーナー筋の上・下。なしは undefined */
+  layer?: CornerBarLayer
   color: string
   qty: number
 }
@@ -1490,21 +1522,20 @@ export function buildCornerBarPrintSummary(
   normalizeColor: (color: string) => string = (c) => c,
 ): CornerBarPrintSummary {
   const countByCategory = new Map<string, number>()
-  const detailMap = new Map<
-    string,
-    { category: string; diameter: string; color: string; qty: number }
-  >()
+  const detailMap = new Map<string, CornerBarPrintSummaryDetailRow>()
   for (const cb of cornerBars) {
     const color = normalizeColor(cb.color ?? 'red')
     for (const bar of cornerBarBarQuantities(cb)) {
       countByCategory.set(cb.category, (countByCategory.get(cb.category) ?? 0) + bar.quantity)
-      const key = `${cb.category}/${bar.barType}/${color}`
+      // 上と下は別の鉄筋なので別の行にする
+      const key = `${cb.category}/${bar.barType}/${bar.layer ?? ''}/${color}`
       const prev = detailMap.get(key)
       if (prev) prev.qty += bar.quantity
       else
         detailMap.set(key, {
           category: cb.category,
           diameter: bar.barType,
+          ...(bar.layer ? { layer: bar.layer } : {}),
           color,
           qty: bar.quantity,
         })
@@ -1521,6 +1552,7 @@ export function buildCornerBarPrintSummary(
     (a, b) =>
       a.category.localeCompare(b.category) ||
       a.diameter.localeCompare(b.diameter) ||
+      (a.layer ?? '').localeCompare(b.layer ?? '') ||
       a.color.localeCompare(b.color),
   )
 

@@ -5,6 +5,7 @@ import {
   cornerBarSegmentSumMm,
   cornerBarShapeLabel,
   clampCornerBarBendAngle,
+  type CornerBarLayer,
   formatCornerBarDims,
   getCornerBarShape,
   measurementTypeLabel,
@@ -56,6 +57,8 @@ export interface AdditionalRebarSpecRow {
   kakouchouMm: number | null
   /** くの字: 辺のあいだの角度（度）。角度を変えられない形状は undefined */
   bendAngleDeg?: number
+  /** 特殊コーナー筋の上・下。なしは undefined */
+  layer?: CornerBarLayer
   quantity: number
 }
 
@@ -192,6 +195,7 @@ function specKeyOf(
   segments: CornerBarSegment[],
   deductions: MeasurementDeductionsMm | undefined,
   bendAngleDeg: number | undefined,
+  layer: CornerBarLayer | undefined,
 ): string {
   const dims = segments
     .map((s) => `${s.lengthMm ?? ''}@${s.measurementType ?? ''}`)
@@ -199,7 +203,9 @@ function specKeyOf(
   // 角度が違えば形が違う鉄筋なので別の行にする（角度を変えられる形状だけ）
   const base =
     `${category}|${shapeType}|${barType}|${segments.length}|${dims}` +
-    (bendAngleDeg != null ? `|angle:${bendAngleDeg}` : '')
+    (bendAngleDeg != null ? `|angle:${bendAngleDeg}` : '') +
+    // 上と下は別の鉄筋。なしのときは付けず、上下を入れる前と同じ key のまま
+    (layer ? `|layer:${layer}` : '')
   // 減りが違えば加工長も違うので別の行にする。全て 0 のときは付けず、
   // 減りを入れる前と同じ key のまま（結果ページの手入力が外れないように）
   if (!deductions || Object.values(deductions).every((mm) => mm === 0)) return base
@@ -263,7 +269,15 @@ export function aggregateAdditionalRebars(
 
       const deductions = deductionsFor(category, bar)
       const bendAngleDeg = adjustableAngle ? clampCornerBarBendAngle(bar.bendAngleDeg) : undefined
-      const key = specKeyOf(category, shapeType, diameter, bar.segments, deductions, bendAngleDeg)
+      const key = specKeyOf(
+        category,
+        shapeType,
+        diameter,
+        bar.segments,
+        deductions,
+        bendAngleDeg,
+        bar.layer,
+      )
       const existing = group.specs.get(key)
       if (existing) {
         existing.quantity += bar.quantity
@@ -288,6 +302,7 @@ export function aggregateAdditionalRebars(
         segmentSumMm: allDimensioned ? cornerBarSegmentSumMm(bar.segments) : null,
         kakouchouMm: cornerBarKakouchouMm(bar.segments, deductions),
         ...(bendAngleDeg != null ? { bendAngleDeg } : {}),
+        ...(bar.layer ? { layer: bar.layer } : {}),
         quantity: bar.quantity,
       })
     }

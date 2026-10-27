@@ -16,6 +16,7 @@ import {
   clampCornerBarSizePx,
   cornerBarCanvasGeometry,
   cornerBarCategoryLabel,
+  cornerBarLayerMark,
   CORNER_BAR_CATEGORIES,
   cornerBarRotationLabel,
   cornerBarSegmentLines,
@@ -35,6 +36,7 @@ import {
   cornerBarDraggableEnds,
   resizeCornerBarEdgeToPoint,
   normalizeCornerBarRotation,
+  nextCornerBarRotation,
   isPerEdgeVisualDrawCategory,
   DEFAULT_CORNER_BAR_COLORS,
   type CornerBarBarItem,
@@ -188,7 +190,7 @@ function buildCornerBarPrintSummaryHtml(
   const rows = summary.detailRows
     .map((row) => {
       const color = getSegmentStrokeHex(normalizeSegmentColor(row.color), false)
-      const label = `${cornerBarCategoryLabel(row.category)} ${row.diameter}`
+      const label = `${cornerBarCategoryLabel(row.category)} ${cornerBarLayerMark(row.layer)}${row.diameter}`
       return `<div class="corner-summary-row"><span class="corner-summary-label-wrap"><span class="corner-summary-chip" style="background:${color};"></span><span class="corner-summary-label">${escapeHtml(label)}</span></span><span class="corner-summary-qty">${row.qty} 本</span></div>`
     })
     .join('')
@@ -2774,6 +2776,34 @@ export function DrawingViewer({
     return { x: w - yr, y: xr } // 270deg clockwise
   }
 
+  /**
+   * 付加筋タブで右クリックすると 90° 回す（右パネルの「向き」ボタンと同じ）。
+   * 付加筋の上ならその付加筋、外なら選択中の付加筋。位置モードで何も選んでいなければ
+   * これから配置する向きを回す。
+   */
+  function handleCanvasContextMenu(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (layer !== 'corner') return
+    const pt = screenToCanvas(e)
+    const hit = findCornerBarAtPoint(pt, 10 / scale)
+    const target = hit ?? cornerBars.find((c) => c.id === selectedCornerBarId) ?? null
+    if (target) {
+      e.preventDefault()
+      if (hit && hit.id !== selectedCornerBarId) selectCornerBar(hit.id)
+      // 連続で右クリックしても取りこぼさないよう、最新の向きから回す
+      void enqueueCornerBarUpdate(target.id, (latest) => ({
+        rotation: nextCornerBarRotation(latest.rotation),
+      }))
+      return
+    }
+    if (cornerTool === 'place' && placementDraft) {
+      e.preventDefault()
+      changePlacementDraft({
+        ...placementDraft,
+        rotation: nextCornerBarRotation(placementDraft.rotation),
+      })
+    }
+  }
+
   function screenToCanvas(e: React.MouseEvent): Point {
     return clientPointToCanvas(e.clientX, e.clientY)
   }
@@ -5178,6 +5208,7 @@ export function DrawingViewer({
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
+            onContextMenu={handleCanvasContextMenu}
             onMouseLeave={() => {
               setCornerBarHovering(false)
               if (!cornerBarEdgeDrag) setCornerBarEndHoverCursor(null)
@@ -5421,7 +5452,7 @@ export function DrawingViewer({
                       <div className="space-y-0.5">
                         {cornerBarPrintSummary.detailRows.map((row) => (
                           <div
-                            key={`${row.category}/${row.diameter}/${row.color}`}
+                            key={`${row.category}/${row.diameter}/${row.layer ?? ''}/${row.color}`}
                             className="flex items-center justify-between gap-2 text-[10px] text-muted"
                           >
                             <span className="flex min-w-0 items-center gap-1.5">
@@ -5435,7 +5466,9 @@ export function DrawingViewer({
                                 }}
                               />
                               <span className="truncate">
-                                {cornerBarCategoryLabel(row.category)} {row.diameter}
+                                {cornerBarCategoryLabel(row.category)}{' '}
+                                {cornerBarLayerMark(row.layer)}
+                                {row.diameter}
                               </span>
                             </span>
                             <span className="shrink-0 text-foreground">{row.qty} 本</span>
