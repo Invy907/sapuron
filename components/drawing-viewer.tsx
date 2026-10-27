@@ -16,6 +16,7 @@ import {
   clampCornerBarSizePx,
   cornerBarCanvasGeometry,
   cornerBarCategoryLabel,
+  CORNER_BAR_CATEGORIES,
   cornerBarRotationLabel,
   cornerBarSegmentLines,
   cornerBarShapeLabel,
@@ -183,6 +184,8 @@ function buildCornerBarPrintSummaryHtml(
   left: number,
   top: number,
   scale: number,
+  /** ユニットも一緒に印刷するときの、ユニットの入力データ（summary-group の HTML） */
+  unitSectionsHtml = '',
 ): string {
   const rows = summary.detailRows
     .map((row) => {
@@ -191,7 +194,14 @@ function buildCornerBarPrintSummaryHtml(
       return `<div class="corner-summary-row"><span class="corner-summary-label-wrap"><span class="corner-summary-chip" style="background:${color};"></span><span class="corner-summary-label">${escapeHtml(label)}</span></span><span class="corner-summary-qty">${row.qty} 本</span></div>`
     })
     .join('')
-  return `<div class="summary corner-summary" style="left:${left}px;top:${top}px;--sum-scale:${scale};"><div class="corner-summary-rows">${rows}</div></div>`
+  const cornerRows = rows ? `<div class="corner-summary-rows">${rows}</div>` : ''
+  return `<div class="summary corner-summary" style="left:${left}px;top:${top}px;--sum-scale:${scale};">${cornerRows}${unitSectionsHtml}</div>`
+}
+
+/** 印刷の表示選択の並び（筋種類の順） */
+function cornerBarCategoryRank(category: string): number {
+  const index = CORNER_BAR_CATEGORIES.findIndex((c) => c.id === category)
+  return index < 0 ? CORNER_BAR_CATEGORIES.length : index
 }
 
 function buildDrawingPrintSummaryGroups(
@@ -349,6 +359,8 @@ type DrawingPaintOptions = {
   interactiveHighlight: boolean
   /** ユニット描画中・分割ホバー（ユニットタブの操作フィードバック） */
   showUnitInteractionOverlay?: boolean
+  /** 描く付加筋を絞る（印刷で形状ごとに出す・出さないを選んだとき） */
+  cornerBarFilter?: (cb: DrawingCornerBar) => boolean
 }
 
 const REFERENCE_LAYER_ALPHA = 0.45
@@ -714,6 +726,10 @@ export function DrawingViewer({
   const [cornerPrintSummaryPos, setCornerPrintSummaryPos] = useState<Point>({ x: 24, y: 24 })
   const [cornerPrintSummaryScale, setCornerPrintSummaryScale] = useState(1)
   const [printPreviewLayer, setPrintPreviewLayer] = useState<DrawingLayer>('unit')
+  /** 付加筋タブの印刷で、ユニットも一緒に出すか */
+  const [cornerPrintShowUnits, setCornerPrintShowUnits] = useState(false)
+  /** 付加筋タブの印刷で出さない筋種類（category） */
+  const [cornerPrintHiddenCategories, setCornerPrintHiddenCategories] = useState<string[]>([])
   const [printModalImageUrl, setPrintModalImageUrl] = useState<string | null>(null)
   /** 印刷用画像の実サイズ（図面部分だけを切り出すため canvas とは異なる） */
   const [printImageSize, setPrintImageSize] = useState<{ w: number; h: number } | null>(
@@ -986,14 +1002,60 @@ export function DrawingViewer({
     () => buildDrawingPrintSummaryGroups(segments, effectiveUnits),
     [segments, effectiveUnits],
   )
-  const cornerBarPrintSummary = useMemo(
-    () => buildCornerBarPrintSummary(cornerBars, normalizeSegmentColor),
-    [cornerBars],
+  /** 付加筋タブの印刷に出す付加筋（筋種類ごとの表示選択を反映） */
+  const printCornerBars = useMemo(
+    () => cornerBars.filter((cb) => !cornerPrintHiddenCategories.includes(cb.category)),
+    [cornerBars, cornerPrintHiddenCategories],
   )
+  const cornerBarPrintSummary = useMemo(
+    () => buildCornerBarPrintSummary(printCornerBars, normalizeSegmentColor),
+    [printCornerBars],
+  )
+  /** 付加筋タブの印刷の表示選択に並べる筋種類（この図面にあるものだけ） */
+  const cornerPrintCategoryOptions = useMemo(() => {
+    const categories = [...new Set(cornerBars.map((cb) => cb.category))]
+    categories.sort((a, b) => cornerBarCategoryRank(a) - cornerBarCategoryRank(b))
+    return categories.map((category) => ({
+      key: category,
+      label: cornerBarCategoryLabel(category),
+    }))
+  }, [cornerBars])
+  const cornerPrintShowsUnitSummary =
+    cornerPrintShowUnits && drawingPrintSummaryGroups.length > 0
   const printPreviewHasSummary =
     printPreviewLayer === 'corner'
-      ? cornerBars.length > 0
+      ? printCornerBars.length > 0 || cornerPrintShowsUnitSummary
       : drawingPrintSummaryGroups.length > 0
+  /** 印刷プレビューのユニットの入力データ（ユニットタブ、付加筋タブでユニットも出すとき） */
+  const unitPrintSummaryNode = (
+    <div className="space-y-4">
+      {drawingPrintSummaryGroups.map((group) => {
+        const color = getSegmentStrokeHex(group.color, false)
+        return (
+          <section key={group.key}>
+            <div className="text-sm font-bold leading-none text-slate-500">{group.name}</div>
+            <div className="space-y-0.5 font-mono font-bold leading-tight">
+              {group.rows.map((row) => {
+                const mark = circledSummaryNumber(row.no)
+                return (
+                  <div
+                    key={`${group.key}-${row.no ?? 'none'}-${row.len}`}
+                    className="flex items-baseline gap-1"
+                    style={{ color }}
+                  >
+                    {mark ? (
+                      <span className="shrink-0 text-[15px] leading-none">{mark}</span>
+                    ) : null}
+                    <span className="text-[13px]">{drawingPrintSummaryDetailText(row)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
   const activePrintSummaryPos =
     printPreviewLayer === 'corner' ? cornerPrintSummaryPos : printSummaryPos
   const activePrintSummaryScale =
@@ -1982,6 +2044,7 @@ export function DrawingViewer({
         ctx.save()
         if (cornerAlpha < 1) ctx.globalAlpha = cornerAlpha
       cornerBars.forEach((cb) => {
+        if (options.cornerBarFilter && !options.cornerBarFilter(cb)) return
         const geometry = cornerBarGeometryOf(cb)
         if (!geometry) return
         const isSelected =
@@ -2156,7 +2219,10 @@ export function DrawingViewer({
   }, [imgLoaded, layer, cornerBarsOnlyView, paintDrawing])
 
   const captureDrawingForPrint = useCallback(
-    (targetLayer: DrawingLayer): string | null => {
+    (
+      targetLayer: DrawingLayer,
+      cornerOptions?: { showUnits: boolean; hiddenCategories: string[] },
+    ): string | null => {
       const canvas = canvasRef.current
       if (!canvas || !imgLoaded) return null
       const off = document.createElement('canvas')
@@ -2176,12 +2242,15 @@ export function DrawingViewer({
               showUnitInteractionOverlay: false,
             }
           : {
-              showSegments: false,
+              showSegments: cornerOptions?.showUnits ?? false,
               showCornerBars: true,
-              segmentEmphasis: 'hidden',
+              segmentEmphasis: cornerOptions?.showUnits ? 'full' : 'hidden',
               cornerEmphasis: 'full',
               interactiveHighlight: false,
               showUnitInteractionOverlay: false,
+              cornerBarFilter: cornerOptions?.hiddenCategories.length
+                ? (cb) => !cornerOptions.hiddenCategories.includes(cb.category)
+                : undefined,
             }
 
       paintDrawing(ctx, off.width, off.height, printOptions)
@@ -4474,7 +4543,10 @@ export function DrawingViewer({
 
     setPrintPreviewLayer(layer)
 
-    const captured = captureDrawingForPrint(layer)
+    const captured = captureDrawingForPrint(layer, {
+      showUnits: cornerPrintShowUnits,
+      hiddenCategories: cornerPrintHiddenCategories,
+    })
     if (captured) {
       setPrintImageSize({ w: canvas.width, h: canvas.height })
       setPrintModalImageUrl(captured)
@@ -4510,6 +4582,14 @@ export function DrawingViewer({
     setPrintModalImageUrl(canvas.toDataURL('image/png'))
   }
 
+  /** 付加筋タブの印刷の表示選択を変えたら、プレビュー画像を描き直す */
+  function updateCornerPrintOptions(showUnits: boolean, hiddenCategories: string[]) {
+    setCornerPrintShowUnits(showUnits)
+    setCornerPrintHiddenCategories(hiddenCategories)
+    const captured = captureDrawingForPrint('corner', { showUnits, hiddenCategories })
+    if (captured) setPrintModalImageUrl(captured)
+  }
+
   function handlePrintDrawing() {
     const canvas = canvasRef.current
     const preview = printPreviewRef.current
@@ -4530,24 +4610,28 @@ export function DrawingViewer({
     const summaryLeft = Math.round(summaryPos.x * scaleX)
     const summaryTop = Math.round(summaryPos.y * scaleY)
     const summaryScale = Math.max(0.7, Math.min(1.8, summaryScaleRaw))
+    const unitSectionsHtml = drawingPrintSummaryGroups
+      .map((group) => {
+        const color = getSegmentStrokeHex(group.color, false)
+        const rows = group.rows
+          .map((row) => buildDrawingPrintSummaryRowHtml(row, color))
+          .join('')
+        return `<section class="summary-group"><h2>${escapeHtml(group.name)}</h2>${rows}</section>`
+      })
+      .join('')
     const summaryHtml =
-      printPreviewLayer === 'corner' && cornerBars.length > 0
-        ? buildCornerBarPrintSummaryHtml(
-            cornerBarPrintSummary,
-            summaryLeft,
-            summaryTop,
-            summaryScale,
-          )
+      printPreviewLayer === 'corner'
+        ? printPreviewHasSummary
+          ? buildCornerBarPrintSummaryHtml(
+              cornerBarPrintSummary,
+              summaryLeft,
+              summaryTop,
+              summaryScale,
+              cornerPrintShowsUnitSummary ? unitSectionsHtml : '',
+            )
+          : ''
         : drawingPrintSummaryGroups.length > 0
-          ? `<div class="summary" style="left:${summaryLeft}px;top:${summaryTop}px;--sum-scale:${summaryScale};">${drawingPrintSummaryGroups
-              .map((group) => {
-                const color = getSegmentStrokeHex(group.color, false)
-                const rows = group.rows
-                  .map((row) => buildDrawingPrintSummaryRowHtml(row, color))
-                  .join('')
-                return `<section class="summary-group"><h2>${escapeHtml(group.name)}</h2>${rows}</section>`
-              })
-              .join('')}</div>`
+          ? `<div class="summary" style="left:${summaryLeft}px;top:${summaryTop}px;--sum-scale:${summaryScale};">${unitSectionsHtml}</div>`
           : ''
 
     // 選択した用紙に「用紙に合わせる」相当でぴったり収める。
@@ -5180,6 +5264,39 @@ export function DrawingViewer({
                       : '印刷ダイアログで用紙・向き・倍率を選べます'}
                   </span>
                 </div>
+                {printPreviewLayer === 'corner' ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border bg-slate-50 px-2 py-1 text-xs">
+                    <span className="text-muted">表示</span>
+                    <label className="inline-flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        checked={cornerPrintShowUnits}
+                        onChange={(e) =>
+                          updateCornerPrintOptions(e.target.checked, cornerPrintHiddenCategories)
+                        }
+                      />
+                      ユニット
+                    </label>
+                    <span className="h-3 w-px bg-border" aria-hidden />
+                    {cornerPrintCategoryOptions.map((opt) => (
+                      <label key={opt.key} className="inline-flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={!cornerPrintHiddenCategories.includes(opt.key)}
+                          onChange={(e) =>
+                            updateCornerPrintOptions(
+                              cornerPrintShowUnits,
+                              e.target.checked
+                                ? cornerPrintHiddenCategories.filter((k) => k !== opt.key)
+                                : [...cornerPrintHiddenCategories, opt.key],
+                            )
+                          }
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
                 {printPreviewHasSummary && (
                   <div className="mt-2 inline-flex items-center gap-2 rounded border border-border bg-slate-50 px-2 py-1 text-xs">
                     <span className="text-muted">サイズ</span>
@@ -5279,64 +5396,35 @@ export function DrawingViewer({
                     title="Drag to set print position"
                   >
                     {printPreviewLayer === 'corner' ? (
-                      <div className="space-y-0.5">
-                        {cornerBarPrintSummary.detailRows.map((row) => (
-                          <div
-                            key={`${row.category}/${row.diameter}/${row.color}`}
-                            className="flex items-center justify-between gap-2 text-[10px] text-muted"
-                          >
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              <span
-                                className="h-3 w-3 shrink-0 rounded-sm"
-                                style={{
-                                  backgroundColor: getSegmentStrokeHex(
-                                    normalizeSegmentColor(row.color),
-                                    false,
-                                  ),
-                                }}
-                              />
-                              <span className="truncate">
-                                {cornerBarCategoryLabel(row.category)} {row.diameter}
+                      <div className="space-y-3">
+                        <div className="space-y-0.5">
+                          {cornerBarPrintSummary.detailRows.map((row) => (
+                            <div
+                              key={`${row.category}/${row.diameter}/${row.color}`}
+                              className="flex items-center justify-between gap-2 text-[10px] text-muted"
+                            >
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                <span
+                                  className="h-3 w-3 shrink-0 rounded-sm"
+                                  style={{
+                                    backgroundColor: getSegmentStrokeHex(
+                                      normalizeSegmentColor(row.color),
+                                      false,
+                                    ),
+                                  }}
+                                />
+                                <span className="truncate">
+                                  {cornerBarCategoryLabel(row.category)} {row.diameter}
+                                </span>
                               </span>
-                            </span>
-                            <span className="shrink-0 text-foreground">{row.qty} 本</span>
-                          </div>
-                        ))}
+                              <span className="shrink-0 text-foreground">{row.qty} 本</span>
+                            </div>
+                          ))}
+                        </div>
+                        {cornerPrintShowsUnitSummary ? unitPrintSummaryNode : null}
                       </div>
                     ) : (
-                      <div className="space-y-4">
-                        {drawingPrintSummaryGroups.map((group) => {
-                          const color = getSegmentStrokeHex(group.color, false)
-                          return (
-                            <section key={group.key}>
-                              <div className="text-sm font-bold leading-none text-slate-500">
-                                {group.name}
-                              </div>
-                              <div className="space-y-0.5 font-mono font-bold leading-tight">
-                                {group.rows.map((row) => {
-                                  const mark = circledSummaryNumber(row.no)
-                                  return (
-                                    <div
-                                      key={`${group.key}-${row.no ?? 'none'}-${row.len}`}
-                                      className="flex items-baseline gap-1"
-                                      style={{ color }}
-                                    >
-                                      {mark ? (
-                                        <span className="shrink-0 text-[15px] leading-none">
-                                          {mark}
-                                        </span>
-                                      ) : null}
-                                      <span className="text-[13px]">
-                                        {drawingPrintSummaryDetailText(row)}
-                                      </span>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            </section>
-                          )
-                        })}
-                      </div>
+                      unitPrintSummaryNode
                     )}
                   </div>
                 )}

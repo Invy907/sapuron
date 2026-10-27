@@ -710,8 +710,6 @@ function ShapeFigureSvg({
     metrics,
   )
   const lineDy = metrics.lineDy * scale
-  const angleLabel =
-    row.bendAngleDeg != null ? bendAngleLabelPosition(points, metrics.dimFont * 1.6) : null
 
   return (
     <div className="corner-summary-figure flex flex-col items-start">
@@ -761,46 +759,9 @@ function ShapeFigureSvg({
             ) : null}
           </text>
         ))}
-        {/* くの字の角度は曲げの内側に書く */}
-        {angleLabel ? (
-          <text
-            x={angleLabel.x}
-            y={angleLabel.y}
-            textAnchor="middle"
-            dominantBaseline="central"
-            fontSize={metrics.measurementFont * scale}
-            fill="#0f172a"
-          >
-            {row.bendAngleDeg}°
-          </text>
-        ) : null}
       </svg>
     </div>
   )
-}
-
-/**
- * 曲げ（2 番目の頂点）の内側、2 辺の二等分線の方向に distance だけ離れた位置。
- * 一直線（180°）のときは辺の下側に置く。
- */
-function bendAngleLabelPosition(
-  points: Array<{ x: number; y: number }>,
-  distance: number,
-): { x: number; y: number } | null {
-  const a = points[0]
-  const v = points[1]
-  const b = points[2]
-  if (!a || !v || !b) return null
-  const unit = (x: number, y: number) => {
-    const len = Math.hypot(x, y) || 1
-    return { x: x / len, y: y / len }
-  }
-  const ua = unit(a.x - v.x, a.y - v.y)
-  const ub = unit(b.x - v.x, b.y - v.y)
-  let dir = { x: ua.x + ub.x, y: ua.y + ub.y }
-  if (Math.hypot(dir.x, dir.y) < 1e-6) dir = { x: -ua.y, y: ua.x }
-  const d = unit(dir.x, dir.y)
-  return { x: v.x + d.x * distance, y: v.y + d.y * distance }
 }
 
 /** 寸法を書かない行の「76本」 */
