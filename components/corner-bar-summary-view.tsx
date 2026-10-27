@@ -437,6 +437,8 @@ type FigureMetrics = {
   lineDy: number
   /** ラベルが重なるときに試す文字の倍率。印刷は文字を小さくしない */
   labelScales: readonly number[]
+  /** 図とラベルが入る高さまで上下の余白を詰める（印刷。行の高さを低くするため） */
+  cropHeight?: boolean
 }
 
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
@@ -465,6 +467,7 @@ const PRINT_FIGURE_METRICS: FigureMetrics = {
   measurementFont: 14,
   lineDy: 16,
   labelScales: [1],
+  cropHeight: true,
 }
 /**
  * 曲げの多い形状（2段階段・欠き込みなど）は文字を 14px にすると重なるので、
@@ -479,6 +482,7 @@ const COMPACT_PRINT_FIGURE_METRICS: FigureMetrics = {
   measurementFont: 15,
   lineDy: 19,
   labelScales: [1, 0.85, 0.7, 0.6, 0.5],
+  cropHeight: true,
 }
 const COMPACT_PRINT_SHAPE_TYPES: ReadonlySet<string> = new Set([
   'V_STEP2',
@@ -770,12 +774,26 @@ function ShapeFigureSvg({
   )
   const lineDy = metrics.lineDy * scale
 
+  // 印刷は図とラベルが入る範囲まで上下を詰める（横は変えない）
+  let viewTop = 0
+  let viewHeight = metrics.height
+  if (metrics.cropHeight) {
+    const { halfHeight } = labelHalfSizes(labelLines, metrics, scale)
+    const ys = [
+      ...points.map((p) => p.y),
+      ...drawnAnchors.flatMap((a, i) => [a.y - (halfHeight[i] ?? 0), a.y + (halfHeight[i] ?? 0)]),
+    ]
+    const margin = 4
+    viewTop = Math.min(...ys) - margin
+    viewHeight = Math.max(...ys) + margin - viewTop
+  }
+
   return (
     <div className="corner-summary-figure flex flex-col items-start">
       <svg
         width={metrics.width}
-        height={metrics.height}
-        viewBox={`0 0 ${metrics.width} ${metrics.height}`}
+        height={viewHeight}
+        viewBox={`0 ${viewTop} ${metrics.width} ${viewHeight}`}
         // 余白を詰めているので、端の寸法ラベルが切れないように外へはみ出させる
         overflow="visible"
         role="img"
