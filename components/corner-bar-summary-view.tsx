@@ -455,6 +455,12 @@ type FigureMetrics = {
   labelWidthSafety?: number
   /** 重なるときに標準の大きさで置き場所を決めて縮める（印刷） */
   fallbackToStandard?: boolean
+  /**
+   * 左右も図とラベルが入る範囲まで詰め、その幅で描く（行の高さを決めたとき）。
+   * 広い枠の中で縦横比のまま高さいっぱいに描き、余った左右を落とすことで、
+   * 行を高くすると図全体が同じ形のまま大きくなる
+   */
+  cropWidth?: boolean
 }
 
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
@@ -505,6 +511,8 @@ const COMPACT_PRINT_SHAPE_TYPES: ReadonlySet<string> = new Set([
 /** 印刷の形状図の幅の範囲。広いカードでも図が大きくなりすぎないようにする */
 const PRINT_FIGURE_MIN_WIDTH = 120
 const PRINT_FIGURE_MAX_WIDTH = 320
+/** 行の高さを決めたときの図の最大の幅。行を高くすると図はこの幅まで同じ形のまま大きくなる */
+const PRINT_FIGURE_FIXED_ROW_MAX_WIDTH = 480
 /** 印刷の形状図の高さ（幅に対する比）。上下の余白は描いたあとに詰める */
 const PRINT_FIGURE_HEIGHT_RATIO = 180 / 280
 
@@ -726,24 +734,39 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
     ? COMPACT_PRINT_FIGURE_METRICS
     : PRINT_FIGURE_METRICS
   // 行の高さを決めてあれば、図をその高さいっぱいに描く（余白だけが増えないように）
+  // 寸法の文字を置く余白（上下の pad）より低くすると図が潰れるので、その分は残す
   const fixedHeight =
-    rowHeight != null ? Math.max(40, rowHeight - PRINT_ROW_FIGURE_PADDING) : null
-  const printMetrics = printWidth
-    ? {
-        ...baseMetrics,
-        width: printWidth,
-        height: fixedHeight ?? Math.round(printWidth * PRINT_FIGURE_HEIGHT_RATIO),
-        // 決めた高さで描くときは上下を詰めない（詰めると行の高さとずれる）
-        cropHeight: fixedHeight == null,
-      }
-    : baseMetrics
+    rowHeight != null
+      ? Math.max(baseMetrics.pad * 2 + 24, rowHeight - PRINT_ROW_FIGURE_PADDING)
+      : null
+  const printMetrics: FigureMetrics =
+    fixedHeight != null
+      ? {
+          // 行の高さを決めたときは、広い枠の中で縦横比のまま高さいっぱいに描き、
+          // 余った左右を詰める。形を変えずに図全体が大きく（小さく）なる
+          ...baseMetrics,
+          width: PRINT_FIGURE_FIXED_ROW_MAX_WIDTH,
+          height: fixedHeight,
+          cropHeight: false,
+          cropWidth: true,
+        }
+      : printWidth
+        ? {
+            ...baseMetrics,
+            width: printWidth,
+            height: Math.round(printWidth * PRINT_FIGURE_HEIGHT_RATIO),
+          }
+        : baseMetrics
 
   return (
     <>
       <div className="print:hidden">
         <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
       </div>
-      <div ref={observePrintBox} className="hidden print:block">
+      <div
+        ref={observePrintBox}
+        className={`hidden print:block ${fixedHeight != null ? 'corner-summary-figure-fixed' : ''}`}
+      >
         <ShapeFigureSvg row={row} metrics={printMetrics} />
       </div>
     </>
@@ -800,7 +823,22 @@ function ShapeFigureSvg({
       viewTop = Math.min(...ys) - margin
       viewHeight = Math.max(...ys) + margin - viewTop
     }
-    return { m, points, ...placed, viewTop, viewHeight }
+    let viewLeft = 0
+    let viewWidth = m.width
+    if (m.cropWidth) {
+      const { halfWidth } = labelHalfSizes(labelLines, m, placed.scale)
+      const xs = [
+        ...points.map((p) => p.x),
+        ...placed.anchors.flatMap((a, i) => [
+          a.x - (halfWidth[i] ?? 0),
+          a.x + (halfWidth[i] ?? 0),
+        ]),
+      ]
+      const margin = 4
+      viewLeft = Math.min(...xs) - margin
+      viewWidth = Math.max(...xs) + margin - viewLeft
+    }
+    return { m, points, ...placed, viewTop, viewHeight, viewLeft, viewWidth }
   }
 
   // 列が狭くて文字を小さくしても重なるときは、標準の大きさ（280 幅）で置き場所を決め、
@@ -815,10 +853,12 @@ function ShapeFigureSvg({
       height: metrics.height * k,
     })
   }
-  const { m, points, anchors: drawnAnchors, scale, viewTop, viewHeight } = layout
+  const { m, points, anchors: drawnAnchors, scale, viewTop, viewHeight, viewLeft, viewWidth } =
+    layout
   if (points.length < 2) return null
-  const displayWidth = metrics.width
-  const displayHeight = (viewHeight * displayWidth) / m.width
+  // 左右を詰めたときは詰めた幅そのもの（viewBox と 1:1）で描く
+  const displayWidth = m.cropWidth ? viewWidth : metrics.width
+  const displayHeight = (viewHeight * displayWidth) / viewWidth
 
   const path = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
@@ -830,7 +870,7 @@ function ShapeFigureSvg({
       <svg
         width={displayWidth}
         height={displayHeight}
-        viewBox={`0 ${viewTop} ${m.width} ${viewHeight}`}
+        viewBox={`${viewLeft} ${viewTop} ${viewWidth} ${viewHeight}`}
         // 余白を詰めているので、端の寸法ラベルが切れないように外へはみ出させる
         overflow="visible"
         role="img"

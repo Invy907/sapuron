@@ -330,6 +330,11 @@ button,
     height: auto !important;
   }
 
+  /* 行の高さを決めた図は、その高さに合わせた幅で描く（列に合わせて縮めない） */
+  .corner-summary-figure-fixed .corner-summary-figure svg {
+    max-width: none !important;
+  }
+
   /* 筋種類ごとのセクションと表の行が途中で割れないようにする。
      space-y-* のマージンではなく gap で詰めたいので flex に切り替える */
   .corner-summary-print-root {
