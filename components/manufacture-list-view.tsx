@@ -138,51 +138,6 @@ function isPersistedUnitId(id: string): boolean {
   return !id.startsWith('mock-') && !id.startsWith('local-')
 }
 
-/** 曜日（日〜土） */
-const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'] as const
-
-/** "YYYY-MM-DD" / "YYYY-MM-DDTHH:mm" を分解する */
-function parseYmdHm(value: string) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec((value ?? '').trim())
-  if (!m) return null
-  const year = Number(m[1])
-  const month = Number(m[2])
-  const day = Number(m[3])
-  const date = new Date(year, month - 1, day)
-  if (Number.isNaN(date.getTime())) return null
-  return {
-    year,
-    month,
-    day,
-    hour: m[4] != null ? Number(m[4]) : null,
-    minute: m[5] != null ? Number(m[5]) : null,
-    weekday: WEEKDAY_JA[date.getDay()] ?? '',
-  }
-}
-
-/** 積み込み日 → 令和表記「R8.8.5.(水)」（令和1年 = 2019年） */
-function formatReiwaDate(value: string): string {
-  const p = parseYmdHm(value)
-  if (!p) return ''
-  const reiwa = p.year - 2018
-  if (reiwa < 1) return ''
-  return `R${reiwa}.${p.month}.${p.day}.(${p.weekday})`
-}
-
-/** 到着日 → 「6(木)8:00」（同月内の日・曜日・時刻） */
-function formatArrivalDayTime(value: string): string {
-  const p = parseYmdHm(value)
-  if (!p) return ''
-  const time =
-    p.hour != null ? `${p.hour}:${String(p.minute ?? 0).padStart(2, '0')}` : ''
-  return `${p.day}(${p.weekday})${time}`
-}
-
-/** 以前カレンダーで保存した ISO 形式の値だけ伝票書式に変換し、それ以外は入力どおりに出す */
-function printDateText(value: string, formatIso: (value: string) => string): string {
-  return formatIso(value) || value.trim()
-}
-
 /**
  * 計算用のユニット解決（入力サマリと同じ挙動）。
  * 1. 線分に unit_id が付いていればそれ
@@ -493,18 +448,15 @@ export function ManufactureListView({
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
           <div className="flex flex-col items-end">
-            {printDateText(customerDate, formatReiwaDate) ? (
-              <div className="text-xl font-bold">
-                {printDateText(customerDate, formatReiwaDate)}
-              </div>
+            {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する */}
+            {customerDate.trim() ? (
+              <div className="text-xl font-bold">{customerDate.trim()}</div>
             ) : null}
-            {printDateText(customerArrival, formatArrivalDayTime) ? (
+            {customerArrival.trim() ? (
               <>
                 {/* 手書きメモの指示どおり「つみこみ」も日付と同じ大きさに揃える */}
                 <div className="mt-0.5 text-xl leading-none">つみこみ</div>
-                <div className="text-xl font-bold">
-                  {printDateText(customerArrival, formatArrivalDayTime)}
-                </div>
+                <div className="text-xl font-bold">{customerArrival.trim()}</div>
               </>
             ) : null}
           </div>
