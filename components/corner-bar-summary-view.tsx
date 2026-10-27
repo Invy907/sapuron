@@ -806,6 +806,8 @@ function ShapeFigureSvg({
           strokeWidth={FIGURE_STROKE_WIDTH}
           strokeLinecap="round"
           strokeLinejoin="round"
+          // 図を列の幅まで縮めても線の太さは変えない（形状によって太さが違って見えないように）
+          vectorEffect="non-scaling-stroke"
         />
         {/* 曲げの位置が分かるように節点に小さな印を打つ */}
         {points.slice(1, -1).map((p, i) => (
