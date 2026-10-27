@@ -1,7 +1,9 @@
 'use client'
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useMemo,
   useRef,
   useState,
@@ -451,6 +453,8 @@ type FigureMetrics = {
    * 実際の文字が見積もりより広くなっても重ならないように大きめに見る
    */
   labelWidthSafety?: number
+  /** 重なるときに標準の大きさで置き場所を決めて縮める（印刷） */
+  fallbackToStandard?: boolean
 }
 
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
@@ -482,6 +486,7 @@ const PRINT_FIGURE_METRICS: FigureMetrics = {
   labelScales: [1, 0.85, 0.7],
   cropHeight: true,
   labelWidthSafety: 1.2,
+  fallbackToStandard: true,
 }
 /**
  * 曲げの多い形状（2段階段・欠き込みなど）は辺が短く寸法が重なりやすいので、
@@ -690,8 +695,15 @@ function layoutLabels(
   }
 }
 
+/** 印刷レイアウト画面で行ごとに決めた高さ（行 key → px）。図をその高さに合わせて描く */
+const RowHeightContext = createContext<Readonly<Record<string, number>>>({})
+
+/** 行の高さから図に使える高さを出すときに引く、セルの上下の余白など(px) */
+const PRINT_ROW_FIGURE_PADDING = 6
+
 /** 画面用と印刷用の形状図を両方描き、媒体に応じて片方だけ見せる */
 function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
+  const rowHeight = useContext(RowHeightContext)[row.key]
   // 印刷用は置かれた幅を測り、その幅で描いて文字が縮まないようにする。
   // 印刷レイアウト画面のシートの中で測れる（測る前は既定の幅で描き、CSS で縮める）
   const [printWidth, setPrintWidth] = useState<number | null>(null)
@@ -713,11 +725,16 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
   const baseMetrics = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
     ? COMPACT_PRINT_FIGURE_METRICS
     : PRINT_FIGURE_METRICS
+  // 行の高さを決めてあれば、図をその高さいっぱいに描く（余白だけが増えないように）
+  const fixedHeight =
+    rowHeight != null ? Math.max(40, rowHeight - PRINT_ROW_FIGURE_PADDING) : null
   const printMetrics = printWidth
     ? {
         ...baseMetrics,
         width: printWidth,
-        height: Math.round(printWidth * PRINT_FIGURE_HEIGHT_RATIO),
+        height: fixedHeight ?? Math.round(printWidth * PRINT_FIGURE_HEIGHT_RATIO),
+        // 決めた高さで描くときは上下を詰めない（詰めると行の高さとずれる）
+        cropHeight: fixedHeight == null,
       }
     : baseMetrics
 
@@ -789,11 +806,13 @@ function ShapeFigureSvg({
   // 列が狭くて文字を小さくしても重なるときは、標準の大きさ（280 幅）で置き場所を決め、
   // 図ごと列の幅まで縮める。文字は小さくなるが、重ねて書くことはしない
   let layout = layoutWith(metrics)
-  if (!layout.fits && metrics.cropHeight && metrics.width < PRINT_FIGURE_METRICS.width) {
+  if (!layout.fits && metrics.fallbackToStandard && metrics.width < PRINT_FIGURE_METRICS.width) {
+    // 縦横比はそのままで、幅だけ標準（280）に広げた大きさ
+    const k = PRINT_FIGURE_METRICS.width / metrics.width
     layout = layoutWith({
       ...metrics,
       width: PRINT_FIGURE_METRICS.width,
-      height: PRINT_FIGURE_METRICS.height,
+      height: metrics.height * k,
     })
   }
   const { m, points, anchors: drawnAnchors, scale, viewTop, viewHeight } = layout
@@ -945,68 +964,79 @@ function SheetTable({
     onRowHeightChange?.(d.key, Math.round(d.row.offsetHeight))
   }
 
+  // ドラッグ中の高さも図に渡して、離す前から図の大きさが変わるのを見せる
+  const figureHeights = useMemo(
+    () =>
+      liveHeight
+        ? { ...(rowHeights ?? {}), [liveHeight.key]: liveHeight.height }
+        : (rowHeights ?? {}),
+    [liveHeight, rowHeights],
+  )
+
   return (
-    <table className="w-auto max-w-full border-collapse text-lg">
-      <tbody className="divide-y divide-border">
-        {rows.map((row) => {
-          const pad = row.isGroupStart ? 'pt-4' : 'pt-2'
-          const height =
-            liveHeight?.key === row.key ? liveHeight.height : rowHeights?.[row.key]
-          return (
-            <tr
-              key={row.key}
-              className={onRowHeightChange ? 'relative' : undefined}
-              style={height != null ? { height } : undefined}
-            >
-              <td style={shrinkCell} className={`${labelCell} ${pad}`}>
-                {row.label}
-              </td>
-              {row.layout === 'stacked' ? (
-                // 寸法を 1 行で出しきるため、本数の列まで使って縦に積む
-                <td colSpan={2} className={`${dataCell} font-mono ${pad}`}>
-                  <div className="corner-summary-dims">{row.spec}</div>
-                  <div>{row.result}</div>
+    <RowHeightContext.Provider value={figureHeights}>
+      <table className="w-auto max-w-full border-collapse text-lg">
+        <tbody className="divide-y divide-border">
+          {rows.map((row) => {
+            const pad = row.isGroupStart ? 'pt-4' : 'pt-2'
+            const height =
+              liveHeight?.key === row.key ? liveHeight.height : rowHeights?.[row.key]
+            return (
+              <tr
+                key={row.key}
+                className={onRowHeightChange ? 'relative' : undefined}
+                style={height != null ? { height } : undefined}
+              >
+                <td style={shrinkCell} className={`${labelCell} ${pad}`}>
+                  {row.label}
                 </td>
-              ) : (
-                <>
-                  <td style={shrinkCell} className={`${specCell} ${pad}`}>
-                    {row.spec}
+                {row.layout === 'stacked' ? (
+                  // 寸法を 1 行で出しきるため、本数の列まで使って縦に積む
+                  <td colSpan={2} className={`${dataCell} font-mono ${pad}`}>
+                    <div className="corner-summary-dims">{row.spec}</div>
+                    <div>{row.result}</div>
                   </td>
-                  <td style={shrinkCell} className={`${qtyCell} ${pad}`}>
-                    {row.result}
+                ) : (
+                  <>
+                    <td style={shrinkCell} className={`${specCell} ${pad}`}>
+                      {row.spec}
+                    </td>
+                    <td style={shrinkCell} className={`${qtyCell} ${pad}`}>
+                      {row.result}
+                    </td>
+                  </>
+                )}
+                {hasAnyFigure && typeof row.figure === 'object' && (
+                  <td
+                    rowSpan={row.figure.rowSpan}
+                    className="py-2 pl-4 align-top"
+                  >
+                    {row.figure.node}
                   </td>
-                </>
-              )}
-              {hasAnyFigure && typeof row.figure === 'object' && (
-                <td
-                  rowSpan={row.figure.rowSpan}
-                  className="py-2 pl-4 align-top"
-                >
-                  {row.figure.node}
-                </td>
-              )}
-              {hasAnyFigure && row.figure === 'empty' && (
-                <td className={`${pad} py-2`} aria-hidden />
-              )}
-              {onRowHeightChange ? (
-                // 行の下の境目。絶対配置なので表の列には数えない。印刷には出さない
-                <td
-                  aria-label="行の高さを変える"
-                  title="ドラッグで行の高さを変える（ダブルクリックで元に戻す）"
-                  data-no-card-drag
-                  onPointerDown={handlePointerDown(row.key)}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                  onDoubleClick={() => onRowHeightChange(row.key, null)}
-                  className="print-sheet-ui absolute inset-x-0 -bottom-1 z-10 h-2 cursor-ns-resize touch-none border-0 p-0 hover:bg-primary/30"
-                />
-              ) : null}
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+                )}
+                {hasAnyFigure && row.figure === 'empty' && (
+                  <td className={`${pad} py-2`} aria-hidden />
+                )}
+                {onRowHeightChange ? (
+                  // 行の下の境目。絶対配置なので表の列には数えない。印刷には出さない
+                  <td
+                    aria-label="行の高さを変える"
+                    title="ドラッグで行の高さを変える（ダブルクリックで元に戻す）"
+                    data-no-card-drag
+                    onPointerDown={handlePointerDown(row.key)}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerUp}
+                    onDoubleClick={() => onRowHeightChange(row.key, null)}
+                    className="print-sheet-ui absolute inset-x-0 -bottom-1 z-10 h-2 cursor-ns-resize touch-none border-0 p-0 hover:bg-primary/30"
+                  />
+                ) : null}
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </RowHeightContext.Provider>
   )
 }
 
