@@ -8,7 +8,7 @@
 
 'use client'
 
-import { useCallback, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { DrawingSegment, Unit } from '@/lib/types/database'
 import {
   UnitShapeThumbnail,
@@ -351,6 +351,7 @@ export function ManufactureListView({
   onLegendPositionChange,
   tateCountOverrides = {},
   onTateCountOverrideChange,
+  tableOverlay,
 }: {
   segments: DrawingSegment[]
   units: Unit[]
@@ -378,6 +379,8 @@ export function ManufactureListView({
     diameter: string,
     position: UnitShapeLegendPosition,
   ) => void
+  /** 表の左上に重ねて描くもの（印刷 1 ページ目へ移したカードの層） */
+  tableOverlay?: ReactNode
 }) {
   const groups = useMemo(
     () =>
@@ -567,6 +570,7 @@ export function ManufactureListView({
         className="manufacture-list-table-wrap relative w-fit max-w-full"
         style={{ paddingTop: `${HEADER_TABLE_GAP_MM}mm` }}
       >
+        {tableOverlay}
         <div className="overflow-x-auto">
         <table
           ref={observeTableWidth}

@@ -166,6 +166,65 @@ function KakouchouInput({
 }
 
 /**
+ * 本数の手入力欄。加工長と同じく確定まではローカルの文字列で持ち、
+ * 空欄または集計値と同じ値で確定すると手入力を解除する。
+ */
+function QuantityInput({
+  autoQuantity,
+  overrideQuantity,
+  onChange,
+  label,
+}: {
+  autoQuantity: number
+  overrideQuantity: number | undefined
+  onChange: (value: number | null) => void
+  label: string
+}) {
+  const shown = overrideQuantity ?? autoQuantity
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? String(shown)
+
+  const commit = () => {
+    if (draft == null) return
+    setDraft(null)
+    const raw = draft.trim()
+    if (raw === '') {
+      onChange(null)
+      return
+    }
+    const n = Number.parseInt(raw, 10)
+    if (!Number.isFinite(n) || n < 0) return
+    onChange(n === autoQuantity ? null : n)
+  }
+
+  return (
+    <>
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label={label}
+        title={`集計: ${autoQuantity}（空欄で集計値に戻す）`}
+        value={text}
+        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            setDraft(null)
+            e.currentTarget.blur()
+          }
+        }}
+        style={{ width: `${Math.max(text.length, 1) + 0.5}ch` }}
+        className={`border-0 bg-transparent p-0 text-center font-semibold outline-none focus:underline focus:decoration-primary/40 ${
+          overrideQuantity != null ? 'text-primary print:text-inherit' : ''
+        }`}
+      />
+      <span className="ml-1 text-sm font-normal text-muted">本</span>
+    </>
+  )
+}
+
+/**
  * 筋種類名（「コーナー筋」など）の手入力欄。加工長と同じく確定までは
  * ローカルの文字列で持ち、空欄または元の名前で確定すると手入力を解除する。
  * 全角文字は ch で幅を決められないので、同じ文字列を見えない span に置いて
@@ -255,8 +314,23 @@ function buildSheetRows(
   onKakouchouOverrideChange: ((rowKey: string, value: number | null) => void) | undefined,
   labelOverrides: Readonly<Record<string, string>>,
   onLabelOverrideChange: ((rowKey: string, value: string | null) => void) | undefined,
+  quantityOverrides: Readonly<Record<string, number>>,
+  onQuantityOverrideChange: ((rowKey: string, value: number | null) => void) | undefined,
 ): SheetRow[] {
   const rows: SheetRow[] = []
+
+  /** 本数。手入力できるときは入力欄、できないときは手入力した本数か集計値 */
+  const quantityFor = (row: AdditionalRebarSpecRow): ReactNode =>
+    onQuantityOverrideChange ? (
+      <QuantityInput
+        autoQuantity={row.quantity}
+        overrideQuantity={quantityOverrides[row.key]}
+        onChange={(value) => onQuantityOverrideChange(row.key, value)}
+        label={`${row.categoryLabel} ${row.diameter} の本数`}
+      />
+    ) : (
+      <QuantityText quantity={quantityOverrides[row.key] ?? row.quantity} />
+    )
 
   /** 筋種類名。手入力できるときは入力欄、できないときは手入力した名前か元の名前 */
   const labelFor = (rowKey: string, defaultLabel: string): ReactNode =>
@@ -283,7 +357,7 @@ function buildSheetRows(
           label: labelFor(row.key, group.label),
           isGroupStart: i === 0,
           spec: <SpecWithDiameter row={row} />,
-          result: <QuantityText quantity={row.quantity} />,
+          result: quantityFor(row),
           layout: 'inline',
           figure: 'empty',
         })
@@ -325,7 +399,7 @@ function buildSheetRows(
               onOverrideChange={onKakouchouOverrideChange}
             />
           ),
-          result: <QuantityText quantity={row.quantity} />,
+          result: quantityFor(row),
           layout: 'inline',
           figure:
             showShapeFigure
@@ -775,6 +849,8 @@ export function CornerBarSummarySections({
   onKakouchouOverrideChange,
   labelOverrides = EMPTY_LABEL_OVERRIDES,
   onLabelOverrideChange,
+  quantityOverrides = EMPTY_OVERRIDES,
+  onQuantityOverrideChange,
 }: {
   placements: AdditionalRebarPlacementLike[]
   /** 集計行 key → 手入力した加工長(mm)。無い行は自動計算の値 */
@@ -783,6 +859,9 @@ export function CornerBarSummarySections({
   /** 集計行 key → 手入力した筋種類名。無い行は「コーナー筋」などの元の名前 */
   labelOverrides?: Readonly<Record<string, string>>
   onLabelOverrideChange?: (rowKey: string, value: string | null) => void
+  /** 集計行 key → 手入力した本数。無い行は集計した本数 */
+  quantityOverrides?: Readonly<Record<string, number>>
+  onQuantityOverrideChange?: (rowKey: string, value: number | null) => void
 }) {
   const summary = useMemo(() => aggregateAdditionalRebars(placements), [placements])
   const rows = useMemo(
@@ -793,6 +872,8 @@ export function CornerBarSummarySections({
         onKakouchouOverrideChange,
         labelOverrides,
         onLabelOverrideChange,
+        quantityOverrides,
+        onQuantityOverrideChange,
       ),
     [
       summary,
@@ -800,6 +881,8 @@ export function CornerBarSummarySections({
       onKakouchouOverrideChange,
       labelOverrides,
       onLabelOverrideChange,
+      quantityOverrides,
+      onQuantityOverrideChange,
     ],
   )
 

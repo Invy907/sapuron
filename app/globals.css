@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* print: は実際の印刷に加えて、印刷レイアウト画面のシート（.print-sheet）の中でも効かせる。
+   これでシートのプレビューが印刷結果と同じ見た目になる。 */
+@custom-variant print {
+  @media print {
+    @slot;
+  }
+  &:where(.print-sheet, .print-sheet *) {
+    @slot;
+  }
+}
+
 :root {
   --background: #f8fafc;
   --foreground: #0f172a;
@@ -156,23 +167,20 @@ button,
     padding: 0 !important;
   }
 
-  .optimize-print-root {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 14px !important;
+  /* 印刷レイアウト画面を開いているときは、そのシートだけを印刷する */
+  body:has(> .print-layout-portal) > :not(.print-layout-portal) {
+    display: none !important;
   }
+}
 
-  /* 画面用の space-y-6（margin-block-start）を消す。flex の gap と両方効くと
-     二重に空いてしまう（改ページを挟まない区間で特に目立つ）。
-     Tailwind の space-y は margin-top ではなく margin-block-start を使うので、
-     両方明示して確実に打ち消す。 */
-  .optimize-print-root > * {
-    margin: 0 !important;
-    margin-block: 0 !important;
-  }
-
+/*
+ * 印刷レイアウト画面のシート（A4 縦の 1 ページ分）。
+ * 画面のプレビューと実際の印刷で同じ見た目になるよう、印刷用の詰めた見た目は
+ * @media print ではなくシートの中に当てる。print: ユーティリティも
+ * 上の @custom-variant でシートの中に効く。
+ */
+.print-sheet {
   .optimize-print-manufacture {
-    order: 1 !important;
     border: 0 !important;
     /* セクションの余白を詰めて表を上に寄せる（従来 p-5 = 20px を縮小） */
     padding: 0 10px 4px !important;
@@ -191,17 +199,13 @@ button,
     break-inside: avoid;
   }
 
-  /* 計算結果は製作図リストの後、次ページから印刷する。
-     材料取りは左列、付加筋は縮小して右列に置き、同じページに収める。 */
+  /* 2 ページ目。材料取りは左列、付加筋は縮小して右列に置き、同じページに収める。 */
   .optimize-print-summary-layout {
-    order: 2 !important;
     display: grid !important;
     grid-template-columns: max-content minmax(0, 1fr) !important;
     align-items: start !important;
     column-gap: 12px !important;
     width: 100% !important;
-    break-before: page;
-    break-inside: avoid;
   }
 
   /* 画面用の space-y を印刷用 grid の列間余白と重ねない */
@@ -304,12 +308,14 @@ button,
     width: 100% !important;
   }
 
-  .optimize-print-corner-bars .corner-summary-section {
+  .optimize-print-corner-bars .corner-summary-section,
+  .print-page1-card .corner-summary-section {
     overflow: hidden !important;
   }
 
   /* 文字列は内容幅、形状図は残り幅に合わせて縮める */
-  .optimize-print-corner-bars .corner-summary-print-root table {
+  .optimize-print-corner-bars .corner-summary-print-root table,
+  .print-page1-card .corner-summary-print-root table {
     width: 100% !important;
   }
 
@@ -377,5 +383,58 @@ button,
      区切りの空白は「×」の後ろにあるので、折り返しても読む順番は崩れない。 */
   .corner-summary-dims {
     white-space: normal !important;
+  }
+}
+
+/* A4 縦・余白 6mm/10mm の印刷範囲（190 × 285mm）。画面では白い用紙として見せる */
+.print-sheet {
+  position: relative;
+  width: 190mm;
+  min-height: 285mm;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px #cbd5e1,
+    0 6px 18px rgba(15, 23, 42, 0.18);
+}
+
+@media print {
+  /* 印刷では画面用の縮小・枠・影・余白を外し、シートを 1 ページずつ流す */
+  .print-layout-portal,
+  .print-layout-scroll {
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    background: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  .print-layout-pages {
+    display: block !important;
+    padding: 0 !important;
+  }
+
+  .print-sheet-frame,
+  .print-sheet-frame > div {
+    width: auto !important;
+    height: auto !important;
+  }
+
+  .print-sheet-ui {
+    display: none !important;
+  }
+
+  .print-sheet {
+    min-height: 0;
+    box-shadow: none;
+    transform: none !important;
+  }
+
+  .print-sheet-frame + .print-sheet-frame {
+    break-before: page;
+  }
+
+  .print-sheet-empty {
+    display: none !important;
   }
 }

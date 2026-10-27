@@ -1,7 +1,8 @@
 // components/optimize-client.tsx
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
 import type { DrawingCornerBar, DrawingSegment, Unit } from '@/lib/types/database'
 import { CornerBarSummarySections } from '@/components/corner-bar-summary-view'
 import { createClient } from '@/lib/supabase/client'
@@ -19,10 +20,20 @@ import type { UnitShapeLegendPosition } from '@/components/unit-client'
 import {
   DEFAULT_PIECE_LENGTH_ADJUSTMENT_MM,
   cornerBarLabelOverrideStorageKey,
+  cornerBarQuantityOverrideStorageKey,
   kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
+  printCardPlacementStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
+import {
+  PrintLayoutModal,
+  parsePrintCardPlacements,
+  type PrintCard,
+  type PrintCardId,
+  type PrintCardPlacement,
+  type PrintCardPlacements,
+} from '@/components/print-layout-modal'
 import {
   getSegmentBars,
   getSegmentEffectiveLengthMm,
@@ -37,6 +48,11 @@ const DEFAULT_STOCK_LENGTH_MM = 6000
 type ManufactureLegendPositionState = {
   storageKey: string | null
   positions: ManufactureLegendPositions
+}
+
+type PrintCardPlacementState = {
+  storageKey: string | null
+  placements: PrintCardPlacements
 }
 
 function parseManufactureLegendPositions(raw: string | null): ManufactureLegendPositions {
@@ -191,6 +207,66 @@ export function OptimizeClient({
     [manufactureLegendStorageKey],
   )
 
+  const printPlacementStorageKey = useMemo(
+    () => printCardPlacementStorageKey(projectId),
+    [projectId],
+  )
+  const [printPlacementState, setPrintPlacementState] = useState<PrintCardPlacementState>({
+    storageKey: null,
+    placements: {},
+  })
+  const printCardPlacements =
+    printPlacementState.storageKey === printPlacementStorageKey
+      ? printPlacementState.placements
+      : {}
+  /** 印刷レイアウト画面（印刷ボタンで開く） */
+  const [printLayoutOpen, setPrintLayoutOpen] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setPrintPlacementState({
+      storageKey: printPlacementStorageKey,
+      placements: parsePrintCardPlacements(
+        window.localStorage.getItem(printPlacementStorageKey),
+      ),
+    })
+  }, [printPlacementStorageKey])
+
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      printPlacementState.storageKey !== printPlacementStorageKey
+    ) {
+      return
+    }
+    try {
+      window.localStorage.setItem(
+        printPlacementStorageKey,
+        JSON.stringify(printPlacementState.placements),
+      )
+    } catch {
+      // Ignore storage write errors so dragging remains usable.
+    }
+  }, [printPlacementState, printPlacementStorageKey])
+
+  const handlePrintCardPlacementChange = useCallback(
+    (id: PrintCardId, placement: PrintCardPlacement | null) => {
+      setPrintPlacementState((current) => {
+        const next: PrintCardPlacements = {
+          ...(current.storageKey === printPlacementStorageKey ? current.placements : {}),
+        }
+        if (placement) next[id] = placement
+        else delete next[id]
+        return { storageKey: printPlacementStorageKey, placements: next }
+      })
+    },
+    [printPlacementStorageKey],
+  )
+
+  const handleResetPrintCardPlacements = useCallback(() => {
+    setPrintPlacementState({ storageKey: printPlacementStorageKey, placements: {} })
+  }, [printPlacementStorageKey])
+
   const adjustmentStorageKey = useMemo(
     () => pieceAdjustmentStorageKey(projectId),
     [projectId],
@@ -294,6 +370,60 @@ export function OptimizeClient({
       return { ...prev, [rowKey]: value }
     })
   }, [])
+
+  const cornerBarQuantityStorageKey = useMemo(
+    () => cornerBarQuantityOverrideStorageKey(projectId),
+    [projectId],
+  )
+  const [cornerBarQuantityOverrides, setCornerBarQuantityOverrides] = useState<
+    Record<string, number>
+  >({})
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.localStorage.getItem(cornerBarQuantityStorageKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      const next: Record<string, number> = {}
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          const n = Number(value)
+          if (Number.isFinite(n) && n >= 0) next[key] = Math.floor(n)
+        }
+      }
+      setCornerBarQuantityOverrides(next)
+    } catch {
+      setCornerBarQuantityOverrides({})
+    }
+  }, [cornerBarQuantityStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(
+        cornerBarQuantityStorageKey,
+        JSON.stringify(cornerBarQuantityOverrides),
+      )
+    } catch {
+      // ignore
+    }
+  }, [cornerBarQuantityOverrides, cornerBarQuantityStorageKey])
+
+  const handleCornerBarQuantityOverrideChange = useCallback(
+    (rowKey: string, value: number | null) => {
+      setCornerBarQuantityOverrides((prev) => {
+        if (value == null) {
+          if (!(rowKey in prev)) return prev
+          const next = { ...prev }
+          delete next[rowKey]
+          return next
+        }
+        if (prev[rowKey] === value) return prev
+        return { ...prev, [rowKey]: value }
+      })
+    },
+    [],
+  )
 
   const cornerBarLabelStorageKey = useMemo(
     () => cornerBarLabelOverrideStorageKey(projectId),
@@ -531,7 +661,7 @@ export function OptimizeClient({
     })
   }
 
-  /** ページ最後の印刷ボタン。押した瞬間だけタイトルを消し、印刷ダイアログに出るファイル名をきれいにする */
+  /** 印刷レイアウト画面の印刷ボタン。押した瞬間だけタイトルを消し、印刷ダイアログに出るファイル名をきれいにする */
   const handlePrint = useCallback(() => {
     const originalTitle = document.title
     document.title = ''
@@ -543,8 +673,90 @@ export function OptimizeClient({
     window.print()
   }, [])
 
+  const closePrintLayout = useCallback(() => setPrintLayoutOpen(false), [])
+
+  // Ctrl+P などで直接印刷したときも、印刷レイアウト画面のシートを印刷する
+  const canPrint = result != null && !calculating
+  useEffect(() => {
+    if (!canPrint) return
+    const handleBeforePrint = () => flushSync(() => setPrintLayoutOpen(true))
+    window.addEventListener('beforeprint', handleBeforePrint)
+    return () => window.removeEventListener('beforeprint', handleBeforePrint)
+  }, [canPrint])
+
+  // 画面と印刷レイアウト画面の両方に同じものを出す
+  const renderManufactureList = (tableOverlay?: ReactNode) => (
+    <ManufactureListView
+      segments={segments}
+      units={units}
+      adjustmentMm={pieceLengthAdjustmentMm}
+      customerCompany={customerCompany}
+      onCustomerCompanyChange={setCustomerCompany}
+      customerName={customerName}
+      onCustomerNameChange={setCustomerName}
+      customerAddress={customerAddress}
+      onCustomerAddressChange={setCustomerAddress}
+      customerDate={customerDate}
+      onCustomerDateChange={setCustomerDate}
+      customerArrival={customerArrival}
+      onCustomerArrivalChange={setCustomerArrival}
+      customerMemo={customerMemo}
+      onCustomerMemoChange={setCustomerMemo}
+      memoFontPx={customerMemoFontPx}
+      onMemoFontPxChange={setCustomerMemoFontPx}
+      legendPositions={
+        manufactureLegendPositionState.storageKey === manufactureLegendStorageKey
+          ? manufactureLegendPositionState.positions
+          : {}
+      }
+      onLegendPositionChange={handleManufactureLegendPositionChange}
+      tateCountOverrides={tateCountOverrides}
+      onTateCountOverrideChange={handleTateCountOverrideChange}
+      tableOverlay={tableOverlay}
+    />
+  )
+
+  const barSummaryCard =
+    barSummaryTable && barSummaryTable.length > 0 ? (
+      <BarSummarySection rows={barSummaryTable} adjustmentMm={pieceLengthAdjustmentMm} />
+    ) : null
+
+  const hookSummaryCard = result ? (
+    <OptimizationResultView
+      result={result}
+      stockLengthMm={DEFAULT_STOCK_LENGTH_MM}
+      projectId={projectId}
+      segmentLabelById={segmentLabelById}
+      segmentDrawingIdById={segmentDrawingIdById}
+      focusSegmentId={focusSegmentId ?? undefined}
+      unitCalculationRows={unitCalculationRows}
+      roundingMode={unitCountRoundingMode}
+      units={units}
+      onShapeLengthSave={handleShapeLengthSave}
+      manufactureTotalsByUnitId={manufactureTotalsByUnitId}
+    />
+  ) : null
+
+  const cornerBarsCard =
+    cornerBars.length > 0 ? (
+      <CornerBarSummarySections
+        placements={cornerBars}
+        kakouchouOverrides={kakouchouOverrides}
+        onKakouchouOverrideChange={handleKakouchouOverrideChange}
+        labelOverrides={cornerBarLabelOverrides}
+        onLabelOverrideChange={handleCornerBarLabelOverrideChange}
+        quantityOverrides={cornerBarQuantityOverrides}
+        onQuantityOverrideChange={handleCornerBarQuantityOverrideChange}
+      />
+    ) : null
+
+  const printCards: PrintCard[] = []
+  if (barSummaryCard) printCards.push({ id: 'bar-summary', label: '材料取り表', node: barSummaryCard })
+  if (hookSummaryCard) printCards.push({ id: 'hook-summary', label: 'フック付', node: hookSummaryCard })
+  if (cornerBarsCard) printCards.push({ id: 'corner-bars', label: '付加筋', node: cornerBarsCard })
+
   return (
-    <div className="optimize-print-root space-y-4">
+    <div className="space-y-4">
       {/* 計算中表示 */}
       {calculating && (
         <section className="rounded-lg border border-border bg-white p-8 text-center">
@@ -558,98 +770,57 @@ export function OptimizeClient({
 
       {/* 製作図リスト（新レイアウト・試験導入。計算実行後に表示。既存の計算結果はそのまま残す） */}
       {result && !calculating && (
-        <section className="optimize-print-manufacture rounded-lg border border-border bg-white p-5">
-          <ManufactureListView
-            segments={segments}
-            units={units}
-            adjustmentMm={pieceLengthAdjustmentMm}
-            customerCompany={customerCompany}
-            onCustomerCompanyChange={setCustomerCompany}
-            customerName={customerName}
-            onCustomerNameChange={setCustomerName}
-            customerAddress={customerAddress}
-            onCustomerAddressChange={setCustomerAddress}
-            customerDate={customerDate}
-            onCustomerDateChange={setCustomerDate}
-            customerArrival={customerArrival}
-            onCustomerArrivalChange={setCustomerArrival}
-            customerMemo={customerMemo}
-            onCustomerMemoChange={setCustomerMemo}
-            memoFontPx={customerMemoFontPx}
-            onMemoFontPxChange={setCustomerMemoFontPx}
-            legendPositions={
-              manufactureLegendPositionState.storageKey === manufactureLegendStorageKey
-                ? manufactureLegendPositionState.positions
-                : {}
-            }
-            onLegendPositionChange={handleManufactureLegendPositionChange}
-            tateCountOverrides={tateCountOverrides}
-            onTateCountOverrideChange={handleTateCountOverrideChange}
-          />
+        <section className="rounded-lg border border-border bg-white p-5">
+          {renderManufactureList()}
         </section>
       )}
 
-      {/*
-        画面では従来どおり縦積み。印刷時だけこのまとまりを 2 列にして、
-        付加筋を材料取りの右側へ配置する。
-      */}
       {!calculating && (result || cornerBars.length > 0) && (
-        <div className="optimize-print-summary-layout space-y-4">
+        <div className="space-y-4">
           {/* 結果 */}
           {result && (
-            <section className="optimize-print-results space-y-4">
+            <section className="space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-semibold">材料取り</h2>
               </div>
-              {barSummaryTable && barSummaryTable.length > 0 && (
-                <BarSummarySection
-                  rows={barSummaryTable}
-                  adjustmentMm={pieceLengthAdjustmentMm}
-                />
-              )}
-
-              <OptimizationResultView
-                result={result}
-                stockLengthMm={DEFAULT_STOCK_LENGTH_MM}
-                projectId={projectId}
-                segmentLabelById={segmentLabelById}
-                segmentDrawingIdById={segmentDrawingIdById}
-                focusSegmentId={focusSegmentId ?? undefined}
-                unitCalculationRows={unitCalculationRows}
-                roundingMode={unitCountRoundingMode}
-                units={units}
-                onShapeLengthSave={handleShapeLengthSave}
-                manufactureTotalsByUnitId={manufactureTotalsByUnitId}
-              />
+              {barSummaryCard}
+              {hookSummaryCard}
             </section>
           )}
 
           {/* 付加筋 集計結果。画面では切断最適化の結果の後ろに続けて出す */}
-          {cornerBars.length > 0 && (
-            <section className="optimize-print-corner-bars space-y-4">
-              <CornerBarSummarySections
-                placements={cornerBars}
-                kakouchouOverrides={kakouchouOverrides}
-                onKakouchouOverrideChange={handleKakouchouOverrideChange}
-                labelOverrides={cornerBarLabelOverrides}
-                onLabelOverrideChange={handleCornerBarLabelOverrideChange}
-              />
-            </section>
-          )}
+          {cornerBarsCard && <section className="space-y-4">{cornerBarsCard}</section>}
         </div>
       )}
 
-      {/* 印刷ボタン。このページの一番下に固定する */}
-      {result && !calculating && (
+      {/* 印刷ボタン。このページの一番下に固定する。押すと印刷レイアウト画面を開く */}
+      {canPrint && (
         <div className="flex justify-end print:hidden">
           <button
             type="button"
-            onClick={handlePrint}
+            onClick={() => setPrintLayoutOpen(true)}
             className="rounded-md border border-border px-3 py-1.5 text-xs text-muted hover:bg-gray-50"
           >
             印刷
           </button>
         </div>
+      )}
+
+      {/* 印刷はこの画面のシートだけを出すので、見えている配置がそのまま印刷される */}
+      {canPrint && printLayoutOpen && (
+        <PrintLayoutModal
+          onClose={closePrintLayout}
+          onPrint={handlePrint}
+          placements={printCardPlacements}
+          onPlacementChange={handlePrintCardPlacementChange}
+          onResetPlacements={handleResetPrintCardPlacements}
+          renderPage1={(overlay) => (
+            <section className="optimize-print-manufacture">
+              {renderManufactureList(overlay)}
+            </section>
+          )}
+          cards={printCards}
+        />
       )}
     </div>
   )
