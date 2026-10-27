@@ -699,7 +699,14 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
   const printMetrics = compact
     ? COMPACT_PRINT_FIGURE_METRICS
     : printWidth
-      ? { ...PRINT_FIGURE_METRICS, width: printWidth }
+      ? {
+          ...PRINT_FIGURE_METRICS,
+          width: printWidth,
+          // 高さも幅に合わせて縮め、曲げの多い形状（列の幅まで縮める図）と行の高さを揃える
+          height: Math.round(
+            (printWidth * COMPACT_PRINT_FIGURE_METRICS.height) / COMPACT_PRINT_FIGURE_METRICS.width,
+          ),
+        }
       : PRINT_FIGURE_METRICS
 
   return (
