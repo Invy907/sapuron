@@ -19,7 +19,12 @@ import { createPortal } from 'react-dom'
  * 1 ページ目に置いたカードは、製作図リストの表の左上を原点とした px 座標で保存する。
  */
 
-export type PrintCardId = 'bar-summary' | 'hook-summary' | 'corner-bars' | 'memo'
+export type PrintCardId =
+  | 'bar-summary'
+  | 'hook-summary'
+  | 'corner-bars'
+  | 'special-corner-bars'
+  | 'memo'
 
 export type PrintCardPlacement = {
   /** 製作図リストの表の左上からの位置 (px) */
@@ -55,7 +60,13 @@ export type PrintCard = {
   defaultPlacement?: (layer: HTMLDivElement) => PrintCardPlacement | null
 }
 
-const PRINT_CARD_IDS: readonly PrintCardId[] = ['bar-summary', 'hook-summary', 'corner-bars', 'memo']
+const PRINT_CARD_IDS: readonly PrintCardId[] = [
+  'bar-summary',
+  'hook-summary',
+  'corner-bars',
+  'special-corner-bars',
+  'memo',
+]
 /** 2 ページ目の既定の並び（左列＝材料取り、残りは右列）。最初の位置を測るときだけ使う */
 const LEFT_COLUMN_IDS: readonly PrintCardId[] = ['bar-summary', 'hook-summary']
 

@@ -838,10 +838,10 @@ export function OptimizeClient({
     />
   ) : null
 
-  const cornerBarsCard =
-    cornerBars.length > 0 ? (
+  const renderCornerBarsCard = (placements: DrawingCornerBar[]) =>
+    placements.length > 0 ? (
       <CornerBarSummarySections
-        placements={cornerBars}
+        placements={placements}
         kakouchouOverrides={kakouchouOverrides}
         onKakouchouOverrideChange={handleKakouchouOverrideChange}
         labelOverrides={cornerBarLabelOverrides}
@@ -851,10 +851,29 @@ export function OptimizeClient({
       />
     ) : null
 
+  // 結果ページは付加筋をまとめて 1 枚。印刷では特殊コーナー筋だけ別のカードにして、
+  // 大きさ・位置を別々に変えられるようにする（行 key は同じなので手入力はそのまま効く）
+  const cornerBarsCard = renderCornerBarsCard(cornerBars)
+  const plainCornerBarsCard = renderCornerBarsCard(
+    cornerBars.filter((cb) => cb.category !== 'SPECIAL_CORNER'),
+  )
+  const specialCornerBarsCard = renderCornerBarsCard(
+    cornerBars.filter((cb) => cb.category === 'SPECIAL_CORNER'),
+  )
+
   const printCards: PrintCard[] = []
   if (barSummaryCard) printCards.push({ id: 'bar-summary', label: '材料取り表', node: barSummaryCard })
   if (hookSummaryCard) printCards.push({ id: 'hook-summary', label: 'フック付', node: hookSummaryCard })
-  if (cornerBarsCard) printCards.push({ id: 'corner-bars', label: '付加筋', node: cornerBarsCard })
+  if (plainCornerBarsCard) {
+    printCards.push({ id: 'corner-bars', label: '付加筋', node: plainCornerBarsCard })
+  }
+  if (specialCornerBarsCard) {
+    printCards.push({
+      id: 'special-corner-bars',
+      label: '特殊コーナー筋',
+      node: specialCornerBarsCard,
+    })
+  }
   if (customerMemo.trim()) {
     printCards.push({
       id: 'memo',
