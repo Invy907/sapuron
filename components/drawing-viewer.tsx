@@ -35,6 +35,7 @@ import {
   resizeCornerBarEdgeToPoint,
   normalizeCornerBarRotation,
   isPerEdgeVisualDrawCategory,
+  DEFAULT_CORNER_BAR_COLORS,
   type CornerBarBarItem,
   type CornerBarCategory,
   type CornerBarGeometry,
@@ -610,14 +611,31 @@ export function DrawingViewer({
   const [cornerTool, setCornerTool] = useState<'select' | 'place'>('select')
   /** 付加筋タブでユニット線分を隠し、付加筋だけを表示する */
   const [cornerBarsOnlyView, setCornerBarsOnlyView] = useState(false)
-  /** これから配置する付加筋の色（配置設定で選ぶ） */
-  const [cornerPlacementColor, setCornerPlacementColor] = useState<SegmentColor>('red')
+  /**
+   * これから配置する付加筋の色（配置設定で選ぶ）。筋種類ごとに覚え、
+   * まだ選んでいない筋種類は既定の色（コーナー筋＝黄・添え筋＝灰・特殊コーナー筋＝マゼンタ）
+   */
+  const [cornerPlacementColorByCategory, setCornerPlacementColorByCategory] = useState<
+    Partial<Record<CornerBarCategory, SegmentColor>>
+  >({})
   /** 選択モードで空白をドラッグしたときのトースト */
   const [selectModeEmptyDrag, setSelectModeEmptyDrag] = useState<{ origin: Point } | null>(null)
   const [selectModeCannotDrawToastOpen, setSelectModeCannotDrawToastOpen] = useState(false)
 
   const cornerBarPlacementCategory = (placementDraft?.category ??
     activePlacementCategory) as CornerBarCategory
+  const cornerPlacementColor =
+    cornerPlacementColorByCategory[cornerBarPlacementCategory] ??
+    DEFAULT_CORNER_BAR_COLORS[cornerBarPlacementCategory] ??
+    'red'
+  const setCornerPlacementColor = useCallback(
+    (color: SegmentColor) =>
+      setCornerPlacementColorByCategory((prev) => ({
+        ...prev,
+        [cornerBarPlacementCategory]: color,
+      })),
+    [cornerBarPlacementCategory],
+  )
   const cornerBarShapeModalOptions = useMemo(
     () => getCornerBarShapeOptionsForCategory(cornerBarPlacementCategory),
     [cornerBarPlacementCategory],
@@ -1443,7 +1461,10 @@ export function DrawingViewer({
         draft.category === 'SPECIAL_CORNER'
           ? normalizeCornerBarFlip(draft.flipped)
           : false,
-      color: cornerPlacementColor,
+      color:
+        cornerPlacementColorByCategory[draft.category] ??
+        DEFAULT_CORNER_BAR_COLORS[draft.category] ??
+        cornerPlacementColor,
       label: null as string | null,
     }
     const { data, error } = await supabase

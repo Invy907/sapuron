@@ -15,6 +15,8 @@
  * 辺の順序は資料の表記（例: 600 × 455 × 115 × 600）と一致させる。
  */
 
+import type { SegmentColor } from '@/lib/segment-colors'
+
 /** 寸法基準。辺ごとに個別に持つ（鉄筋全体の属性ではない） */
 export type MeasurementType = 'SHIN_SHIN' | 'UCHI_UCHI' | 'SOTO_SOTO'
 
@@ -40,6 +42,13 @@ export const CORNER_BAR_CATEGORIES: Array<{
   { id: 'SOE', label: '添え筋' },
   { id: 'SPECIAL_CORNER', label: '特殊コーナー筋' },
 ]
+
+/** 付加筋を新しく置くときの既定の色。筋種類ごとに見分けやすい色にする */
+export const DEFAULT_CORNER_BAR_COLORS: Record<CornerBarCategory, SegmentColor> = {
+  CORNER: 'yellow',
+  SOE: 'slate',
+  SPECIAL_CORNER: 'fuchsia',
+}
 
 const LEGACY_CORNER_BAR_CATEGORY_LABELS: Record<string, string> = {
   BIG_CORNER: '特殊コーナー筋',

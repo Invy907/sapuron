@@ -42,9 +42,9 @@ const RIGHT_COL_WIDTH = 140
 const HEADER_TABLE_GAP_MM = 5
 /** 自由記入メモを置く、ヘッダー上端からのオフセット(px)。
  *  絶対配置なので、日付ブロックの高さを変えたらここも合わせる */
-const MEMO_BOX_TOP = 96
+export const MEMO_BOX_TOP = 96
 /** 印刷メモの左端を表の右端から離す距離(px)。表にくっついて見えないようにする */
-const MEMO_TABLE_GAP_PX = 32
+export const MEMO_TABLE_GAP_PX = 32
 /** 自由記入メモの文字サイズ(px)。利用者が −/＋ で調整する */
 export const MEMO_FONT_PX_MIN = 9
 export const MEMO_FONT_PX_MAX = 24
@@ -352,6 +352,7 @@ export function ManufactureListView({
   tateCountOverrides = {},
   onTateCountOverrideChange,
   tableOverlay,
+  hidePrintMemo = false,
 }: {
   segments: DrawingSegment[]
   units: Unit[]
@@ -381,6 +382,8 @@ export function ManufactureListView({
   ) => void
   /** 表の左上に重ねて描くもの（印刷 1 ページ目へ移したカードの層） */
   tableOverlay?: ReactNode
+  /** 印刷レイアウト画面ではメモを自由に動かせるカードとして別に描くので、ここでは出さない */
+  hidePrintMemo?: boolean
 }) {
   const groups = useMemo(
     () =>
@@ -551,7 +554,7 @@ export function ManufactureListView({
       </div>
 
       {/* 印刷では画面と同じ位置・同じ文字サイズでメモ本文だけを出す */}
-      {customerMemo.trim() ? (
+      {customerMemo.trim() && !hidePrintMemo ? (
         <div
           className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words text-center leading-snug print:block"
           style={{

@@ -13,7 +13,9 @@ import {
   ManufactureListView,
   buildManufactureUnitTotals,
   clampMemoFontPx,
+  MEMO_BOX_TOP,
   MEMO_FONT_PX_DEFAULT,
+  MEMO_TABLE_GAP_PX,
   type ManufactureLegendPositions,
 } from '@/components/manufacture-list-view'
 import type { UnitShapeLegendPosition } from '@/components/unit-client'
@@ -735,7 +737,7 @@ export function OptimizeClient({
   }, [canPrint])
 
   // 画面と印刷レイアウト画面の両方に同じものを出す
-  const renderManufactureList = (tableOverlay?: ReactNode) => (
+  const renderManufactureList = (tableOverlay?: ReactNode, hidePrintMemo = false) => (
     <ManufactureListView
       segments={segments}
       units={units}
@@ -763,6 +765,7 @@ export function OptimizeClient({
       tateCountOverrides={tateCountOverrides}
       onTateCountOverrideChange={handleTateCountOverrideChange}
       tableOverlay={tableOverlay}
+      hidePrintMemo={hidePrintMemo}
     />
   )
 
@@ -804,6 +807,33 @@ export function OptimizeClient({
   if (barSummaryCard) printCards.push({ id: 'bar-summary', label: '材料取り表', node: barSummaryCard })
   if (hookSummaryCard) printCards.push({ id: 'hook-summary', label: 'フック付', node: hookSummaryCard })
   if (cornerBarsCard) printCards.push({ id: 'corner-bars', label: '付加筋', node: cornerBarsCard })
+  if (customerMemo.trim()) {
+    printCards.push({
+      id: 'memo',
+      label: 'メモ',
+      node: (
+        <div
+          className="whitespace-pre-wrap break-words text-center leading-snug"
+          style={{ fontSize: customerMemoFontPx }}
+        >
+          {customerMemo}
+        </div>
+      ),
+      page1Only: true,
+      // 動かす前は従来の印刷と同じ「表の右の余白」に置く。幅は用紙の右端まで（層の幅）
+      defaultPlacement: (layer) => {
+        const wrap = layer.parentElement
+        const table = wrap?.querySelector('table')
+        if (!wrap || !table) return null
+        const x = table.offsetWidth + MEMO_TABLE_GAP_PX
+        return {
+          x,
+          y: MEMO_BOX_TOP - wrap.offsetTop,
+          w: Math.max(80, layer.offsetWidth - x),
+        }
+      },
+    })
+  }
 
   return (
     <div className="space-y-4">
@@ -866,9 +896,10 @@ export function OptimizeClient({
           zooms={printCardZooms}
           onZoomChange={handlePrintCardZoomChange}
           onResetPlacements={handleResetPrintCardPlacements}
-          renderPage1={(overlay) => (
+          renderPage1={(overlay, layeredIds) => (
             <section className="optimize-print-manufacture">
-              {renderManufactureList(overlay)}
+              {/* 既定位置を測る前（Ctrl+P で直接印刷したときなど）は元のメモを出す */}
+              {renderManufactureList(overlay, layeredIds.has('memo'))}
             </section>
           )}
           cards={printCards}
