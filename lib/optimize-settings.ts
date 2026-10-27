@@ -39,6 +39,11 @@ export function printCardPage2PlacementStorageKey(projectId: string) {
   return `optimize-print-card-page2-placements:${projectId}`
 }
 
+/** 印刷レイアウト画面の付加筋カードで、行ごとに決めた高さ（集計行 key → px） */
+export function printCornerRowHeightStorageKey(projectId: string) {
+  return `optimize-print-corner-row-heights:${projectId}`
+}
+
 export function parsePieceLengthAdjustment(
   value: string | undefined | null,
 ): number {

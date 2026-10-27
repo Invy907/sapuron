@@ -27,6 +27,7 @@ import {
   pieceAdjustmentStorageKey,
   printCardPlacementStorageKey,
   printCardPage2PlacementStorageKey,
+  printCornerRowHeightStorageKey,
   printCardZoomStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
@@ -361,11 +362,89 @@ export function OptimizeClient({
     [printPage2StorageKey],
   )
 
+  // 付加筋カードの行ごとの高さ（印刷レイアウト画面で行の境目をドラッグして決める）
+  const printCornerRowHeightKey = useMemo(
+    () => printCornerRowHeightStorageKey(projectId),
+    [projectId],
+  )
+  const [printCornerRowHeightState, setPrintCornerRowHeightState] = useState<{
+    storageKey: string | null
+    heights: Record<string, number>
+  }>({ storageKey: null, heights: {} })
+  const printCornerRowHeights =
+    printCornerRowHeightState.storageKey === printCornerRowHeightKey
+      ? printCornerRowHeightState.heights
+      : {}
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    let heights: Record<string, number> = {}
+    try {
+      const raw = window.localStorage.getItem(printCornerRowHeightKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          const n = Number(value)
+          if (Number.isFinite(n) && n > 0) heights[key] = n
+        }
+      }
+    } catch {
+      heights = {}
+    }
+    setPrintCornerRowHeightState({ storageKey: printCornerRowHeightKey, heights })
+  }, [printCornerRowHeightKey])
+
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      printCornerRowHeightState.storageKey !== printCornerRowHeightKey
+    ) {
+      return
+    }
+    try {
+      window.localStorage.setItem(
+        printCornerRowHeightKey,
+        JSON.stringify(printCornerRowHeightState.heights),
+      )
+    } catch {
+      // ignore
+    }
+  }, [printCornerRowHeightState, printCornerRowHeightKey])
+
+  /**
+   * 行の高さを変えたら、カードに決めてあった高さは外して中身（行の合計）に合わせる。
+   * カードの高さが残っていると、行を伸ばした分だけ中身が縮められてしまうため
+   */
+  const handlePrintCornerRowHeightChange = useCallback(
+    (cardId: PrintCardId, rowKey: string, height: number | null) => {
+      setPrintCornerRowHeightState((current) => {
+        const heights = {
+          ...(current.storageKey === printCornerRowHeightKey ? current.heights : {}),
+        }
+        if (height == null) delete heights[rowKey]
+        else heights[rowKey] = height
+        return { storageKey: printCornerRowHeightKey, heights }
+      })
+      const dropHeight = (current: PrintCardPlacementState, storageKey: string) => {
+        const placements = current.storageKey === storageKey ? current.placements : {}
+        const placement = placements[cardId]
+        if (!placement || placement.h == null) return current
+        const next = { ...placement }
+        delete next.h
+        return { storageKey, placements: { ...placements, [cardId]: next } }
+      }
+      setPrintPlacementState((current) => dropHeight(current, printPlacementStorageKey))
+      setPrintPage2State((current) => dropHeight(current, printPage2StorageKey))
+    },
+    [printCornerRowHeightKey, printPage2StorageKey, printPlacementStorageKey],
+  )
+
   const handleResetPrintCardPlacements = useCallback(() => {
     setPrintPlacementState({ storageKey: printPlacementStorageKey, placements: {} })
     setPrintZoomState({ storageKey: printZoomStorageKey, zooms: {} })
     setPrintPage2State({ storageKey: printPage2StorageKey, placements: {} })
-  }, [printPage2StorageKey, printPlacementStorageKey, printZoomStorageKey])
+    setPrintCornerRowHeightState({ storageKey: printCornerRowHeightKey, heights: {} })
+  }, [printCornerRowHeightKey, printPage2StorageKey, printPlacementStorageKey, printZoomStorageKey])
 
   const adjustmentStorageKey = useMemo(
     () => pieceAdjustmentStorageKey(projectId),
@@ -838,7 +917,8 @@ export function OptimizeClient({
     />
   ) : null
 
-  const renderCornerBarsCard = (placements: DrawingCornerBar[]) =>
+  /** printCardId を渡したとき（印刷レイアウト画面のカード）だけ、行の高さを変えられる */
+  const renderCornerBarsCard = (placements: DrawingCornerBar[], printCardId?: PrintCardId) =>
     placements.length > 0 ? (
       <CornerBarSummarySections
         placements={placements}
@@ -848,6 +928,12 @@ export function OptimizeClient({
         onLabelOverrideChange={handleCornerBarLabelOverrideChange}
         quantityOverrides={cornerBarQuantityOverrides}
         onQuantityOverrideChange={handleCornerBarQuantityOverrideChange}
+        rowHeights={printCardId ? printCornerRowHeights : undefined}
+        onRowHeightChange={
+          printCardId
+            ? (rowKey, height) => handlePrintCornerRowHeightChange(printCardId, rowKey, height)
+            : undefined
+        }
       />
     ) : null
 
@@ -856,9 +942,11 @@ export function OptimizeClient({
   const cornerBarsCard = renderCornerBarsCard(cornerBars)
   const plainCornerBarsCard = renderCornerBarsCard(
     cornerBars.filter((cb) => cb.category !== 'SPECIAL_CORNER'),
+    'corner-bars',
   )
   const specialCornerBarsCard = renderCornerBarsCard(
     cornerBars.filter((cb) => cb.category === 'SPECIAL_CORNER'),
+    'special-corner-bars',
   )
 
   const printCards: PrintCard[] = []
@@ -962,6 +1050,7 @@ export function OptimizeClient({
           page2Placements={printCardPage2Placements}
           onPage2PlacementChange={handlePrintCardPage2PlacementChange}
           onResetPlacements={handleResetPrintCardPlacements}
+          hasOtherLayoutChanges={Object.keys(printCornerRowHeights).length > 0}
           renderPage1={(overlay, layeredIds) => (
             <section className="optimize-print-manufacture">
               {/* 既定位置を測る前（Ctrl+P で直接印刷したときなど）は元のメモを出す */}

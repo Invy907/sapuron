@@ -154,6 +154,7 @@ export function PrintLayoutModal({
   zooms,
   onZoomChange,
   onResetPlacements,
+  hasOtherLayoutChanges = false,
   renderPage1,
   cards,
 }: {
@@ -169,6 +170,8 @@ export function PrintLayoutModal({
   onZoomChange: (id: PrintCardId, zoom: number | null) => void
   /** 1・2 ページ目の配置・拡大率・大きさをすべて元に戻す */
   onResetPlacements: () => void
+  /** カードの中で変えたもの（付加筋の行の高さなど）があるか。あればリセットを押せる */
+  hasOtherLayoutChanges?: boolean
   /**
    * 1 ページ目の中身。overlay は表の左上に重ねる層（1 ページ目へ移したカード）。
    * layeredIds は層に描いているカード。メモが入っていれば元のメモは出さない
@@ -384,7 +387,8 @@ export function PrintLayoutModal({
             disabled={
               Object.keys(placements).length === 0 &&
               Object.keys(zooms).length === 0 &&
-              Object.keys(page2Placements).length === 0
+              Object.keys(page2Placements).length === 0 &&
+              !hasOtherLayoutChanges
             }
             className="rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:bg-gray-50 disabled:opacity-40"
           >
