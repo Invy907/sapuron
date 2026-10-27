@@ -44,7 +44,7 @@ const HEADER_TABLE_GAP_MM = 5
  *  絶対配置なので、日付ブロックの高さを変えたらここも合わせる */
 const MEMO_BOX_TOP = 96
 /** 印刷メモの左端を表の右端から離す距離(px)。表にくっついて見えないようにする */
-const MEMO_TABLE_GAP_PX = 24
+const MEMO_TABLE_GAP_PX = 32
 /** 自由記入メモの文字サイズ(px)。利用者が −/＋ で調整する */
 export const MEMO_FONT_PX_MIN = 9
 export const MEMO_FONT_PX_MAX = 24
