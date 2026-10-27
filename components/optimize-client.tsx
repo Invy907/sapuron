@@ -124,9 +124,9 @@ export function OptimizeClient({
   const [customerCompany, setCustomerCompany] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
   const [customerName, setCustomerName] = useState('')
-  /** 積み込み日（日付のみ, ISO YYYY-MM-DD） */
+  /** 積み込み日（自由入力。旧データは ISO YYYY-MM-DD） */
   const [customerDate, setCustomerDate] = useState('')
-  /** 到着日（日付＋時刻, datetime-local の YYYY-MM-DDTHH:mm） */
+  /** 到着日（自由入力。旧データは YYYY-MM-DDTHH:mm） */
   const [customerArrival, setCustomerArrival] = useState('')
   /** 予定・注意事項などの自由記入メモ（製作図リストの右側） */
   const [customerMemo, setCustomerMemo] = useState('')

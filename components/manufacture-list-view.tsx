@@ -10,8 +10,6 @@
 
 import { useMemo, type CSSProperties } from 'react'
 import type { DrawingSegment, Unit } from '@/lib/types/database'
-import { CustomerDatePicker } from '@/components/customer-date-picker'
-import { CustomerDateTimePicker } from '@/components/customer-datetime-picker'
 import {
   UnitShapeThumbnail,
   type UnitShapeLegendPosition,
@@ -176,6 +174,11 @@ function formatArrivalDayTime(value: string): string {
   const time =
     p.hour != null ? `${p.hour}:${String(p.minute ?? 0).padStart(2, '0')}` : ''
   return `${p.day}(${p.weekday})${time}`
+}
+
+/** 以前カレンダーで保存した ISO 形式の値だけ伝票書式に変換し、それ以外は入力どおりに出す */
+function printDateText(value: string, formatIso: (value: string) => string): string {
+  return formatIso(value) || value.trim()
 }
 
 /**
@@ -448,32 +451,44 @@ export function ManufactureListView({
             </label>
           </div>
         </div>
-        {/* 画面では日付ピッカーで編集し、印刷時は手書き伝票と同じ書式で出す */}
+        {/* 画面では自由入力し、印刷時は入力したとおりに出す */}
         <div className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden">
-          <CustomerDatePicker
-            plain
-            labelPrefix="積み込み日:"
-            value={customerDate}
-            onChange={onCustomerDateChange}
-          />
-          <CustomerDateTimePicker
-            plain
-            labelPrefix="到着日:"
-            value={customerArrival}
-            onChange={onCustomerArrivalChange}
-          />
+          <label className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">積み込み日:</span>
+            <input
+              type="text"
+              value={customerDate}
+              onChange={(e) => onCustomerDateChange(e.target.value)}
+              placeholder="R8.10.27.(火)"
+              aria-label="積み込み日"
+              className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+            />
+          </label>
+          <label className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">到着日:</span>
+            <input
+              type="text"
+              value={customerArrival}
+              onChange={(e) => onCustomerArrivalChange(e.target.value)}
+              placeholder="28(水)8:00"
+              aria-label="到着日"
+              className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+            />
+          </label>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
           <div className="flex flex-col items-end">
-            {formatReiwaDate(customerDate) ? (
-              <div className="text-xl font-bold">{formatReiwaDate(customerDate)}</div>
+            {printDateText(customerDate, formatReiwaDate) ? (
+              <div className="text-xl font-bold">
+                {printDateText(customerDate, formatReiwaDate)}
+              </div>
             ) : null}
-            {formatArrivalDayTime(customerArrival) ? (
+            {printDateText(customerArrival, formatArrivalDayTime) ? (
               <>
                 {/* 手書きメモの指示どおり「つみこみ」も日付と同じ大きさに揃える */}
                 <div className="mt-0.5 text-xl leading-none">つみこみ</div>
                 <div className="text-xl font-bold">
-                  {formatArrivalDayTime(customerArrival)}
+                  {printDateText(customerArrival, formatArrivalDayTime)}
                 </div>
               </>
             ) : null}
@@ -526,7 +541,7 @@ export function ManufactureListView({
       {/* 印刷では画面と同じ位置・同じ文字サイズでメモ本文だけを出す */}
       {customerMemo.trim() ? (
         <div
-          className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words leading-snug print:block"
+          className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words text-center leading-snug print:block"
           style={{ width: RIGHT_COL_WIDTH, top: MEMO_BOX_TOP, fontSize: memoFontPx }}
         >
           {customerMemo}
