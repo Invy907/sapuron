@@ -82,6 +82,7 @@ export type CornerBarShapeType =
   | 'V_NOTCH_SIDE'
   | 'V_BRACKET'
   | 'BENT'
+  | 'L_LONG'
   | 'V_STEP3'
 
 /**
@@ -244,6 +245,19 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
     defaultLengths: [500, 500],
     adjustableAngle: true,
   },
+  /**
+   * 特殊コーナー筋: L 形で横の辺だけ長いもの。コーナー筋の L 形（両辺同じ長さ）とは
+   * 見た目を分けたいので別の形状にする
+   */
+  {
+    id: 'L_LONG',
+    label: 'L形',
+    directions: [
+      { x: 0, y: -1 },
+      { x: 1, y: 0 },
+    ],
+    defaultLengths: [300, 900],
+  },
   /** 特殊コーナー筋: 縦方向 3 段階段。パレットからは外したが旧データ用に残す */
   {
     id: 'V_STEP3',
@@ -331,7 +345,17 @@ export const SPECIAL_CORNER_SHAPE_TYPES: CornerBarShapeType[] = [
   'V_NOTCH_SIDE',
   'V_BRACKET',
   'BENT',
+  // コーナー筋・添え筋と同じ形でも、特殊コーナー筋として拾いたいときに使う
+  'L_LONG',
+  'STRAIGHT',
 ]
+
+/** 上・下を選べる形状（特殊コーナー筋の L 形・ストレートだけ） */
+const LAYER_SHAPE_TYPES: readonly string[] = ['L_LONG', 'L', 'STRAIGHT']
+
+export function cornerBarSupportsLayer(category: string, shapeType: string): boolean {
+  return category === 'SPECIAL_CORNER' && LAYER_SHAPE_TYPES.includes(shapeType)
+}
 
 export function getFixedShapeForCategory(
   category: CornerBarCategory,
@@ -687,6 +711,11 @@ export interface CornerBarBarItem {
   bendAngleDeg?: number
   /** 特殊コーナー筋: 上筋・下筋のどちらか。無い（なし）ときは付けない */
   layer?: CornerBarLayer
+  /**
+   * 図面に書く寸法（L 形・ストレート）の文字の位置。引き出し線の根元からのずれ（図面座標）。
+   * ドラッグで動かしたときだけ入り、配置ごとに 1 つで全ての bars に同じ値を書く
+   */
+  calloutOffset?: { x: number; y: number }
 }
 
 /** 特殊コーナー筋の上筋・下筋 */
@@ -705,6 +734,33 @@ export function normalizeCornerBarLayer(value: unknown): CornerBarLayer | undefi
 /** 径の前に付ける「㊤」「㊦」。なしは空 */
 export function cornerBarLayerMark(layer: unknown): string {
   return CORNER_BAR_LAYERS.find((l) => l.id === layer)?.mark ?? ''
+}
+
+function normalizeCalloutOffset(value: unknown): { x: number; y: number } | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const { x, y } = value as { x?: unknown; y?: unknown }
+  return typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y)
+    ? { x, y }
+    : undefined
+}
+
+function withCalloutOffset(value: unknown): Pick<CornerBarBarItem, 'calloutOffset'> {
+  const offset = normalizeCalloutOffset(value)
+  return offset ? { calloutOffset: offset } : {}
+}
+
+/** 配置の寸法の文字の位置（先頭の鉄筋を代表にする）。未設定は undefined */
+export function cornerBarCalloutOffset(bars: unknown): { x: number; y: number } | undefined {
+  const first = Array.isArray(bars) ? (bars[0] as { calloutOffset?: unknown } | undefined) : undefined
+  return normalizeCalloutOffset(first?.calloutOffset)
+}
+
+/** 寸法の文字の位置を配置の全ての鉄筋に書く */
+export function setCornerBarCalloutOffset(
+  bars: CornerBarBarItem[],
+  offset: { x: number; y: number },
+): CornerBarBarItem[] {
+  return bars.map((bar) => ({ ...bar, calloutOffset: { x: offset.x, y: offset.y } }))
 }
 
 function withLayer(layer: unknown): Pick<CornerBarBarItem, 'layer'> {
@@ -794,7 +850,13 @@ export function makeCornerBarBar(
   base?: Partial<
     Pick<
       CornerBarBarItem,
-      'id' | 'quantity' | 'segments' | 'measurementDeductionsMm' | 'bendAngleDeg' | 'layer'
+      | 'id'
+      | 'quantity'
+      | 'segments'
+      | 'measurementDeductionsMm'
+      | 'bendAngleDeg'
+      | 'layer'
+      | 'calloutOffset'
     >
   >,
 ): CornerBarBarItem {
@@ -805,8 +867,9 @@ export function makeCornerBarBar(
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
     ...withDeductions(base?.measurementDeductionsMm),
     ...withBendAngle(shape, base?.bendAngleDeg),
-    // 上・下は特殊コーナー筋だけ。ほかの筋種類に変えたら外す
-    ...(category === 'SPECIAL_CORNER' ? withLayer(base?.layer) : {}),
+    // 上・下は特殊コーナー筋の L 形・ストレートだけ。ほかの形状・筋種類に変えたら外す
+    ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(base?.layer) : {}),
+    ...withCalloutOffset(base?.calloutOffset),
   }
 }
 
@@ -850,7 +913,8 @@ export function changeCornerBarBarDiameter(
     }),
     ...withDeductions(bar.measurementDeductionsMm),
     ...withBendAngle(shape, bar.bendAngleDeg),
-    ...(category === 'SPECIAL_CORNER' ? withLayer(bar.layer) : {}),
+    ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(bar.layer) : {}),
+    ...withCalloutOffset(bar.calloutOffset),
   }
 }
 
@@ -877,6 +941,7 @@ export function normalizeCornerBarBars(
         ...withDeductions(normalizeMeasurementDeductions(rec.measurementDeductionsMm)),
         ...withBendAngle(shape, rec.bendAngleDeg),
         ...withLayer(rec.layer),
+        ...withCalloutOffset(rec.calloutOffset),
       }
     })
     .filter((bar): bar is CornerBarBarItem => bar != null)
@@ -916,6 +981,7 @@ export function remapCornerBarBarsToShape(
       measurementDeductionsMm: bar.measurementDeductionsMm,
       bendAngleDeg: bar.bendAngleDeg,
       layer: bar.layer,
+      calloutOffset: bar.calloutOffset,
     }),
   )
 }

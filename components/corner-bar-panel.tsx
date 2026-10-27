@@ -11,6 +11,7 @@ import {
   CORNER_BAR_CATEGORIES,
   CORNER_BAR_DIAMETERS,
   CORNER_BAR_LAYERS,
+  cornerBarSupportsLayer,
   cornerBarLayerMark,
   cornerBarCategoryLabel,
   cornerBarDiameterOptionLabel,
@@ -567,6 +568,7 @@ export function CornerBarPanel({
             {/* 径ごとの本数と辺の寸法。同じ位置でも径によって実寸が違うため個別に持つ */}
             <CornerBarBarsField
               category={selected.category as CornerBarCategory}
+              showLayer={cornerBarSupportsLayer(selected.category, selected.shape_type)}
               bars={selectedBars}
               showSegments
               activeSegIndex={activeSegIndex}
@@ -740,6 +742,7 @@ export function CornerBarPanel({
             {/* 径と本数に加えて辺の寸法もここで決める。配置後も右パネルで直せる */}
             <CornerBarBarsField
               category={placementCategory}
+              showLayer={cornerBarSupportsLayer(placementCategory, placementDraft?.shapeType ?? '')}
               bars={placementBars}
               showSegments
               disabled={!placementDraft}
@@ -843,6 +846,7 @@ export function CornerBarPanel({
  */
 function CornerBarBarsField({
   category,
+  showLayer,
   bars,
   showSegments,
   disabled = false,
@@ -856,6 +860,8 @@ function CornerBarBarsField({
   onRemove,
 }: {
   category: CornerBarCategory
+  /** 上・下を選ぶ欄を出すか（特殊コーナー筋の L 形・ストレートだけ） */
+  showLayer: boolean
   bars: CornerBarBarItem[]
   showSegments: boolean
   disabled?: boolean
@@ -891,7 +897,7 @@ function CornerBarBarsField({
       {bars.map((bar, barIdx) => (
         <div key={bar.id} className="space-y-1.5 rounded border border-border bg-white p-1.5">
           <div className="flex items-center gap-1.5">
-            {category === 'SPECIAL_CORNER' && onChangeLayer ? (
+            {showLayer && onChangeLayer ? (
               <select
                 value={bar.layer ?? ''}
                 disabled={disabled}

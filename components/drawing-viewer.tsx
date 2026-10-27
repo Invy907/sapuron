@@ -17,6 +17,9 @@ import {
   cornerBarCanvasGeometry,
   cornerBarCategoryLabel,
   cornerBarLayerMark,
+  cornerBarSupportsLayer,
+  cornerBarCalloutOffset,
+  setCornerBarCalloutOffset,
   CORNER_BAR_CATEGORIES,
   cornerBarRotationLabel,
   cornerBarSegmentLines,
@@ -195,6 +198,70 @@ function buildCornerBarPrintSummaryHtml(
     })
     .join('')
   return `<div class="summary corner-summary" style="left:${left}px;top:${top}px;--sum-scale:${scale};"><div class="corner-summary-rows">${rows}</div></div>`
+}
+
+/** 図面に書く寸法（引き出し線つき）の配置。座標は全て図面座標 */
+type CornerBarCallout = {
+  /** 引き出し線の根元（いちばん長い辺の中点） */
+  anchor: Point
+  /** 引き出し線の先（文字の脇） */
+  labelAt: Point
+  alignRight: boolean
+  lines: string[]
+  fontPx: number
+  lineHeight: number
+  textX: number
+  firstY: number
+  /** 文字の範囲。ドラッグで掴む判定に使う */
+  box: { x0: number; y0: number; x1: number; y1: number }
+}
+
+let calloutMeasureCtx: CanvasRenderingContext2D | null = null
+
+function measureCalloutTextWidth(text: string, font: string): number {
+  if (!calloutMeasureCtx) calloutMeasureCtx = document.createElement('canvas').getContext('2d')
+  if (!calloutMeasureCtx) return text.length * 8
+  calloutMeasureCtx.font = font
+  return calloutMeasureCtx.measureText(text).width
+}
+
+/**
+ * 図面上の寸法の書き込み（引き出し線）の位置。いちばん長い辺の中点から、
+ * 形の外側（ストレートは縦なら右、横なら上）へ distance だけ離した所に文字を置く。
+ */
+function cornerBarCalloutPlacement(
+  points: Array<{ x: number; y: number }>,
+  distance: number,
+): { anchor: Point; labelAt: Point; alignRight: boolean } | null {
+  let best = -1
+  let bestLen = 0
+  for (let i = 0; i < points.length - 1; i++) {
+    const len = Math.hypot(points[i + 1]!.x - points[i]!.x, points[i + 1]!.y - points[i]!.y)
+    if (len > bestLen) {
+      bestLen = len
+      best = i
+    }
+  }
+  if (best < 0 || bestLen === 0) return null
+  const a = points[best]!
+  const b = points[best + 1]!
+  const anchor = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  // 辺に垂直な向き。形の中心と反対側（外側）を選ぶ
+  let nx = -(b.y - a.y) / bestLen
+  let ny = (b.x - a.x) / bestLen
+  const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length
+  const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length
+  const toCenter = (cx - anchor.x) * nx + (cy - anchor.y) * ny
+  if (toCenter > 1e-6 || (Math.abs(toCenter) <= 1e-6 && (nx < 0 || (nx === 0 && ny > 0)))) {
+    nx = -nx
+    ny = -ny
+  }
+  // 斜め上に引き出して、文字が線と重ならないようにする
+  const labelAt = {
+    x: anchor.x + nx * distance + (nx === 0 ? distance * 0.6 : 0),
+    y: anchor.y + ny * distance - (ny === 0 ? distance * 0.6 : 0),
+  }
+  return { anchor, labelAt, alignRight: labelAt.x < anchor.x }
 }
 
 /** 印刷の表示選択の並び（筋種類の順） */
@@ -610,6 +677,13 @@ export function DrawingViewer({
   const [activePlacementCategory, setActivePlacementCategory] =
     useState<CornerBarCategory>('CORNER')
   const [cornerBarDrag, setCornerBarDrag] = useState<CornerBarDragState | null>(null)
+  /** 図面に書いた寸法の文字のドラッグ。start は引き出し線の根元から文字までのずれ */
+  const [calloutDrag, setCalloutDrag] = useState<{
+    id: string
+    origin: Point
+    start: Point
+  } | null>(null)
+  const calloutDragOffsetRef = useRef<Point | null>(null)
   const [cornerBarEdgeDrag, setCornerBarEdgeDrag] = useState<CornerBarEdgeDragState | null>(
     null,
   )
@@ -1415,6 +1489,73 @@ export function DrawingViewer({
     )
   }, [])
 
+  /**
+   * 特殊コーナー筋の L 形・ストレートに書く寸法「㊤D16(700×2170)×1」の配置。
+   * 文字の位置はドラッグで動かした値（calloutOffset）、無ければ形の外側に自動で置く
+   */
+  const cornerBarCalloutOf = useCallback(
+    (cb: DrawingCornerBar): CornerBarCallout | null => {
+      if (!cornerBarSupportsLayer(cb.category, cb.shape_type)) return null
+      const geometry = cornerBarGeometryOf(cb)
+      const shapeDef = resolveCornerBarShape(cb.shape_type, cb.bars)
+      if (!geometry || !shapeDef) return null
+      const lines = normalizeCornerBarBars(shapeDef, cb)
+        .filter((bar) => bar.quantity > 0)
+        .map((bar) => {
+          const dims = bar.segments.map((seg) => seg.lengthMm ?? '—').join('×')
+          return `${cornerBarLayerMark(bar.layer)}${bar.barType}(${dims})×${bar.quantity}`
+        })
+      const placement = cornerBarCalloutPlacement(geometry.points, 36 / scale)
+      if (lines.length === 0 || !placement) return null
+      const saved = cornerBarCalloutOffset(cb.bars)
+      const { anchor } = placement
+      const labelAt = saved ? { x: anchor.x + saved.x, y: anchor.y + saved.y } : placement.labelAt
+      const alignRight = labelAt.x < anchor.x
+      const fontPx = 13 / scale
+      const lineHeight = fontPx * 1.3
+      const textX = labelAt.x + (alignRight ? -4 : 4) / scale
+      const firstY = labelAt.y - ((lines.length - 1) * lineHeight) / 2
+      const font = `${fontPx}px sans-serif`
+      const width = Math.max(...lines.map((line) => measureCalloutTextWidth(line, font)))
+      const x0 = alignRight ? textX - width : textX
+      return {
+        anchor,
+        labelAt,
+        alignRight,
+        lines,
+        fontPx,
+        lineHeight,
+        textX,
+        firstY,
+        box: {
+          x0,
+          y0: firstY - lineHeight / 2,
+          x1: x0 + width,
+          y1: firstY + (lines.length - 0.5) * lineHeight,
+        },
+      }
+    },
+    [cornerBarGeometryOf, scale],
+  )
+
+  /** 寸法の文字の上か（上に描かれているものから順に探す） */
+  const findCornerBarCalloutAtPoint = useCallback(
+    (pt: Point): { cornerBar: DrawingCornerBar; callout: CornerBarCallout } | null => {
+      const pad = 3 / scale
+      for (let i = cornerBars.length - 1; i >= 0; i -= 1) {
+        const cb = cornerBars[i]!
+        const callout = cornerBarCalloutOf(cb)
+        if (!callout) continue
+        const { x0, y0, x1, y1 } = callout.box
+        if (pt.x >= x0 - pad && pt.x <= x1 + pad && pt.y >= y0 - pad && pt.y <= y1 + pad) {
+          return { cornerBar: cb, callout }
+        }
+      }
+      return null
+    },
+    [cornerBars, cornerBarCalloutOf, scale],
+  )
+
   const findCornerBarAtPoint = useCallback(
     (pt: Point, clickRadius: number): DrawingCornerBar | null => {
       // 後から置いたものを優先して掴めるように末尾から探す
@@ -1771,6 +1912,58 @@ export function DrawingViewer({
     const id = window.setTimeout(() => setSelectModeCannotDrawToastOpen(false), 2800)
     return () => window.clearTimeout(id)
   }, [selectModeCannotDrawToastOpen])
+
+  // 寸法の文字のドラッグ。動かしている間は画面だけ更新し、離したときに保存する
+  useEffect(() => {
+    if (!calloutDrag) return
+    const drag = calloutDrag
+
+    function pointFromClient(clientX: number, clientY: number): Point {
+      const canvas = canvasRef.current
+      if (!canvas) return { x: 0, y: 0 }
+      const rect = canvas.getBoundingClientRect()
+      const xr = (clientX - rect.left - offset.x) / scale
+      const yr = (clientY - rect.top - offset.y) / scale
+      const img = imgRef.current
+      if (!img) return { x: xr, y: yr }
+      const w = img.width
+      const h = img.height
+      const steps = ((rotationSteps % 4) + 4) % 4
+      if (steps === 0) return { x: xr, y: yr }
+      if (steps === 1) return { x: yr, y: h - xr }
+      if (steps === 2) return { x: w - xr, y: h - yr }
+      return { x: w - yr, y: xr }
+    }
+
+    function handleMove(ev: MouseEvent) {
+      const pt = pointFromClient(ev.clientX, ev.clientY)
+      const next = {
+        x: drag.start.x + pt.x - drag.origin.x,
+        y: drag.start.y + pt.y - drag.origin.y,
+      }
+      calloutDragOffsetRef.current = next
+      setCornerBars((prev) =>
+        prev.map((cb) =>
+          cb.id === drag.id ? { ...cb, bars: setCornerBarCalloutOffset(cb.bars ?? [], next) } : cb,
+        ),
+      )
+    }
+
+    function handleUp() {
+      const moved = calloutDragOffsetRef.current
+      calloutDragOffsetRef.current = null
+      setCalloutDrag(null)
+      if (moved) patchCornerBarBars(drag.id, (bars) => setCornerBarCalloutOffset(bars, moved))
+    }
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calloutDrag, offset.x, offset.y, scale, rotationSteps])
 
   useEffect(() => {
     if (!cornerBarDrag) return
@@ -2133,6 +2326,50 @@ export function DrawingViewer({
           ctx.restore()
         }
 
+        // 特殊コーナー筋の L 形・ストレートだけは、手書きの拾い出しと同じく
+        // 「㊤D16(700×2170)×1」を径ごとに 1 行ずつ、曲線の引き出し線でつないで図面に書く
+        const callout = cornerBarCalloutOf(cb)
+        if (callout) {
+          const { anchor, labelAt, lines, fontPx, lineHeight, textX, firstY } = callout
+          // 根元と文字を結ぶ線を少し膨らませ、寸法線ではなく引き出し線だと分かるようにする
+          const dx = labelAt.x - anchor.x
+          const dy = labelAt.y - anchor.y
+          const len = Math.hypot(dx, dy) || 1
+          let px = -dy / len
+          let py = dx / len
+          if (py > 0) {
+            px = -px
+            py = -py
+          }
+          const bulge = len * 0.3
+          const ctrl = {
+            x: (anchor.x + labelAt.x) / 2 + px * bulge,
+            y: (anchor.y + labelAt.y) / 2 + py * bulge,
+          }
+          ctx.save()
+          ctx.strokeStyle = strokeHex
+          ctx.fillStyle = strokeHex
+          ctx.lineWidth = 1.2 / scale
+          ctx.beginPath()
+          ctx.moveTo(anchor.x, anchor.y)
+          ctx.quadraticCurveTo(ctrl.x, ctrl.y, labelAt.x, labelAt.y)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(anchor.x, anchor.y, 2 / scale, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.font = `${fontPx}px sans-serif`
+          ctx.textAlign = callout.alignRight ? 'right' : 'left'
+          ctx.textBaseline = 'middle'
+          lines.forEach((line, i) => {
+            const y = firstY + i * lineHeight
+            ctx.lineWidth = 3 / scale
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+            ctx.strokeText(line, textX, y)
+            ctx.fillText(line, textX, y)
+          })
+          ctx.restore()
+        }
+
         // 寸法は径ごとに違うため図面には出さない。位置と形だけを描き、
         // 実寸は右パネルで径ごとに確認・修正する
         if (cb.label) {
@@ -2204,6 +2441,7 @@ export function DrawingViewer({
       cornerBars,
       selectedCornerBarId,
       cornerBarGeometryOf,
+      cornerBarCalloutOf,
     ],
   )
 
@@ -2830,6 +3068,23 @@ export function DrawingViewer({
         setCornerBarEndHoverCursor(end.cursor)
         return
       }
+      // 図面に書いた寸法の文字は、付加筋本体より先に掴んでドラッグで動かせる
+      const calloutHit = findCornerBarCalloutAtPoint(pt)
+      if (calloutHit) {
+        const { cornerBar, callout } = calloutHit
+        if (cornerTool === 'select') selectCornerBar(cornerBar.id)
+        calloutDragOffsetRef.current = null
+        setCalloutDrag({
+          id: cornerBar.id,
+          origin: pt,
+          start: {
+            x: callout.labelAt.x - callout.anchor.x,
+            y: callout.labelAt.y - callout.anchor.y,
+          },
+        })
+        setCornerBarEndHoverCursor('move')
+        return
+      }
       const hit = findCornerBarAtPoint(pt, 10 / scale)
       if (hit) {
         if (cornerTool === 'select') {
@@ -2969,13 +3224,14 @@ export function DrawingViewer({
       setOffset({ x: e.clientX - panStart.x, y: e.clientY - panStart.y })
       return
     }
-    if (segmentDrag || segmentLabelDrag || cornerBarDrag || cornerBarEdgeDrag) {
+    if (segmentDrag || segmentLabelDrag || cornerBarDrag || cornerBarEdgeDrag || calloutDrag) {
       return
     }
     if (layer === 'corner') {
       const pt = screenToCanvas(e)
       const end = findCornerBarEndAtPoint(pt, 8 / scale, cornerTool === 'place')
-      setCornerBarEndHoverCursor(end?.cursor ?? null)
+      const overCallout = !end && findCornerBarCalloutAtPoint(pt) != null
+      setCornerBarEndHoverCursor(end?.cursor ?? (overCallout ? 'move' : null))
       setCornerBarHovering(!!findCornerBarAtPoint(pt, 10 / scale))
       return
     }
