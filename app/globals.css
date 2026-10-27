@@ -330,12 +330,6 @@ button,
     height: auto !important;
   }
 
-  /* 曲げの多い形状は従来どおり、列の幅いっぱいまで縮めて描く */
-  .corner-summary-figure-fit .corner-summary-figure svg {
-    width: 100% !important;
-    max-width: 280px !important;
-  }
-
   /* 筋種類ごとのセクションと表の行が途中で割れないようにする。
      space-y-* のマージンではなく gap で詰めたいので flex に切り替える */
   .corner-summary-print-root {

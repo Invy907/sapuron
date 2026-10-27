@@ -471,19 +471,12 @@ const PRINT_FIGURE_METRICS: FigureMetrics = {
   cropHeight: true,
 }
 /**
- * 曲げの多い形状（2段階段・欠き込みなど）は文字を 14px にすると重なるので、
- * これまでどおり大きめの viewBox で描いて列の幅まで縮める（文字が重なるときは小さくする）
+ * 曲げの多い形状（2段階段・欠き込みなど）は辺が短く寸法が重なりやすいので、
+ * 重なるときは文字を半分まで小さくしてよい（それ以外の形状は 70% まで）
  */
 const COMPACT_PRINT_FIGURE_METRICS: FigureMetrics = {
-  width: 280,
-  height: 180,
-  pad: 30,
-  labelGap: 4,
-  dimFont: 20,
-  measurementFont: 15,
-  lineDy: 19,
+  ...PRINT_FIGURE_METRICS,
   labelScales: [1, 0.85, 0.7, 0.6, 0.5],
-  cropHeight: true,
 }
 const COMPACT_PRINT_SHAPE_TYPES: ReadonlySet<string> = new Set([
   'V_STEP2',
@@ -494,6 +487,8 @@ const COMPACT_PRINT_SHAPE_TYPES: ReadonlySet<string> = new Set([
 /** 印刷の形状図の幅の範囲。広いカードでも図が大きくなりすぎないようにする */
 const PRINT_FIGURE_MIN_WIDTH = 120
 const PRINT_FIGURE_MAX_WIDTH = 320
+/** 印刷の形状図の高さ（幅に対する比）。上下の余白は描いたあとに詰める */
+const PRINT_FIGURE_HEIGHT_RATIO = 180 / 280
 
 /** 形状の線の太さ（viewBox 単位） */
 const FIGURE_STROKE_WIDTH = 2.5
@@ -700,29 +695,24 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
-  const compact = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
-  const printMetrics = compact
+  // どの形状も置かれた幅で描き、文字は 12px 以下に揃える（カードを広げても大きくならない）
+  const baseMetrics = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
     ? COMPACT_PRINT_FIGURE_METRICS
-    : printWidth
-      ? {
-          ...PRINT_FIGURE_METRICS,
-          width: printWidth,
-          // 高さも幅に合わせて縮め、曲げの多い形状（列の幅まで縮める図）と行の高さを揃える
-          height: Math.round(
-            (printWidth * COMPACT_PRINT_FIGURE_METRICS.height) / COMPACT_PRINT_FIGURE_METRICS.width,
-          ),
-        }
-      : PRINT_FIGURE_METRICS
+    : PRINT_FIGURE_METRICS
+  const printMetrics = printWidth
+    ? {
+        ...baseMetrics,
+        width: printWidth,
+        height: Math.round(printWidth * PRINT_FIGURE_HEIGHT_RATIO),
+      }
+    : baseMetrics
 
   return (
     <>
       <div className="print:hidden">
         <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
       </div>
-      <div
-        ref={compact ? undefined : observePrintBox}
-        className={`hidden print:block ${compact ? 'corner-summary-figure-fit' : ''}`}
-      >
+      <div ref={observePrintBox} className="hidden print:block">
         <ShapeFigureSvg row={row} metrics={printMetrics} />
       </div>
     </>
