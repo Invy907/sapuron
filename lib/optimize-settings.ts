@@ -29,6 +29,11 @@ export function printCardPlacementStorageKey(projectId: string) {
   return `optimize-print-card-placements:${projectId}`
 }
 
+/** 印刷レイアウト画面のカードの拡大率（カード → 倍率） */
+export function printCardZoomStorageKey(projectId: string) {
+  return `optimize-print-card-zooms:${projectId}`
+}
+
 export function parsePieceLengthAdjustment(
   value: string | undefined | null,
 ): number {

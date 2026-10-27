@@ -24,15 +24,18 @@ import {
   kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
   printCardPlacementStorageKey,
+  printCardZoomStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
 import {
   PrintLayoutModal,
   parsePrintCardPlacements,
+  parsePrintCardZooms,
   type PrintCard,
   type PrintCardId,
   type PrintCardPlacement,
   type PrintCardPlacements,
+  type PrintCardZooms,
 } from '@/components/print-layout-modal'
 import {
   getSegmentBars,
@@ -53,6 +56,11 @@ type ManufactureLegendPositionState = {
 type PrintCardPlacementState = {
   storageKey: string | null
   placements: PrintCardPlacements
+}
+
+type PrintCardZoomState = {
+  storageKey: string | null
+  zooms: PrintCardZooms
 }
 
 function parseManufactureLegendPositions(raw: string | null): ManufactureLegendPositions {
@@ -263,9 +271,51 @@ export function OptimizeClient({
     [printPlacementStorageKey],
   )
 
+  const printZoomStorageKey = useMemo(() => printCardZoomStorageKey(projectId), [projectId])
+  const [printZoomState, setPrintZoomState] = useState<PrintCardZoomState>({
+    storageKey: null,
+    zooms: {},
+  })
+  const printCardZooms =
+    printZoomState.storageKey === printZoomStorageKey ? printZoomState.zooms : {}
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setPrintZoomState({
+      storageKey: printZoomStorageKey,
+      zooms: parsePrintCardZooms(window.localStorage.getItem(printZoomStorageKey)),
+    })
+  }, [printZoomStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || printZoomState.storageKey !== printZoomStorageKey) {
+      return
+    }
+    try {
+      window.localStorage.setItem(printZoomStorageKey, JSON.stringify(printZoomState.zooms))
+    } catch {
+      // Ignore storage write errors so resizing remains usable.
+    }
+  }, [printZoomState, printZoomStorageKey])
+
+  const handlePrintCardZoomChange = useCallback(
+    (id: PrintCardId, zoom: number | null) => {
+      setPrintZoomState((current) => {
+        const next: PrintCardZooms = {
+          ...(current.storageKey === printZoomStorageKey ? current.zooms : {}),
+        }
+        if (zoom == null) delete next[id]
+        else next[id] = zoom
+        return { storageKey: printZoomStorageKey, zooms: next }
+      })
+    },
+    [printZoomStorageKey],
+  )
+
   const handleResetPrintCardPlacements = useCallback(() => {
     setPrintPlacementState({ storageKey: printPlacementStorageKey, placements: {} })
-  }, [printPlacementStorageKey])
+    setPrintZoomState({ storageKey: printZoomStorageKey, zooms: {} })
+  }, [printPlacementStorageKey, printZoomStorageKey])
 
   const adjustmentStorageKey = useMemo(
     () => pieceAdjustmentStorageKey(projectId),
@@ -813,6 +863,8 @@ export function OptimizeClient({
           onPrint={handlePrint}
           placements={printCardPlacements}
           onPlacementChange={handlePrintCardPlacementChange}
+          zooms={printCardZooms}
+          onZoomChange={handlePrintCardZoomChange}
           onResetPlacements={handleResetPrintCardPlacements}
           renderPage1={(overlay) => (
             <section className="optimize-print-manufacture">
