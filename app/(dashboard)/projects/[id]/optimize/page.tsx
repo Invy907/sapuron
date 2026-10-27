@@ -79,8 +79,7 @@ export default async function OptimizePage({
         </Link>
       </div>
 
-      <h1 className="mb-1 text-xl font-bold print:hidden">{project.name}</h1>
-      <p className="mb-6 text-sm text-muted print:hidden">切断最適化の計算</p>
+      <h1 className="mb-6 text-xl font-bold print:hidden">{project.name}</h1>
 
       <OptimizeClient
         projectId={projectId}
