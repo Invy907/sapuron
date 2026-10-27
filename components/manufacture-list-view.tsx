@@ -8,7 +8,7 @@
 
 'use client'
 
-import { useMemo, type CSSProperties } from 'react'
+import { useCallback, useMemo, useState, type CSSProperties } from 'react'
 import type { DrawingSegment, Unit } from '@/lib/types/database'
 import {
   UnitShapeThumbnail,
@@ -43,6 +43,8 @@ const HEADER_TABLE_GAP_MM = 5
 /** 自由記入メモを置く、ヘッダー上端からのオフセット(px)。
  *  絶対配置なので、日付ブロックの高さを変えたらここも合わせる */
 const MEMO_BOX_TOP = 96
+/** 印刷メモの左端を表の右端から離す距離(px)。表にくっついて見えないようにする */
+const MEMO_TABLE_GAP_PX = 24
 /** 自由記入メモの文字サイズ(px)。利用者が −/＋ で調整する */
 export const MEMO_FONT_PX_MIN = 9
 export const MEMO_FONT_PX_MAX = 24
@@ -386,6 +388,15 @@ export function ManufactureListView({
     [segments, units, adjustmentMm, tateCountOverrides],
   )
 
+  // 印刷メモを「表の右端〜用紙の右端」の余白の中央に置くため、表の幅を測る
+  const [tableWidthPx, setTableWidthPx] = useState<number | null>(null)
+  const observeTableWidth = useCallback((el: HTMLTableElement | null) => {
+    if (!el) return
+    const observer = new ResizeObserver(() => setTableWidthPx(el.offsetWidth))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   // 文字サイズは行全体に inline style で当てる（Tailwind の text-* だと画面と印刷で
   // 別々の値になってしまい、1 行に収まる保証ができない）
   const headerFontPx = manufactureHeaderFontPx(customerCompany, customerName, customerAddress)
@@ -540,7 +551,11 @@ export function ManufactureListView({
       {customerMemo.trim() ? (
         <div
           className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words text-center leading-snug print:block"
-          style={{ width: RIGHT_COL_WIDTH, top: MEMO_BOX_TOP, fontSize: memoFontPx }}
+          style={{
+            ...(tableWidthPx != null ? { left: tableWidthPx + MEMO_TABLE_GAP_PX } : { width: RIGHT_COL_WIDTH }),
+            top: MEMO_BOX_TOP,
+            fontSize: memoFontPx,
+          }}
         >
           {customerMemo}
         </div>
@@ -553,7 +568,11 @@ export function ManufactureListView({
         style={{ paddingTop: `${HEADER_TABLE_GAP_MM}mm` }}
       >
         <div className="overflow-x-auto">
-        <table className="border-collapse text-sm" style={{ tableLayout: 'fixed' }}>
+        <table
+          ref={observeTableWidth}
+          className="border-collapse text-sm"
+          style={{ tableLayout: 'fixed' }}
+        >
           <colgroup>
             <col style={{ width: COL_SHAPE }} />
             <col style={{ width: COL_LEN }} />
