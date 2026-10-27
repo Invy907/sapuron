@@ -414,15 +414,6 @@ button,
   height: 100%;
 }
 
-/* 縮小率を決めるために、引き伸ばす前の中身の高さを測っている間だけ外す */
-.print-card-measuring > .print-card-body,
-.print-card-measuring > .print-card-body > *,
-.print-card-measuring > .print-card-body > * > .print-hook-summary,
-.print-card-measuring > .print-card-body > * > .corner-summary-section,
-.print-card-measuring > .print-card-body > * > .corner-summary-section > table {
-  height: auto !important;
-}
-
 /* A4 縦・余白 6mm/10mm の印刷範囲（190 × 285mm）。画面では白い用紙として見せる */
 .print-sheet {
   position: relative;

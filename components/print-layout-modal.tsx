@@ -729,10 +729,24 @@ function SheetCard({
     const measure = () => {
       const content = body.firstElementChild as HTMLElement | null
       if (!content) return
-      // 行を引き伸ばす指定（height: 100%）を一時的に外して、詰めたときの高さを測る
-      card.classList.add('print-card-measuring')
+      // 行を引き伸ばす指定（height: 100%）を一時的に外して、詰めたときの高さを測る。
+      // CSS の読み込みに頼らないよう、測る間だけ要素に直接 height: auto を当てる
+      const stretched = [
+        body,
+        ...Array.from(
+          body.querySelectorAll<HTMLElement>(
+            ':scope > *, :scope > * > .print-hook-summary, :scope > * > .corner-summary-section, :scope > * > .corner-summary-section > table',
+          ),
+        ),
+      ]
+      const saved = stretched.map((el) => el.style.height)
+      stretched.forEach((el) => {
+        el.style.height = 'auto'
+      })
       const naturalNow = content.getBoundingClientRect().height
-      card.classList.remove('print-card-measuring')
+      stretched.forEach((el, i) => {
+        el.style.height = saved[i] ?? ''
+      })
       const boxNow = card.getBoundingClientRect().height
       if (naturalNow <= 0 || boxNow <= 0) return
       // 測った高さは今の縮小率が掛かった値なので、縮小なしの高さに戻してから比べる
