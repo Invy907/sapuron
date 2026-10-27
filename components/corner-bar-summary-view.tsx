@@ -466,6 +466,26 @@ const PRINT_FIGURE_METRICS: FigureMetrics = {
   lineDy: 16,
   labelScales: [1],
 }
+/**
+ * 曲げの多い形状（2段階段・欠き込みなど）は文字を 14px にすると重なるので、
+ * これまでどおり大きめの viewBox で描いて列の幅まで縮める（文字が重なるときは小さくする）
+ */
+const COMPACT_PRINT_FIGURE_METRICS: FigureMetrics = {
+  width: 280,
+  height: 180,
+  pad: 30,
+  labelGap: 4,
+  dimFont: 20,
+  measurementFont: 15,
+  lineDy: 19,
+  labelScales: [1, 0.85, 0.7, 0.6, 0.5],
+}
+const COMPACT_PRINT_SHAPE_TYPES: ReadonlySet<string> = new Set([
+  'V_STEP2',
+  'V_NOTCH',
+  'V_STEP2_END',
+  'V_NOTCH_SIDE',
+])
 /** 印刷の形状図の幅の範囲。広いカードでも図が大きくなりすぎないようにする */
 const PRINT_FIGURE_MIN_WIDTH = 120
 const PRINT_FIGURE_MAX_WIDTH = 320
@@ -675,16 +695,22 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
-  const printMetrics = printWidth
-    ? { ...PRINT_FIGURE_METRICS, width: printWidth }
-    : PRINT_FIGURE_METRICS
+  const compact = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
+  const printMetrics = compact
+    ? COMPACT_PRINT_FIGURE_METRICS
+    : printWidth
+      ? { ...PRINT_FIGURE_METRICS, width: printWidth }
+      : PRINT_FIGURE_METRICS
 
   return (
     <>
       <div className="print:hidden">
         <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
       </div>
-      <div ref={observePrintBox} className="hidden print:block">
+      <div
+        ref={compact ? undefined : observePrintBox}
+        className={`hidden print:block ${compact ? 'corner-summary-figure-fit' : ''}`}
+      >
         <ShapeFigureSvg row={row} metrics={printMetrics} />
       </div>
     </>
