@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import {
   aggregateAdditionalRebars,
   type AdditionalRebarGroup,
@@ -435,6 +435,8 @@ type FigureMetrics = {
   dimFont: number
   measurementFont: number
   lineDy: number
+  /** ラベルが重なるときに試す文字の倍率。印刷は文字を小さくしない */
+  labelScales: readonly number[]
 }
 
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
@@ -446,27 +448,27 @@ const SCREEN_FIGURE_METRICS: FigureMetrics = {
   dimFont: 14,
   measurementFont: 11,
   lineDy: 14,
+  labelScales: [1, 0.85, 0.7, 0.6, 0.5],
 }
 
 /**
- * 印刷では形状図が右列の残り幅（A4 で 110px 前後）まで縮むので、
- * viewBox 上の文字を大きめにして紙の上で読める大きさにする。
+ * 印刷の形状図。幅は実際に置かれる幅（測った値）にして viewBox と 1:1 にし、
+ * 寸法・寸法基準の文字を表の文字（14px、括弧内の加工長と同じ）と同じ大きさで印刷する。
+ * 文字は小さくしない（重なりそうなときは外側へずらすだけ）。
  */
 const PRINT_FIGURE_METRICS: FigureMetrics = {
   width: 280,
   height: 180,
   pad: 30,
   labelGap: 4,
-  dimFont: 20,
-  measurementFont: 15,
-  lineDy: 19,
+  dimFont: 14,
+  measurementFont: 14,
+  lineDy: 16,
+  labelScales: [1],
 }
-
-/**
- * ラベルが収まらないときに順に試す文字の倍率。
- * 辺が多く短い形状（階段形など）でも、小さくすれば数字のまま書ける。
- */
-const FIGURE_LABEL_SCALES = [1, 0.85, 0.7, 0.6, 0.5]
+/** 印刷の形状図の幅の範囲。広いカードでも図が大きくなりすぎないようにする */
+const PRINT_FIGURE_MIN_WIDTH = 120
+const PRINT_FIGURE_MAX_WIDTH = 320
 
 /** 形状の線の太さ（viewBox 単位） */
 const FIGURE_STROKE_WIDTH = 2.5
@@ -642,11 +644,11 @@ function layoutLabels(
   points: Array<{ x: number; y: number }>,
   metrics: FigureMetrics,
 ): { anchors: LabelAnchor[]; scale: number } {
-  for (const scale of FIGURE_LABEL_SCALES) {
+  for (const scale of metrics.labelScales) {
     const placed = resolveLabelAnchors(anchors, textLines, points, metrics, scale)
     if (placed) return { anchors: placed, scale }
   }
-  const scale = FIGURE_LABEL_SCALES[FIGURE_LABEL_SCALES.length - 1]!
+  const scale = metrics.labelScales[metrics.labelScales.length - 1] ?? 1
   const { halfWidth, halfHeight } = labelHalfSizes(textLines, metrics, scale)
   return {
     anchors: offsetAnchors(anchors, halfWidth, halfHeight, metrics.labelGap * scale),
@@ -656,13 +658,34 @@ function layoutLabels(
 
 /** 画面用と印刷用の形状図を両方描き、媒体に応じて片方だけ見せる */
 function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
+  // 印刷用は置かれた幅を測り、その幅で描いて文字が縮まないようにする。
+  // 印刷レイアウト画面のシートの中で測れる（測る前は既定の幅で描き、CSS で縮める）
+  const [printWidth, setPrintWidth] = useState<number | null>(null)
+  const observePrintBox = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return
+    const update = () => {
+      const w = el.clientWidth
+      if (w <= 0) return
+      setPrintWidth(
+        Math.round(Math.min(PRINT_FIGURE_MAX_WIDTH, Math.max(PRINT_FIGURE_MIN_WIDTH, w))),
+      )
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  const printMetrics = printWidth
+    ? { ...PRINT_FIGURE_METRICS, width: printWidth }
+    : PRINT_FIGURE_METRICS
+
   return (
     <>
       <div className="print:hidden">
         <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
       </div>
-      <div className="hidden print:block">
-        <ShapeFigureSvg row={row} metrics={PRINT_FIGURE_METRICS} />
+      <div ref={observePrintBox} className="hidden print:block">
+        <ShapeFigureSvg row={row} metrics={printMetrics} />
       </div>
     </>
   )

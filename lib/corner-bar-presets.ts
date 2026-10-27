@@ -707,6 +707,11 @@ export interface CornerBarBarItem {
    * 無い（古いデータ・未入力）ときは全て 0 として扱う。
    */
   measurementDeductionsMm?: MeasurementDeductionsMm
+  /**
+   * 特殊コーナー筋: 加工長を出すときに、辺の合計から引く長さ(mm)。配置ごとに 1 つで全ての bars に書く。
+   * これが入っているときは measurementDeductionsMm（辺ごとの減り。旧い入力）は使わない
+   */
+  deductionTotalMm?: number
   /** くの字: 辺のあいだの角度（度）。配置ごとに 1 つで、全ての bars に同じ値を書く */
   bendAngleDeg?: number
   /** 特殊コーナー筋: 上筋・下筋のどちらか。無い（なし）ときは付けない */
@@ -815,6 +820,41 @@ function withDeductions(
   return deductions ? { measurementDeductionsMm: { ...deductions } } : {}
 }
 
+function withDeductionTotal(value: unknown): Pick<CornerBarBarItem, 'deductionTotalMm'> {
+  const n = Number(value)
+  return value != null && value !== '' && Number.isFinite(n) && n >= 0
+    ? { deductionTotalMm: n }
+    : {}
+}
+
+/**
+ * 配置の全体の減り（先頭の鉄筋を代表にする）。まだ入れていない旧いデータは、
+ * 辺ごとの減りを先頭の鉄筋の辺に当てはめた合計を返す（入力欄の初期値用）
+ */
+export function cornerBarDeductionTotal(bars: CornerBarBarItem[]): number {
+  const first = bars[0]
+  if (!first) return 0
+  if (first.deductionTotalMm != null) return first.deductionTotalMm
+  const perType = first.measurementDeductionsMm
+  if (!perType) return 0
+  return first.segments.reduce(
+    (sum, seg) => sum + (seg.measurementType ? perType[seg.measurementType] ?? 0 : 0),
+    0,
+  )
+}
+
+/** 全体の減りを配置の全ての鉄筋に書く。辺ごとの減り（旧い入力）は外す */
+export function setCornerBarDeductionTotal(
+  bars: CornerBarBarItem[],
+  totalMm: number,
+): CornerBarBarItem[] {
+  return bars.map((bar) => {
+    const next: CornerBarBarItem = { ...bar, deductionTotalMm: Math.max(0, totalMm) }
+    delete next.measurementDeductionsMm
+    return next
+  })
+}
+
 /** 角度を変えられる形状のときだけ角度を引き継ぐ（ほかの形状に変えたら外す） */
 function withBendAngle(
   shape: CornerBarShapeDef,
@@ -854,6 +894,7 @@ export function makeCornerBarBar(
       | 'quantity'
       | 'segments'
       | 'measurementDeductionsMm'
+      | 'deductionTotalMm'
       | 'bendAngleDeg'
       | 'layer'
       | 'calloutOffset'
@@ -866,6 +907,7 @@ export function makeCornerBarBar(
     quantity: normalizeBarQuantity(base?.quantity),
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
     ...withDeductions(base?.measurementDeductionsMm),
+    ...withDeductionTotal(base?.deductionTotalMm),
     ...withBendAngle(shape, base?.bendAngleDeg),
     // 上・下は特殊コーナー筋の L 形・ストレートだけ。ほかの形状・筋種類に変えたら外す
     ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(base?.layer) : {}),
@@ -912,6 +954,7 @@ export function changeCornerBarBarDiameter(
       }
     }),
     ...withDeductions(bar.measurementDeductionsMm),
+    ...withDeductionTotal(bar.deductionTotalMm),
     ...withBendAngle(shape, bar.bendAngleDeg),
     ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(bar.layer) : {}),
     ...withCalloutOffset(bar.calloutOffset),
@@ -939,6 +982,7 @@ export function normalizeCornerBarBars(
         quantity: normalizeBarQuantity(rec.quantity),
         segments: normalizeCornerBarSegments(shape, rec.segments),
         ...withDeductions(normalizeMeasurementDeductions(rec.measurementDeductionsMm)),
+        ...withDeductionTotal(rec.deductionTotalMm),
         ...withBendAngle(shape, rec.bendAngleDeg),
         ...withLayer(rec.layer),
         ...withCalloutOffset(rec.calloutOffset),
@@ -979,6 +1023,7 @@ export function remapCornerBarBarsToShape(
       quantity: bar.quantity,
       segments: preserveSegments ? bar.segments : undefined,
       measurementDeductionsMm: bar.measurementDeductionsMm,
+      deductionTotalMm: bar.deductionTotalMm,
       bendAngleDeg: bar.bendAngleDeg,
       layer: bar.layer,
       calloutOffset: bar.calloutOffset,

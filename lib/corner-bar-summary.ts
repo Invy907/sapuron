@@ -194,6 +194,7 @@ function specKeyOf(
   barType: string,
   segments: CornerBarSegment[],
   deductions: MeasurementDeductionsMm | undefined,
+  deductionTotalMm: number | undefined,
   bendAngleDeg: number | undefined,
   layer: CornerBarLayer | undefined,
 ): string {
@@ -206,8 +207,11 @@ function specKeyOf(
     (bendAngleDeg != null ? `|angle:${bendAngleDeg}` : '') +
     // 上と下は別の鉄筋。なしのときは付けず、上下を入れる前と同じ key のまま
     (layer ? `|layer:${layer}` : '')
-  // 減りが違えば加工長も違うので別の行にする。全て 0 のときは付けず、
+  // 減りが違えば加工長も違うので別の行にする。0 のときは付けず、
   // 減りを入れる前と同じ key のまま（結果ページの手入力が外れないように）
+  if (deductionTotalMm != null) {
+    return deductionTotalMm > 0 ? `${base}|dedTotal:${deductionTotalMm}` : base
+  }
   if (!deductions || Object.values(deductions).every((mm) => mm === 0)) return base
   const ded = `${deductions.UCHI_UCHI},${deductions.SOTO_SOTO},${deductions.SHIN_SHIN}`
   return `${base}|ded:${ded}`
@@ -268,6 +272,8 @@ export function aggregateAdditionalRebars(
       group.diameters.set(diameter, (group.diameters.get(diameter) ?? 0) + bar.quantity)
 
       const deductions = deductionsFor(category, bar)
+      // 特殊コーナー筋で全体の減りを入れた配置は、辺ごとの減りの代わりにそれを引く
+      const totalDeduction = category === 'SPECIAL_CORNER' ? bar.deductionTotalMm : undefined
       const bendAngleDeg = adjustableAngle ? clampCornerBarBendAngle(bar.bendAngleDeg) : undefined
       const key = specKeyOf(
         category,
@@ -275,6 +281,7 @@ export function aggregateAdditionalRebars(
         diameter,
         bar.segments,
         deductions,
+        totalDeduction,
         bendAngleDeg,
         bar.layer,
       )
@@ -300,7 +307,7 @@ export function aggregateAdditionalRebars(
         dimsDetailText: formatDimsWithMeasurement(bar.segments),
         uniformMeasurementType: resolveUniformMeasurementType(bar.segments),
         segmentSumMm: allDimensioned ? cornerBarSegmentSumMm(bar.segments) : null,
-        kakouchouMm: cornerBarKakouchouMm(bar.segments, deductions),
+        kakouchouMm: cornerBarKakouchouMm(bar.segments, deductions, totalDeduction),
         ...(bendAngleDeg != null ? { bendAngleDeg } : {}),
         ...(bar.layer ? { layer: bar.layer } : {}),
         quantity: bar.quantity,

@@ -18,7 +18,8 @@ import {
   cornerBarFixedVertexForEdge,
   cornerBarLegacyFieldsFromBars,
   cornerBarBendAngle,
-  cornerBarMeasurementDeductions,
+  cornerBarDeductionTotal,
+  ZERO_MEASUREMENT_DEDUCTIONS,
   cornerBarFlipLabel,
   cornerBarRotationLabel,
   normalizeCornerBarFlip,
@@ -48,7 +49,7 @@ import {
   resolveCategoryShape,
   resolveCornerBarShape,
   setCornerBarBendAngle,
-  setCornerBarMeasurementDeductions,
+  setCornerBarDeductionTotal,
   MAX_CORNER_BAR_BEND_ANGLE_DEG,
   MIN_CORNER_BAR_BEND_ANGLE_DEG,
   clampCornerBarBendAngle,
@@ -58,7 +59,6 @@ import {
   type CornerBarPlacementDraft,
   type CornerBarSegment,
   type CornerBarShapeDef,
-  type MeasurementDeductionsMm,
   type MeasurementType,
 } from '@/lib/corner-bar-presets'
 import { cornerBarKakouchouMm } from '@/lib/corner-bar-kakouchou'
@@ -322,13 +322,14 @@ export function CornerBarPanel({
         id: nextCornerBarBarId(bars),
         // 減り・角度は配置で 1 組なので、追加した鉄筋にも同じ値を入れる
         measurementDeductionsMm: bars[0]?.measurementDeductionsMm,
+        deductionTotalMm: bars[0]?.deductionTotalMm,
         bendAngleDeg: bars[0]?.bendAngleDeg,
       }),
     ])
   }
 
-  function handleSelectedDeductionsChange(deductions: MeasurementDeductionsMm) {
-    commitSelectedBars((bars) => setCornerBarMeasurementDeductions(bars, deductions))
+  function handleSelectedDeductionsChange(totalMm: number) {
+    commitSelectedBars((bars) => setCornerBarDeductionTotal(bars, totalMm))
   }
 
   function handleSelectedBendAngleChange(angleDeg: number) {
@@ -409,14 +410,15 @@ export function CornerBarPanel({
       makeCornerBarBar(placementShape, placementDraft.category, barType, {
         id: nextCornerBarBarId(placementDraft.bars),
         measurementDeductionsMm: placementDraft.bars[0]?.measurementDeductionsMm,
+        deductionTotalMm: placementDraft.bars[0]?.deductionTotalMm,
         bendAngleDeg: placementDraft.bars[0]?.bendAngleDeg,
       }),
     ])
   }
 
-  function handlePlacementDeductionsChange(deductions: MeasurementDeductionsMm) {
+  function handlePlacementDeductionsChange(totalMm: number) {
     if (!placementDraft) return
-    commitPlacementBars(setCornerBarMeasurementDeductions(placementDraft.bars, deductions))
+    commitPlacementBars(setCornerBarDeductionTotal(placementDraft.bars, totalMm))
   }
 
   function handlePlacementBendAngleChange(angleDeg: number) {
@@ -1098,46 +1100,45 @@ function BendAngleField({
 }
 
 /**
- * 特殊コーナー筋の加工長で、辺 1 本あたり引く長さを寸法基準ごとに入れる欄。
- * 配置ごとに 1 組（全ての鉄筋に同じ値を書く）。下に径ごとの加工長を出して確かめられるようにする。
+ * 特殊コーナー筋の加工長で、辺の合計から引く長さ（全体で何 mm 引くか）を入れる欄。
+ * 配置ごとに 1 つ（全ての鉄筋に同じ値を書く）。下に径ごとの加工長を出して確かめられるようにする。
  */
 function MeasurementDeductionsField({
   bars,
   onChange,
 }: {
   bars: CornerBarBarItem[]
-  onChange: (deductions: MeasurementDeductionsMm) => void
+  onChange: (totalMm: number) => void
 }) {
-  const deductions = cornerBarMeasurementDeductions(bars)
+  const totalMm = cornerBarDeductionTotal(bars)
 
   return (
     <div className="space-y-1.5">
-      <span className="block text-[10px] font-medium text-foreground">
-        寸法の減り（辺 1 本あたり）
-      </span>
-      <div className="grid grid-cols-3 gap-1.5">
-        {MEASUREMENT_TYPES.map((m) => (
-          <label key={m.id} className="flex items-center gap-1 text-[10px] text-muted">
-            <span className="shrink-0">{m.label}</span>
-            <span className="shrink-0">−</span>
-            <input
-              type="number"
-              min={0}
-              value={deductions[m.id]}
-              onChange={(e) => {
-                const n = Number.parseInt(e.target.value, 10)
-                onChange({ ...deductions, [m.id]: Number.isFinite(n) && n >= 0 ? n : 0 })
-              }}
-              aria-label={`${m.label}の辺 1 本あたりの減り(mm)`}
-              // 欄が狭く数字が隠れるので、数値入力の上下ボタンは出さない
-              className="min-w-0 flex-1 rounded border border-border bg-white px-1 py-1 text-xs text-foreground outline-none [appearance:textfield] focus:border-primary [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-            />
-          </label>
-        ))}
-      </div>
+      <label className="flex items-center gap-1.5 text-[10px] text-muted">
+        <span className="shrink-0 font-medium text-foreground">寸法の減り（全体）</span>
+        <span className="shrink-0">−</span>
+        <input
+          type="number"
+          min={0}
+          value={totalMm}
+          onChange={(e) => {
+            const n = Number.parseInt(e.target.value, 10)
+            onChange(Number.isFinite(n) && n >= 0 ? n : 0)
+          }}
+          aria-label="辺の合計から引く長さ(mm)"
+          // 数値入力の上下ボタンは出さない（ほかの寸法欄と揃える）
+          className="w-20 rounded border border-border bg-white px-1 py-1 text-xs text-foreground outline-none [appearance:textfield] focus:border-primary [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <span className="shrink-0">mm</span>
+      </label>
       <div className="space-y-0.5 text-right text-[10px] text-muted">
         {bars.map((bar) => {
-          const kakouchou = cornerBarKakouchouMm(bar.segments, deductions)
+          // 特殊コーナー筋は既定の −20 ルールを使わない（未入力は 0）
+          const kakouchou = cornerBarKakouchouMm(
+            bar.segments,
+            bar.measurementDeductionsMm ?? ZERO_MEASUREMENT_DEDUCTIONS,
+            bar.deductionTotalMm,
+          )
           return (
             <div key={bar.id}>
               {bars.length > 1 ? `${bar.barType} ` : ''}寸法{' '}

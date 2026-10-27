@@ -323,9 +323,10 @@ button,
     width: 100%;
   }
 
+  /* 形状図は置かれた幅で描く（文字を表と同じ大きさで出すため）。
+     まだ幅を測っていないときだけ、はみ出さないように縮める */
   .corner-summary-figure svg {
-    width: 100% !important;
-    max-width: 280px;
+    max-width: 100% !important;
     height: auto !important;
   }
 
