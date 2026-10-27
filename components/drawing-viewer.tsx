@@ -4844,8 +4844,9 @@ export function DrawingViewer({
                 role="tab"
                 aria-selected={layer === t.id}
                 onClick={() => switchLayer(t.id)}
-                className={`rounded px-3 py-1 font-medium transition-colors ${
-                  isFullscreen ? 'w-full text-[11px]' : 'text-xs'
+                className={`rounded py-1 font-medium whitespace-nowrap transition-colors ${
+                  // 全画面の細いツールバーでは左右の余白を詰めて 1 行に収める
+                  isFullscreen ? 'w-full px-1 text-[11px]' : 'px-3 text-xs'
                 } ${
                   layer === t.id
                     ? 'bg-primary text-white'
