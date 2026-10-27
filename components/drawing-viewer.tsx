@@ -184,8 +184,6 @@ function buildCornerBarPrintSummaryHtml(
   left: number,
   top: number,
   scale: number,
-  /** ユニットも一緒に印刷するときの、ユニットの入力データ（summary-group の HTML） */
-  unitSectionsHtml = '',
 ): string {
   const rows = summary.detailRows
     .map((row) => {
@@ -194,8 +192,7 @@ function buildCornerBarPrintSummaryHtml(
       return `<div class="corner-summary-row"><span class="corner-summary-label-wrap"><span class="corner-summary-chip" style="background:${color};"></span><span class="corner-summary-label">${escapeHtml(label)}</span></span><span class="corner-summary-qty">${row.qty} 本</span></div>`
     })
     .join('')
-  const cornerRows = rows ? `<div class="corner-summary-rows">${rows}</div>` : ''
-  return `<div class="summary corner-summary" style="left:${left}px;top:${top}px;--sum-scale:${scale};">${cornerRows}${unitSectionsHtml}</div>`
+  return `<div class="summary corner-summary" style="left:${left}px;top:${top}px;--sum-scale:${scale};"><div class="corner-summary-rows">${rows}</div></div>`
 }
 
 /** 印刷の表示選択の並び（筋種類の順） */
@@ -725,6 +722,11 @@ export function DrawingViewer({
   const [printSummaryScale, setPrintSummaryScale] = useState(1)
   const [cornerPrintSummaryPos, setCornerPrintSummaryPos] = useState<Point>({ x: 24, y: 24 })
   const [cornerPrintSummaryScale, setCornerPrintSummaryScale] = useState(1)
+  /** 付加筋タブでユニットも出すときの、ユニットの入力データの箱の位置（特殊コーナー筋の箱とは別） */
+  const [cornerPrintUnitSummaryPos, setCornerPrintUnitSummaryPos] = useState<Point>({
+    x: 24,
+    y: 260,
+  })
   const [printPreviewLayer, setPrintPreviewLayer] = useState<DrawingLayer>('unit')
   /** 付加筋タブの印刷で、ユニットも一緒に出すか */
   const [cornerPrintShowUnits, setCornerPrintShowUnits] = useState(false)
@@ -738,8 +740,10 @@ export function DrawingViewer({
   /** 図面印刷の用紙（既定は A3 横） */
   const [printPaper, setPrintPaper] = useState<PrintPaper>('a3-landscape')
   const [summaryDragging, setSummaryDragging] = useState(false)
-  const summaryDragRef = useRef<Point | null>(null)
+  /** どの箱をどこで掴んだか。main = 付加筋（ユニットタブではユニット）、unit = 付加筋タブのユニット */
+  const summaryDragRef = useRef<(Point & { target: 'main' | 'unit' }) | null>(null)
   const summaryBoxRef = useRef<HTMLDivElement>(null)
+  const unitSummaryBoxRef = useRef<HTMLDivElement>(null)
   const printPreviewRef = useRef<HTMLDivElement>(null)
 
   const supabase = createClient()
@@ -1007,8 +1011,13 @@ export function DrawingViewer({
     () => cornerBars.filter((cb) => !cornerPrintHiddenCategories.includes(cb.category)),
     [cornerBars, cornerPrintHiddenCategories],
   )
+  /** 付加筋タブの入力データの箱は特殊コーナー筋だけ（コーナー筋・添え筋は図面で分かるので出さない） */
   const cornerBarPrintSummary = useMemo(
-    () => buildCornerBarPrintSummary(printCornerBars, normalizeSegmentColor),
+    () =>
+      buildCornerBarPrintSummary(
+        printCornerBars.filter((cb) => cb.category === 'SPECIAL_CORNER'),
+        normalizeSegmentColor,
+      ),
     [printCornerBars],
   )
   /** 付加筋タブの印刷の表示選択に並べる筋種類（この図面にあるものだけ） */
@@ -1022,10 +1031,14 @@ export function DrawingViewer({
   }, [cornerBars])
   const cornerPrintShowsUnitSummary =
     cornerPrintShowUnits && drawingPrintSummaryGroups.length > 0
-  const printPreviewHasSummary =
+  /** 1 つ目の箱（付加筋タブは特殊コーナー筋、ユニットタブはユニット） */
+  const printPreviewHasMainSummary =
     printPreviewLayer === 'corner'
-      ? printCornerBars.length > 0 || cornerPrintShowsUnitSummary
+      ? cornerBarPrintSummary.detailRows.length > 0
       : drawingPrintSummaryGroups.length > 0
+  /** 付加筋タブでユニットも出すときの、別の箱 */
+  const printPreviewHasUnitSummary = printPreviewLayer === 'corner' && cornerPrintShowsUnitSummary
+  const printPreviewHasSummary = printPreviewHasMainSummary || printPreviewHasUnitSummary
   /** 印刷プレビューのユニットの入力データ（ユニットタブ、付加筋タブでユニットも出すとき） */
   const unitPrintSummaryNode = (
     <div className="space-y-4">
@@ -1075,10 +1088,12 @@ export function DrawingViewer({
       const rect = container.getBoundingClientRect()
       const nextX = ev.clientX - rect.left - drag.x
       const nextY = ev.clientY - rect.top - drag.y
-      const boxEl = summaryBoxRef.current
+      const boxEl = drag.target === 'unit' ? unitSummaryBoxRef.current : summaryBoxRef.current
       const boxW = (boxEl?.offsetWidth ?? 120) * activePrintSummaryScale
       const boxH = (boxEl?.offsetHeight ?? 80) * activePrintSummaryScale
-      setActivePrintSummaryPos({
+      const setPos =
+        drag.target === 'unit' ? setCornerPrintUnitSummaryPos : setActivePrintSummaryPos
+      setPos({
         x: Math.max(0, Math.min(nextX, Math.max(0, rect.width - boxW))),
         y: Math.max(0, Math.min(nextY, Math.max(0, rect.height - boxH))),
       })
@@ -4619,20 +4634,26 @@ export function DrawingViewer({
         return `<section class="summary-group"><h2>${escapeHtml(group.name)}</h2>${rows}</section>`
       })
       .join('')
-    const summaryHtml =
-      printPreviewLayer === 'corner'
-        ? printPreviewHasSummary
-          ? buildCornerBarPrintSummaryHtml(
-              cornerBarPrintSummary,
-              summaryLeft,
-              summaryTop,
-              summaryScale,
-              cornerPrintShowsUnitSummary ? unitSectionsHtml : '',
-            )
-          : ''
-        : drawingPrintSummaryGroups.length > 0
-          ? `<div class="summary" style="left:${summaryLeft}px;top:${summaryTop}px;--sum-scale:${summaryScale};">${unitSectionsHtml}</div>`
-          : ''
+    const unitBoxHtml = (left: number, top: number) =>
+      `<div class="summary" style="left:${left}px;top:${top}px;--sum-scale:${summaryScale};">${unitSectionsHtml}</div>`
+    const mainSummaryHtml = !printPreviewHasMainSummary
+      ? ''
+      : printPreviewLayer === 'corner'
+        ? buildCornerBarPrintSummaryHtml(
+            cornerBarPrintSummary,
+            summaryLeft,
+            summaryTop,
+            summaryScale,
+          )
+        : unitBoxHtml(summaryLeft, summaryTop)
+    // 付加筋タブでユニットも出すときは、ユニットを別の箱にして別の位置に置く
+    const unitSummaryHtml = printPreviewHasUnitSummary
+      ? unitBoxHtml(
+          Math.round(cornerPrintUnitSummaryPos.x * scaleX),
+          Math.round(cornerPrintUnitSummaryPos.y * scaleY),
+        )
+      : ''
+    const summaryHtml = mainSummaryHtml + unitSummaryHtml
 
     // 選択した用紙に「用紙に合わせる」相当でぴったり収める。
     // ブラウザの印刷ダイアログの倍率は JS から変更できないため、
@@ -5374,7 +5395,7 @@ export function DrawingViewer({
                   className="block max-h-[72vh] max-w-full select-none"
                   draggable={false}
                 />
-                {printPreviewHasSummary && (
+                {printPreviewHasMainSummary && (
                   <div
                     ref={summaryBoxRef}
                     className="absolute z-20 min-w-[150px] cursor-move select-none rounded-md border border-slate-300/70 bg-white/85 px-3 py-2 shadow-sm backdrop-blur-[1px]"
@@ -5390,42 +5411,66 @@ export function DrawingViewer({
                       summaryDragRef.current = {
                         x: ev.clientX - ev.currentTarget.getBoundingClientRect().left,
                         y: ev.clientY - ev.currentTarget.getBoundingClientRect().top,
+                        target: 'main',
                       }
                       setSummaryDragging(true)
                     }}
                     title="Drag to set print position"
                   >
                     {printPreviewLayer === 'corner' ? (
-                      <div className="space-y-3">
-                        <div className="space-y-0.5">
-                          {cornerBarPrintSummary.detailRows.map((row) => (
-                            <div
-                              key={`${row.category}/${row.diameter}/${row.color}`}
-                              className="flex items-center justify-between gap-2 text-[10px] text-muted"
-                            >
-                              <span className="flex min-w-0 items-center gap-1.5">
-                                <span
-                                  className="h-3 w-3 shrink-0 rounded-sm"
-                                  style={{
-                                    backgroundColor: getSegmentStrokeHex(
-                                      normalizeSegmentColor(row.color),
-                                      false,
-                                    ),
-                                  }}
-                                />
-                                <span className="truncate">
-                                  {cornerBarCategoryLabel(row.category)} {row.diameter}
-                                </span>
+                      <div className="space-y-0.5">
+                        {cornerBarPrintSummary.detailRows.map((row) => (
+                          <div
+                            key={`${row.category}/${row.diameter}/${row.color}`}
+                            className="flex items-center justify-between gap-2 text-[10px] text-muted"
+                          >
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span
+                                className="h-3 w-3 shrink-0 rounded-sm"
+                                style={{
+                                  backgroundColor: getSegmentStrokeHex(
+                                    normalizeSegmentColor(row.color),
+                                    false,
+                                  ),
+                                }}
+                              />
+                              <span className="truncate">
+                                {cornerBarCategoryLabel(row.category)} {row.diameter}
                               </span>
-                              <span className="shrink-0 text-foreground">{row.qty} 本</span>
-                            </div>
-                          ))}
-                        </div>
-                        {cornerPrintShowsUnitSummary ? unitPrintSummaryNode : null}
+                            </span>
+                            <span className="shrink-0 text-foreground">{row.qty} 本</span>
+                          </div>
+                        ))}
                       </div>
                     ) : (
                       unitPrintSummaryNode
                     )}
+                  </div>
+                )}
+                {/* 付加筋タブでユニットも出すときは、ユニットを別の箱にして別々に動かせるようにする */}
+                {printPreviewHasUnitSummary && (
+                  <div
+                    ref={unitSummaryBoxRef}
+                    className="absolute z-20 min-w-[150px] cursor-move select-none rounded-md border border-slate-300/70 bg-white/85 px-3 py-2 shadow-sm backdrop-blur-[1px]"
+                    style={{
+                      left: cornerPrintUnitSummaryPos.x,
+                      top: cornerPrintUnitSummaryPos.y,
+                      transform: `scale(${activePrintSummaryScale})`,
+                      transformOrigin: 'top left',
+                    }}
+                    onMouseDown={(ev) => {
+                      ev.preventDefault()
+                      ev.stopPropagation()
+                      summaryDragRef.current = {
+                        x: ev.clientX - ev.currentTarget.getBoundingClientRect().left,
+                        y: ev.clientY - ev.currentTarget.getBoundingClientRect().top,
+                        target: 'unit',
+                      }
+                      setSummaryDragging(true)
+                    }}
+                    title="Drag to set print position"
+                  >
+                    {unitPrintSummaryNode}
                   </div>
                 )}
               </div>
