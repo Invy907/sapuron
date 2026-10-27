@@ -459,7 +459,6 @@ export function ManufactureListView({
               type="text"
               value={customerDate}
               onChange={(e) => onCustomerDateChange(e.target.value)}
-              placeholder="R8.10.27.(火)"
               aria-label="積み込み日"
               className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
@@ -470,7 +469,6 @@ export function ManufactureListView({
               type="text"
               value={customerArrival}
               onChange={(e) => onCustomerArrivalChange(e.target.value)}
-              placeholder="28(水)8:00"
               aria-label="到着日"
               className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
