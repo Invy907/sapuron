@@ -26,21 +26,18 @@ import {
   kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
   printCardPlacementStorageKey,
-  printCardSizeStorageKey,
+  printCardPage2PlacementStorageKey,
   printCardZoomStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
 import {
   PrintLayoutModal,
   parsePrintCardPlacements,
-  parsePrintCardSizes,
   parsePrintCardZooms,
   type PrintCard,
   type PrintCardId,
   type PrintCardPlacement,
   type PrintCardPlacements,
-  type PrintCardSize,
-  type PrintCardSizes,
   type PrintCardZooms,
 } from '@/components/print-layout-modal'
 import {
@@ -69,10 +66,6 @@ type PrintCardZoomState = {
   zooms: PrintCardZooms
 }
 
-type PrintCardSizeState = {
-  storageKey: string | null
-  sizes: PrintCardSizes
-}
 
 function parseManufactureLegendPositions(raw: string | null): ManufactureLegendPositions {
   if (!raw) return {}
@@ -323,52 +316,56 @@ export function OptimizeClient({
     [printZoomStorageKey],
   )
 
-  const printSizeStorageKey = useMemo(() => printCardSizeStorageKey(projectId), [projectId])
-  const [printSizeState, setPrintSizeState] = useState<PrintCardSizeState>({
+  // 2 ページ目の位置・大きさ。1 ページ目と同じ形で、原点だけ用紙の左上
+  const printPage2StorageKey = useMemo(
+    () => printCardPage2PlacementStorageKey(projectId),
+    [projectId],
+  )
+  const [printPage2State, setPrintPage2State] = useState<PrintCardPlacementState>({
     storageKey: null,
-    sizes: {},
+    placements: {},
   })
-  const printCardSizes =
-    printSizeState.storageKey === printSizeStorageKey ? printSizeState.sizes : {}
+  const printCardPage2Placements =
+    printPage2State.storageKey === printPage2StorageKey ? printPage2State.placements : {}
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    setPrintSizeState({
-      storageKey: printSizeStorageKey,
-      sizes: parsePrintCardSizes(window.localStorage.getItem(printSizeStorageKey)),
+    setPrintPage2State({
+      storageKey: printPage2StorageKey,
+      placements: parsePrintCardPlacements(window.localStorage.getItem(printPage2StorageKey)),
     })
-  }, [printSizeStorageKey])
+  }, [printPage2StorageKey])
 
   useEffect(() => {
-    if (typeof window === 'undefined' || printSizeState.storageKey !== printSizeStorageKey) {
+    if (typeof window === 'undefined' || printPage2State.storageKey !== printPage2StorageKey) {
       return
     }
     try {
-      window.localStorage.setItem(printSizeStorageKey, JSON.stringify(printSizeState.sizes))
+      window.localStorage.setItem(printPage2StorageKey, JSON.stringify(printPage2State.placements))
     } catch {
-      // Ignore storage write errors so resizing remains usable.
+      // Ignore storage write errors so dragging remains usable.
     }
-  }, [printSizeState, printSizeStorageKey])
+  }, [printPage2State, printPage2StorageKey])
 
-  const handlePrintCardSizeChange = useCallback(
-    (id: PrintCardId, size: PrintCardSize | null) => {
-      setPrintSizeState((current) => {
-        const next: PrintCardSizes = {
-          ...(current.storageKey === printSizeStorageKey ? current.sizes : {}),
+  const handlePrintCardPage2PlacementChange = useCallback(
+    (id: PrintCardId, placement: PrintCardPlacement | null) => {
+      setPrintPage2State((current) => {
+        const next: PrintCardPlacements = {
+          ...(current.storageKey === printPage2StorageKey ? current.placements : {}),
         }
-        if (size == null) delete next[id]
-        else next[id] = size
-        return { storageKey: printSizeStorageKey, sizes: next }
+        if (placement) next[id] = placement
+        else delete next[id]
+        return { storageKey: printPage2StorageKey, placements: next }
       })
     },
-    [printSizeStorageKey],
+    [printPage2StorageKey],
   )
 
   const handleResetPrintCardPlacements = useCallback(() => {
     setPrintPlacementState({ storageKey: printPlacementStorageKey, placements: {} })
     setPrintZoomState({ storageKey: printZoomStorageKey, zooms: {} })
-    setPrintSizeState({ storageKey: printSizeStorageKey, sizes: {} })
-  }, [printPlacementStorageKey, printSizeStorageKey, printZoomStorageKey])
+    setPrintPage2State({ storageKey: printPage2StorageKey, placements: {} })
+  }, [printPage2StorageKey, printPlacementStorageKey, printZoomStorageKey])
 
   const adjustmentStorageKey = useMemo(
     () => pieceAdjustmentStorageKey(projectId),
@@ -943,8 +940,8 @@ export function OptimizeClient({
           onPlacementChange={handlePrintCardPlacementChange}
           zooms={printCardZooms}
           onZoomChange={handlePrintCardZoomChange}
-          sizes={printCardSizes}
-          onSizeChange={handlePrintCardSizeChange}
+          page2Placements={printCardPage2Placements}
+          onPage2PlacementChange={handlePrintCardPage2PlacementChange}
           onResetPlacements={handleResetPrintCardPlacements}
           renderPage1={(overlay, layeredIds) => (
             <section className="optimize-print-manufacture">

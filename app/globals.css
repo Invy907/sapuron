@@ -309,13 +309,13 @@ button,
   }
 
   .optimize-print-corner-bars .corner-summary-section,
-  .print-page1-card .corner-summary-section {
+  .print-free-card .corner-summary-section {
     overflow: hidden !important;
   }
 
   /* 文字列は内容幅、形状図は残り幅に合わせて縮める */
   .optimize-print-corner-bars .corner-summary-print-root table,
-  .print-page1-card .corner-summary-print-root table {
+  .print-free-card .corner-summary-print-root table {
     width: 100% !important;
   }
 
@@ -449,5 +449,11 @@ button,
 
   .print-sheet-empty {
     display: none !important;
+  }
+
+  /* 2 ページ目のカードは用紙の上に絶対配置なので、用紙に 1 ページ分の高さを持たせて
+     カードがそのページに収まるようにする（285mm ちょうどだと白紙のページが増えることがある） */
+  .print-sheet-free {
+    min-height: 280mm;
   }
 }
