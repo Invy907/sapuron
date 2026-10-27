@@ -14,6 +14,7 @@ import {
   cornerBarDiameterOptionLabel,
   cornerBarFixedVertexForEdge,
   cornerBarLegacyFieldsFromBars,
+  cornerBarBendAngle,
   cornerBarMeasurementDeductions,
   cornerBarFlipLabel,
   cornerBarRotationLabel,
@@ -41,7 +42,12 @@ import {
   normalizeCornerBarBars,
   normalizeCornerBarRotation,
   resolveCategoryShape,
+  resolveCornerBarShape,
+  setCornerBarBendAngle,
   setCornerBarMeasurementDeductions,
+  MAX_CORNER_BAR_BEND_ANGLE_DEG,
+  MIN_CORNER_BAR_BEND_ANGLE_DEG,
+  clampCornerBarBendAngle,
   type CornerBarBarItem,
   type CornerBarCategory,
   type CornerBarPlacementDraft,
@@ -116,7 +122,11 @@ export function CornerBarPanel({
     () => cornerBars.find((cb) => cb.id === selectedCornerBarId) ?? null,
     [cornerBars, selectedCornerBarId],
   )
-  const selectedShape = selected ? getCornerBarShape(selected.shape_type) : null
+  // くの字は配置ごとの角度で辺の向きが変わるので、角度を反映した形状を使う
+  const selectedShape = useMemo(
+    () => (selected ? resolveCornerBarShape(selected.shape_type, selected.bars) : null),
+    [selected],
+  )
   const selectedBars = useMemo(
     () => (selected && selectedShape ? normalizeCornerBarBars(selectedShape, selected) : null),
     [selected, selectedShape],
@@ -300,14 +310,19 @@ export function CornerBarPanel({
       ...bars,
       makeCornerBarBar(selectedShape, selected.category as CornerBarCategory, barType, {
         id: nextCornerBarBarId(bars),
-        // 減りは配置で 1 組なので、追加した鉄筋にも同じ値を入れる
+        // 減り・角度は配置で 1 組なので、追加した鉄筋にも同じ値を入れる
         measurementDeductionsMm: bars[0]?.measurementDeductionsMm,
+        bendAngleDeg: bars[0]?.bendAngleDeg,
       }),
     ])
   }
 
   function handleSelectedDeductionsChange(deductions: MeasurementDeductionsMm) {
     commitSelectedBars((bars) => setCornerBarMeasurementDeductions(bars, deductions))
+  }
+
+  function handleSelectedBendAngleChange(angleDeg: number) {
+    commitSelectedBars((bars) => setCornerBarBendAngle(bars, angleDeg))
   }
 
   function handleRemoveSelectedBar(index: number) {
@@ -317,7 +332,9 @@ export function CornerBarPanel({
 
   const placementCategory = activePlacementCategory
   const placementShapeOptions = getCornerBarShapeOptionsForCategory(placementCategory)
-  const placementShape = placementDraft ? getCornerBarShape(placementDraft.shapeType) : null
+  const placementShape = placementDraft
+    ? resolveCornerBarShape(placementDraft.shapeType, placementDraft.bars)
+    : null
   /** 形状未選択のうちは編集できないので、見た目だけ既定の 1 件を出す */
   const placementBars: CornerBarBarItem[] = placementDraft?.bars?.length
     ? placementDraft.bars
@@ -375,6 +392,7 @@ export function CornerBarPanel({
       makeCornerBarBar(placementShape, placementDraft.category, barType, {
         id: nextCornerBarBarId(placementDraft.bars),
         measurementDeductionsMm: placementDraft.bars[0]?.measurementDeductionsMm,
+        bendAngleDeg: placementDraft.bars[0]?.bendAngleDeg,
       }),
     ])
   }
@@ -382,6 +400,11 @@ export function CornerBarPanel({
   function handlePlacementDeductionsChange(deductions: MeasurementDeductionsMm) {
     if (!placementDraft) return
     commitPlacementBars(setCornerBarMeasurementDeductions(placementDraft.bars, deductions))
+  }
+
+  function handlePlacementBendAngleChange(angleDeg: number) {
+    if (!placementDraft) return
+    commitPlacementBars(setCornerBarBendAngle(placementDraft.bars, angleDeg))
   }
 
   function handleRemovePlacementBar(index: number) {
@@ -516,6 +539,14 @@ export function CornerBarPanel({
               activeIndex={activeSegIndex}
               onActiveIndexChange={setActiveSegIndex}
             />
+
+            {selectedShape.adjustableAngle ? (
+              <BendAngleField
+                key={selected.id}
+                angleDeg={cornerBarBendAngle(selectedBars)}
+                onChange={handleSelectedBendAngleChange}
+              />
+            ) : null}
 
             {/* 径ごとの本数と辺の寸法。同じ位置でも径によって実寸が違うため個別に持つ */}
             <CornerBarBarsField
@@ -677,6 +708,13 @@ export function CornerBarPanel({
                 flipped={normalizeCornerBarFlip(placementDraft.flipped)}
                 activeIndex={activeSegIndex}
                 onActiveIndexChange={setActiveSegIndex}
+              />
+            ) : null}
+
+            {placementShape?.adjustableAngle && placementDraft ? (
+              <BendAngleField
+                angleDeg={cornerBarBendAngle(placementDraft.bars)}
+                onChange={handlePlacementBendAngleChange}
               />
             ) : null}
 
@@ -938,6 +976,74 @@ function CornerBarBarsField({
           ) : null}
         </div>
       ))}
+    </div>
+  )
+}
+
+/** −/＋ ボタン 1 回で変える角度 */
+const BEND_ANGLE_STEP_DEG = 5
+
+/**
+ * くの字の辺のあいだの角度。入力中は文字列で持ち、確定（フォーカスを外す / Enter）で反映する。
+ * 1 文字ごとに反映すると、10 未満を打った途中で下限に丸められてしまうため。
+ */
+function BendAngleField({
+  angleDeg,
+  onChange,
+}: {
+  angleDeg: number
+  onChange: (angleDeg: number) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+
+  const commit = () => {
+    if (draft == null) return
+    setDraft(null)
+    const n = Number.parseFloat(draft)
+    if (Number.isFinite(n)) onChange(clampCornerBarBendAngle(Math.round(n)))
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] font-medium text-foreground">角度</span>
+      <button
+        type="button"
+        onClick={() => onChange(clampCornerBarBendAngle(angleDeg - BEND_ANGLE_STEP_DEG))}
+        disabled={angleDeg <= MIN_CORNER_BAR_BEND_ANGLE_DEG}
+        className="rounded border border-border bg-white px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-40"
+        aria-label="角度を小さくする"
+      >
+        −
+      </button>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={draft ?? String(angleDeg)}
+        onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ''))}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            setDraft(null)
+            e.currentTarget.blur()
+          }
+        }}
+        aria-label="辺のあいだの角度（度）"
+        className="w-14 rounded border border-border bg-white px-1 py-0.5 text-right text-xs outline-none focus:border-primary"
+      />
+      <span className="text-xs text-muted">°</span>
+      <button
+        type="button"
+        onClick={() => onChange(clampCornerBarBendAngle(angleDeg + BEND_ANGLE_STEP_DEG))}
+        disabled={angleDeg >= MAX_CORNER_BAR_BEND_ANGLE_DEG}
+        className="rounded border border-border bg-white px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-40"
+        aria-label="角度を大きくする"
+      >
+        ＋
+      </button>
+      <span className="text-[10px] text-muted">
+        （{MIN_CORNER_BAR_BEND_ANGLE_DEG}〜{MAX_CORNER_BAR_BEND_ANGLE_DEG}°）
+      </span>
     </div>
   )
 }

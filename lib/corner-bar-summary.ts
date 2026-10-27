@@ -4,6 +4,7 @@ import {
   cornerBarCategoryLabel,
   cornerBarSegmentSumMm,
   cornerBarShapeLabel,
+  clampCornerBarBendAngle,
   formatCornerBarDims,
   getCornerBarShape,
   measurementTypeLabel,
@@ -53,6 +54,8 @@ export interface AdditionalRebarSpecRow {
   segmentSumMm: number | null
   /** 加工長(mm)の参考値。計算できない場合は null */
   kakouchouMm: number | null
+  /** くの字: 辺のあいだの角度（度）。角度を変えられない形状は undefined */
+  bendAngleDeg?: number
   quantity: number
 }
 
@@ -188,11 +191,15 @@ function specKeyOf(
   barType: string,
   segments: CornerBarSegment[],
   deductions: MeasurementDeductionsMm | undefined,
+  bendAngleDeg: number | undefined,
 ): string {
   const dims = segments
     .map((s) => `${s.lengthMm ?? ''}@${s.measurementType ?? ''}`)
     .join(',')
-  const base = `${category}|${shapeType}|${barType}|${segments.length}|${dims}`
+  // 角度が違えば形が違う鉄筋なので別の行にする（角度を変えられる形状だけ）
+  const base =
+    `${category}|${shapeType}|${barType}|${segments.length}|${dims}` +
+    (bendAngleDeg != null ? `|angle:${bendAngleDeg}` : '')
   // 減りが違えば加工長も違うので別の行にする。全て 0 のときは付けず、
   // 減りを入れる前と同じ key のまま（結果ページの手入力が外れないように）
   if (!deductions || Object.values(deductions).every((mm) => mm === 0)) return base
@@ -233,6 +240,7 @@ export function aggregateAdditionalRebars(
   for (const placement of placements) {
     const category = placement.category
     const shapeType = placement.shape_type
+    const adjustableAngle = getCornerBarShape(shapeType)?.adjustableAngle === true
 
     let group = groups.get(category)
     if (!group) {
@@ -254,7 +262,8 @@ export function aggregateAdditionalRebars(
       group.diameters.set(diameter, (group.diameters.get(diameter) ?? 0) + bar.quantity)
 
       const deductions = deductionsFor(category, bar)
-      const key = specKeyOf(category, shapeType, diameter, bar.segments, deductions)
+      const bendAngleDeg = adjustableAngle ? clampCornerBarBendAngle(bar.bendAngleDeg) : undefined
+      const key = specKeyOf(category, shapeType, diameter, bar.segments, deductions, bendAngleDeg)
       const existing = group.specs.get(key)
       if (existing) {
         existing.quantity += bar.quantity
@@ -278,6 +287,7 @@ export function aggregateAdditionalRebars(
         uniformMeasurementType: resolveUniformMeasurementType(bar.segments),
         segmentSumMm: allDimensioned ? cornerBarSegmentSumMm(bar.segments) : null,
         kakouchouMm: cornerBarKakouchouMm(bar.segments, deductions),
+        ...(bendAngleDeg != null ? { bendAngleDeg } : {}),
         quantity: bar.quantity,
       })
     }

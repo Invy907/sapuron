@@ -22,7 +22,7 @@ import {
   cornerBarRotationFromDrag,
   DEFAULT_CORNER_BAR_SIZE_PX,
   getDefaultCornerBarSizePxForPlacement,
-  getCornerBarShape,
+  resolveCornerBarShape,
   getCornerBarShapeOptionsForCategory,
   buildCornerBarPrintSummary,
   cornerBarLegacyFieldsFromBars,
@@ -1319,7 +1319,8 @@ export function DrawingViewer({
    * コーナー/特殊コーナーは defaultLengths × drawScale、mm は使わない。
    */
   const cornerBarGeometryOf = useCallback((cb: DrawingCornerBar): CornerBarGeometry | null => {
-    const shape = getCornerBarShape(cb.shape_type)
+    // くの字は配置ごとの角度で辺の向きが変わる
+    const shape = resolveCornerBarShape(cb.shape_type, cb.bars)
     if (!shape) return null
     const drawSegments = isPerEdgeVisualDrawCategory(cb.category)
       ? (normalizeCornerBarBars(shape, cb)[0]?.segments ?? [])
@@ -1356,28 +1357,44 @@ export function DrawingViewer({
    * 選択中の付加筋の端点（ドラッグで辺を伸び縮みできる所）を探す。
    * 辺ごとに図面上の長さを持つコーナー筋・特殊コーナー筋だけが対象。
    */
+  /**
+   * 付加筋の端点（ドラッグで辺を伸び縮みできる所）を探す。
+   * 選択モードは選択中の 1 本だけ。位置モードは選択していなくても掴めるよう、
+   * 全ての付加筋を上に描かれているものから順に探す。
+   */
   const findCornerBarEndAtPoint = useCallback(
     (
       pt: Point,
       radius: number,
+      anyCornerBar = false,
     ): { cornerBar: DrawingCornerBar; edgeIndex: number; cursor: string } | null => {
-      const cb = cornerBars.find((c) => c.id === selectedCornerBarId)
-      if (!cb || !isPerEdgeVisualDrawCategory(cb.category)) return null
-      const shape = getCornerBarShape(cb.shape_type)
-      const geometry = cornerBarGeometryOf(cb)
-      if (!shape || !geometry) return null
-      for (const end of cornerBarDraggableEnds(shape)) {
-        const p = geometry.points[end.vertexIndex]
-        const neighbor = geometry.points[end.edgeIndex === 0 ? 1 : end.edgeIndex]
-        if (!p || !neighbor || Math.hypot(pt.x - p.x, pt.y - p.y) > radius) continue
-        // 図面の表示回転が 90°/270° なら画面上では縦横が入れ替わる
-        const horizontalOnCanvas = Math.abs(p.x - neighbor.x) >= Math.abs(p.y - neighbor.y)
-        const horizontalOnScreen =
-          rotationSteps % 2 === 0 ? horizontalOnCanvas : !horizontalOnCanvas
-        return {
-          cornerBar: cb,
-          edgeIndex: end.edgeIndex,
-          cursor: horizontalOnScreen ? 'ew-resize' : 'ns-resize',
+      const selected = cornerBars.find((c) => c.id === selectedCornerBarId)
+      const candidates = anyCornerBar
+        ? [
+            ...(selected ? [selected] : []),
+            ...[...cornerBars].reverse().filter((c) => c.id !== selectedCornerBarId),
+          ]
+        : selected
+          ? [selected]
+          : []
+      for (const cb of candidates) {
+        if (!isPerEdgeVisualDrawCategory(cb.category)) continue
+        const shape = resolveCornerBarShape(cb.shape_type, cb.bars)
+        const geometry = cornerBarGeometryOf(cb)
+        if (!shape || !geometry) continue
+        for (const end of cornerBarDraggableEnds(shape)) {
+          const p = geometry.points[end.vertexIndex]
+          const neighbor = geometry.points[end.edgeIndex === 0 ? 1 : end.edgeIndex]
+          if (!p || !neighbor || Math.hypot(pt.x - p.x, pt.y - p.y) > radius) continue
+          // 図面の表示回転が 90°/270° なら画面上では縦横が入れ替わる
+          const horizontalOnCanvas = Math.abs(p.x - neighbor.x) >= Math.abs(p.y - neighbor.y)
+          const horizontalOnScreen =
+            rotationSteps % 2 === 0 ? horizontalOnCanvas : !horizontalOnCanvas
+          return {
+            cornerBar: cb,
+            edgeIndex: end.edgeIndex,
+            cursor: horizontalOnScreen ? 'ew-resize' : 'ns-resize',
+          }
         }
       }
       return null
@@ -1433,7 +1450,7 @@ export function DrawingViewer({
     sizePx: number,
     drag?: { dx: number; dy: number },
   ) {
-    const shape = getCornerBarShape(draft.shapeType)
+    const shape = resolveCornerBarShape(draft.shapeType, draft.bars)
     if (!shape) return
     const rotation = drag
       ? cornerBarRotationFromDrag(
@@ -1580,7 +1597,7 @@ export function DrawingViewer({
     options?: { keepVertexIndex?: number },
   ) {
     void enqueueCornerBarUpdate(id, (latest) => {
-      const shape = getCornerBarShape(latest.shape_type)
+      const shape = resolveCornerBarShape(latest.shape_type, latest.bars)
       if (!shape) return null
       const currentBars = normalizeCornerBarBars(shape, latest)
       const bars = patch(currentBars)
@@ -1738,7 +1755,7 @@ export function DrawingViewer({
     if (!cornerBarEdgeDrag) return
 
     const drag = cornerBarEdgeDrag
-    const shape = getCornerBarShape(drag.snapshot.shape_type)
+    const shape = resolveCornerBarShape(drag.snapshot.shape_type, drag.snapshot.bars)
     if (!shape) return
     const snapshotBars = normalizeCornerBarBars(shape, drag.snapshot)
     let latest: Partial<DrawingCornerBar> | null = null
@@ -2018,7 +2035,7 @@ export function DrawingViewer({
 
         // 選択中のコーナー筋・特殊コーナー筋は、両端に辺を伸び縮みさせる掴み所を出す
         const shape = isSelected && isPerEdgeVisualDrawCategory(cb.category)
-          ? getCornerBarShape(cb.shape_type)
+          ? resolveCornerBarShape(cb.shape_type, cb.bars)
           : null
         if (shape) {
           ctx.save()
@@ -2687,8 +2704,9 @@ export function DrawingViewer({
     if (layer === 'corner') {
       if (e.button !== 0) return
       const pt = screenToCanvas(e)
-      // 選択中の付加筋の端点は、移動より先に「辺を伸ばす」ドラッグとして掴む
-      const end = cornerTool === 'select' ? findCornerBarEndAtPoint(pt, 8 / scale) : null
+      // 付加筋の端点は、移動・配置より先に「辺を伸ばす」ドラッグとして掴む。
+      // 位置モードでも、置いた付加筋の端をそのまま伸び縮みできるようにする
+      const end = findCornerBarEndAtPoint(pt, 8 / scale, cornerTool === 'place')
       if (end) {
         setCornerBarEdgeDrag({
           id: end.cornerBar.id,
@@ -2842,7 +2860,7 @@ export function DrawingViewer({
     }
     if (layer === 'corner') {
       const pt = screenToCanvas(e)
-      const end = cornerTool === 'select' ? findCornerBarEndAtPoint(pt, 8 / scale) : null
+      const end = findCornerBarEndAtPoint(pt, 8 / scale, cornerTool === 'place')
       setCornerBarEndHoverCursor(end?.cursor ?? null)
       setCornerBarHovering(!!findCornerBarAtPoint(pt, 10 / scale))
       return
@@ -5027,10 +5045,10 @@ export function DrawingViewer({
               : layer === 'corner'
                 ? cornerBarDrag
                   ? 'move'
-                  : cornerTool === 'place'
-                    ? 'crosshair'
-                    : cornerBarEndHoverCursor
-                      ? cornerBarEndHoverCursor
+                  : cornerBarEndHoverCursor
+                    ? cornerBarEndHoverCursor
+                    : cornerTool === 'place'
+                      ? 'crosshair'
                       : cornerBarHovering
                         ? 'pointer'
                         : 'default'

@@ -81,6 +81,7 @@ export type CornerBarShapeType =
   | 'V_NOTCH'
   | 'V_NOTCH_SIDE'
   | 'V_BRACKET'
+  | 'BENT'
   | 'V_STEP3'
 
 /**
@@ -96,6 +97,11 @@ export interface CornerBarShapeDef {
   directions: Array<{ x: number; y: number }>
   /** 寸法未入力のときに使う既定値(mm)。辺の数と同じ長さ */
   defaultLengths: number[]
+  /**
+   * 辺 1 と辺 2 のあいだの角度を配置ごとに変えられる形状（くの字）。
+   * directions[1] は既定角度のときの向きで、実際の向きは resolveCornerBarShape で角度から作る
+   */
+  adjustableAngle?: boolean
 }
 
 export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
@@ -227,6 +233,17 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
     ],
     defaultLengths: [300, 400, 300],
   },
+  /** 特殊コーナー筋: くの字（横→斜め下）。辺のあいだの角度を配置ごとに変えられる（既定 135°） */
+  {
+    id: 'BENT',
+    label: 'くの字',
+    directions: [
+      { x: 1, y: 0 },
+      { x: Math.SQRT1_2, y: Math.SQRT1_2 },
+    ],
+    defaultLengths: [500, 500],
+    adjustableAngle: true,
+  },
   /** 特殊コーナー筋: 縦方向 3 段階段。パレットからは外したが旧データ用に残す */
   {
     id: 'V_STEP3',
@@ -248,6 +265,53 @@ export function getCornerBarShape(shapeType: string): CornerBarShapeDef | null {
   return CORNER_BAR_SHAPES.find((s) => s.id === shapeType) ?? null
 }
 
+/** くの字の辺のあいだの角度（度）。既定と、入力できる範囲 */
+export const DEFAULT_CORNER_BAR_BEND_ANGLE_DEG = 135
+export const MIN_CORNER_BAR_BEND_ANGLE_DEG = 10
+export const MAX_CORNER_BAR_BEND_ANGLE_DEG = 180
+
+export function clampCornerBarBendAngle(value: unknown): number {
+  const n = Number(value)
+  if (value == null || value === '' || !Number.isFinite(n)) return DEFAULT_CORNER_BAR_BEND_ANGLE_DEG
+  return Math.min(MAX_CORNER_BAR_BEND_ANGLE_DEG, Math.max(MIN_CORNER_BAR_BEND_ANGLE_DEG, n))
+}
+
+/**
+ * 配置の鉄筋に入っている角度（先頭の鉄筋を代表にする）。無ければ既定の 135°。
+ * bars は DB の生の値でもよい。
+ */
+export function cornerBarBendAngle(bars: unknown): number {
+  const first = Array.isArray(bars) ? (bars[0] as { bendAngleDeg?: unknown } | undefined) : undefined
+  return clampCornerBarBendAngle(first?.bendAngleDeg)
+}
+
+/** 角度を配置の全ての鉄筋に書く（減りと同じく、集計は鉄筋ごとに行うため） */
+export function setCornerBarBendAngle(
+  bars: CornerBarBarItem[],
+  angleDeg: number,
+): CornerBarBarItem[] {
+  const deg = clampCornerBarBendAngle(angleDeg)
+  return bars.map((bar) => ({ ...bar, bendAngleDeg: deg }))
+}
+
+/**
+ * 形状定義を、配置の角度を反映した形で返す。角度を変えられない形状はそのまま。
+ * 角度は辺 1 と辺 2 の内側の角。180° で一直線、90° で直角に下へ曲がる。
+ */
+export function resolveCornerBarShape(
+  shapeType: string,
+  bars?: unknown,
+): CornerBarShapeDef | null {
+  const shape = getCornerBarShape(shapeType)
+  if (!shape?.adjustableAngle) return shape
+  const turn = ((180 - cornerBarBendAngle(bars)) * Math.PI) / 180
+  // 辺 1 は右向き。辺 2 はそこから時計回り（y 下向き）に turn だけ曲げる
+  return {
+    ...shape,
+    directions: [shape.directions[0]!, { x: Math.cos(turn), y: Math.sin(turn) }],
+  }
+}
+
 export function cornerBarShapeLabel(shapeType: string): string {
   return getCornerBarShape(shapeType)?.label ?? shapeType
 }
@@ -266,6 +330,7 @@ export const SPECIAL_CORNER_SHAPE_TYPES: CornerBarShapeType[] = [
   'V_STEP2_END',
   'V_NOTCH_SIDE',
   'V_BRACKET',
+  'BENT',
 ]
 
 export function getFixedShapeForCategory(
@@ -493,8 +558,22 @@ export function makeCornerBarSegments(shape: CornerBarShapeDef): CornerBarSegmen
 }
 
 /**
+ * 新しく作る辺の寸法基準の既定値。特殊コーナー筋（くの字を除く）は、
+ * 両端の辺を除いた内側の辺を芯々にする。それ以外は未設定。
+ */
+function defaultSegmentMeasurementType(
+  shape: CornerBarShapeDef,
+  category: CornerBarCategory,
+  index: number,
+): MeasurementType | null {
+  if (category !== 'SPECIAL_CORNER' || shape.adjustableAngle) return null
+  const last = shape.directions.length - 1
+  return index > 0 && index < last ? 'SHIN_SHIN' : null
+}
+
+/**
  * 筋種類・径の標準寸法を辺に入れる。標準が無い径は既存値を維持する。
- * measurementType など標準以外の属性は既存値を保つ。
+ * measurementType など標準以外の属性は既存値を保つ（新しく作る辺だけ既定値を入れる）。
  */
 export function applyStandardSegmentLengths(
   shape: CornerBarShapeDef,
@@ -512,7 +591,10 @@ export function applyStandardSegmentLengths(
     return {
       id: prev?.id ?? `s${i + 1}`,
       lengthMm: standard?.[i] ?? prev?.lengthMm ?? null,
-      measurementType: prev?.measurementType ?? null,
+      // 既存の辺は未設定（null）も含めて保つ。手で外した芯々を戻さないため
+      measurementType: prev
+        ? prev.measurementType ?? null
+        : defaultSegmentMeasurementType(shape, category, i),
       ...(Number.isFinite(Number(prev?.labelOffsetX))
         ? { labelOffsetX: Number(prev?.labelOffsetX) }
         : {}),
@@ -601,6 +683,8 @@ export interface CornerBarBarItem {
    * 無い（古いデータ・未入力）ときは全て 0 として扱う。
    */
   measurementDeductionsMm?: MeasurementDeductionsMm
+  /** くの字: 辺のあいだの角度（度）。配置ごとに 1 つで、全ての bars に同じ値を書く */
+  bendAngleDeg?: number
 }
 
 /** 寸法基準ごとの辺 1 本あたりの減り(mm) */
@@ -650,6 +734,14 @@ function withDeductions(
   return deductions ? { measurementDeductionsMm: { ...deductions } } : {}
 }
 
+/** 角度を変えられる形状のときだけ角度を引き継ぐ（ほかの形状に変えたら外す） */
+function withBendAngle(
+  shape: CornerBarShapeDef,
+  angleDeg: unknown,
+): Pick<CornerBarBarItem, 'bendAngleDeg'> {
+  return shape.adjustableAngle ? { bendAngleDeg: clampCornerBarBendAngle(angleDeg) } : {}
+}
+
 export const DEFAULT_CORNER_BAR_DIAMETER = 'D13'
 
 function normalizeBarQuantity(value: unknown): number {
@@ -675,7 +767,10 @@ export function makeCornerBarBar(
   category: CornerBarCategory,
   barType: string,
   base?: Partial<
-    Pick<CornerBarBarItem, 'id' | 'quantity' | 'segments' | 'measurementDeductionsMm'>
+    Pick<
+      CornerBarBarItem,
+      'id' | 'quantity' | 'segments' | 'measurementDeductionsMm' | 'bendAngleDeg'
+    >
   >,
 ): CornerBarBarItem {
   return {
@@ -684,6 +779,7 @@ export function makeCornerBarBar(
     quantity: normalizeBarQuantity(base?.quantity),
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
     ...withDeductions(base?.measurementDeductionsMm),
+    ...withBendAngle(shape, base?.bendAngleDeg),
   }
 }
 
@@ -726,6 +822,7 @@ export function changeCornerBarBarDiameter(
       }
     }),
     ...withDeductions(bar.measurementDeductionsMm),
+    ...withBendAngle(shape, bar.bendAngleDeg),
   }
 }
 
@@ -750,6 +847,7 @@ export function normalizeCornerBarBars(
         quantity: normalizeBarQuantity(rec.quantity),
         segments: normalizeCornerBarSegments(shape, rec.segments),
         ...withDeductions(normalizeMeasurementDeductions(rec.measurementDeductionsMm)),
+        ...withBendAngle(shape, rec.bendAngleDeg),
       }
     })
     .filter((bar): bar is CornerBarBarItem => bar != null)
@@ -787,6 +885,7 @@ export function remapCornerBarBarsToShape(
       quantity: bar.quantity,
       segments: preserveSegments ? bar.segments : undefined,
       measurementDeductionsMm: bar.measurementDeductionsMm,
+      bendAngleDeg: bar.bendAngleDeg,
     }),
   )
 }
