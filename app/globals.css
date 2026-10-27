@@ -296,11 +296,11 @@ button,
     min-width: 0 !important;
   }
 
-  /* 付加筋カードは材料取りの右列。文字サイズは左の材料取り表と同じ 14px に揃える */
+  /* 付加筋カードは材料取りの右列。文字サイズは左の材料取り表と同じ 14px に揃える。
+     「材料取り」の見出しはカードの中にあるので、上端は左列のカードと揃える */
   .optimize-print-corner-bars {
     min-width: 0 !important;
     width: auto !important;
-    padding-top: 32px !important;
     overflow: visible !important;
   }
 
@@ -384,6 +384,19 @@ button,
   .corner-summary-dims {
     white-space: normal !important;
   }
+}
+
+/* 印刷レイアウトで辺をドラッグして高さを決めたカード。中身より低くはしない。
+   カードの枠（青い線）を持つ要素まで高さ 100% をつなぎ、枠をその高さまで伸ばす */
+.print-card-fill {
+  min-height: min-content;
+}
+
+.print-card-fill > .print-card-body,
+.print-card-fill > .print-card-body > *,
+.print-card-fill > .print-card-body > * > .print-hook-summary,
+.print-card-fill > .print-card-body > * > .corner-summary-section {
+  height: 100%;
 }
 
 /* A4 縦・余白 6mm/10mm の印刷範囲（190 × 285mm）。画面では白い用紙として見せる */

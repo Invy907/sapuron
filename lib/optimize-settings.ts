@@ -34,6 +34,11 @@ export function printCardZoomStorageKey(projectId: string) {
   return `optimize-print-card-zooms:${projectId}`
 }
 
+/** 印刷レイアウト画面の 2 ページ目のカードの大きさ（カード → 幅・高さ） */
+export function printCardSizeStorageKey(projectId: string) {
+  return `optimize-print-card-sizes:${projectId}`
+}
+
 export function parsePieceLengthAdjustment(
   value: string | undefined | null,
 ): number {

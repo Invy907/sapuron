@@ -26,17 +26,21 @@ import {
   kakouchouOverrideStorageKey,
   pieceAdjustmentStorageKey,
   printCardPlacementStorageKey,
+  printCardSizeStorageKey,
   printCardZoomStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
 import {
   PrintLayoutModal,
   parsePrintCardPlacements,
+  parsePrintCardSizes,
   parsePrintCardZooms,
   type PrintCard,
   type PrintCardId,
   type PrintCardPlacement,
   type PrintCardPlacements,
+  type PrintCardSize,
+  type PrintCardSizes,
   type PrintCardZooms,
 } from '@/components/print-layout-modal'
 import {
@@ -63,6 +67,11 @@ type PrintCardPlacementState = {
 type PrintCardZoomState = {
   storageKey: string | null
   zooms: PrintCardZooms
+}
+
+type PrintCardSizeState = {
+  storageKey: string | null
+  sizes: PrintCardSizes
 }
 
 function parseManufactureLegendPositions(raw: string | null): ManufactureLegendPositions {
@@ -314,10 +323,52 @@ export function OptimizeClient({
     [printZoomStorageKey],
   )
 
+  const printSizeStorageKey = useMemo(() => printCardSizeStorageKey(projectId), [projectId])
+  const [printSizeState, setPrintSizeState] = useState<PrintCardSizeState>({
+    storageKey: null,
+    sizes: {},
+  })
+  const printCardSizes =
+    printSizeState.storageKey === printSizeStorageKey ? printSizeState.sizes : {}
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setPrintSizeState({
+      storageKey: printSizeStorageKey,
+      sizes: parsePrintCardSizes(window.localStorage.getItem(printSizeStorageKey)),
+    })
+  }, [printSizeStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || printSizeState.storageKey !== printSizeStorageKey) {
+      return
+    }
+    try {
+      window.localStorage.setItem(printSizeStorageKey, JSON.stringify(printSizeState.sizes))
+    } catch {
+      // Ignore storage write errors so resizing remains usable.
+    }
+  }, [printSizeState, printSizeStorageKey])
+
+  const handlePrintCardSizeChange = useCallback(
+    (id: PrintCardId, size: PrintCardSize | null) => {
+      setPrintSizeState((current) => {
+        const next: PrintCardSizes = {
+          ...(current.storageKey === printSizeStorageKey ? current.sizes : {}),
+        }
+        if (size == null) delete next[id]
+        else next[id] = size
+        return { storageKey: printSizeStorageKey, sizes: next }
+      })
+    },
+    [printSizeStorageKey],
+  )
+
   const handleResetPrintCardPlacements = useCallback(() => {
     setPrintPlacementState({ storageKey: printPlacementStorageKey, placements: {} })
     setPrintZoomState({ storageKey: printZoomStorageKey, zooms: {} })
-  }, [printPlacementStorageKey, printZoomStorageKey])
+    setPrintSizeState({ storageKey: printSizeStorageKey, sizes: {} })
+  }, [printPlacementStorageKey, printSizeStorageKey, printZoomStorageKey])
 
   const adjustmentStorageKey = useMemo(
     () => pieceAdjustmentStorageKey(projectId),
@@ -771,7 +822,7 @@ export function OptimizeClient({
 
   const barSummaryCard =
     barSummaryTable && barSummaryTable.length > 0 ? (
-      <BarSummarySection rows={barSummaryTable} adjustmentMm={pieceLengthAdjustmentMm} />
+      <BarSummarySection rows={barSummaryTable} />
     ) : null
 
   const hookSummaryCard = result ? (
@@ -860,9 +911,6 @@ export function OptimizeClient({
           {/* 結果 */}
           {result && (
             <section className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-semibold">材料取り</h2>
-              </div>
               {barSummaryCard}
               {hookSummaryCard}
             </section>
@@ -895,6 +943,8 @@ export function OptimizeClient({
           onPlacementChange={handlePrintCardPlacementChange}
           zooms={printCardZooms}
           onZoomChange={handlePrintCardZoomChange}
+          sizes={printCardSizes}
+          onSizeChange={handlePrintCardSizeChange}
           onResetPlacements={handleResetPrintCardPlacements}
           renderPage1={(overlay, layeredIds) => (
             <section className="optimize-print-manufacture">
@@ -957,13 +1007,7 @@ function buildBarSummaryTable(pieces: PieceInput[]): BarSummaryRow[] {
   return rows
 }
 
-function BarSummarySection({
-  rows,
-  adjustmentMm,
-}: {
-  rows: BarSummaryRow[]
-  adjustmentMm: number
-}) {
+function BarSummarySection({ rows }: { rows: BarSummaryRow[] }) {
   const allBarTypes = Array.from(
     new Set(rows.flatMap((r) => Object.keys(r.byBarType))),
   ).sort(compareBarTypeDesc)
@@ -977,12 +1021,8 @@ function BarSummarySection({
 
   return (
     <div className="print-bar-summary rounded-lg border-2 border-primary bg-white p-5">
-      {adjustmentMm !== 0 && (
-        <p className="text-xs text-muted mb-3">
-          鉄筋長さ補正値: {adjustmentMm > 0 ? '+' : ''}
-          {adjustmentMm}mm 適用済み
-        </p>
-      )}
+      {/* 見出しはカードの中に置く（カードを 1 ページ目へ移しても見出しが一緒に動く） */}
+      <h2 className="mb-3 text-base font-semibold">材料取り</h2>
       <div className="overflow-x-auto">
         <table className="w-full text-lg">
           <thead>

@@ -27,7 +27,14 @@ export type PrintCardPlacement = {
   y: number
   /** カードの幅 (px) */
   w?: number
+  /** カードの高さ (px)。辺をドラッグして決めたときだけ入る */
+  h?: number
 }
+
+/** 2 ページ目のカードの大きさ（右辺・下辺をドラッグして決めたときだけ入る） */
+export type PrintCardSize = { w?: number; h?: number }
+
+export type PrintCardSizes = Partial<Record<PrintCardId, PrintCardSize>>
 
 export type PrintCardPlacements = Partial<Record<PrintCardId, PrintCardPlacement>>
 
@@ -57,7 +64,8 @@ const SECTION_PADDING_X_PX = 10
 /** 表の左端から見た用紙の右端 */
 const SHEET_RIGHT_FROM_TABLE_PX = SHEET_WIDTH_PX - SECTION_PADDING_X_PX
 const SHEET_GAP_PX = 32
-const MIN_CARD_WIDTH_PX = 160
+const MIN_CARD_WIDTH_PX = 80
+const MIN_CARD_HEIGHT_PX = 40
 const MIN_CARD_ZOOM = 0.5
 const MAX_CARD_ZOOM = 2
 /** −/＋ ボタン 1 回で変える拡大率 */
@@ -72,14 +80,10 @@ export function parsePrintCardPlacements(raw: string | null): PrintCardPlacement
     for (const id of PRINT_CARD_IDS) {
       const value = (parsed as Record<string, unknown>)[id]
       if (!value || typeof value !== 'object') continue
-      const { x, y, w } = value as { x?: unknown; y?: unknown; w?: unknown }
+      const { x, y, w, h } = value as { x?: unknown; y?: unknown; w?: unknown; h?: unknown }
       if (typeof x !== 'number' || !Number.isFinite(x)) continue
       if (typeof y !== 'number' || !Number.isFinite(y)) continue
-      placements[id] = {
-        x,
-        y,
-        ...(typeof w === 'number' && Number.isFinite(w) && w > 0 ? { w } : {}),
-      }
+      placements[id] = { x, y, ...parseCardSize(w, h) }
     }
     return placements
   } catch {
@@ -105,6 +109,30 @@ export function parsePrintCardZooms(raw: string | null): PrintCardZooms {
   }
 }
 
+function parseCardSize(w: unknown, h: unknown): PrintCardSize {
+  const valid = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
+  return { ...(valid(w) ? { w } : {}), ...(valid(h) ? { h } : {}) }
+}
+
+export function parsePrintCardSizes(raw: string | null): PrintCardSizes {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const sizes: PrintCardSizes = {}
+    for (const id of PRINT_CARD_IDS) {
+      const value = (parsed as Record<string, unknown>)[id]
+      if (!value || typeof value !== 'object') continue
+      const { w, h } = value as { w?: unknown; h?: unknown }
+      const size = parseCardSize(w, h)
+      if (size.w != null || size.h != null) sizes[id] = size
+    }
+    return sizes
+  } catch {
+    return {}
+  }
+}
+
 type DropInfo = {
   id: PrintCardId
   cardRect: DOMRect
@@ -119,6 +147,8 @@ export function PrintLayoutModal({
   onPlacementChange,
   zooms,
   onZoomChange,
+  sizes,
+  onSizeChange,
   onResetPlacements,
   renderPage1,
   cards,
@@ -129,7 +159,10 @@ export function PrintLayoutModal({
   onPlacementChange: (id: PrintCardId, placement: PrintCardPlacement | null) => void
   zooms: PrintCardZooms
   onZoomChange: (id: PrintCardId, zoom: number | null) => void
-  /** 1 ページ目への配置と拡大率をすべて元に戻す */
+  /** 2 ページ目のカードの大きさ */
+  sizes: PrintCardSizes
+  onSizeChange: (id: PrintCardId, size: PrintCardSize | null) => void
+  /** 1 ページ目への配置・拡大率・大きさをすべて元に戻す */
   onResetPlacements: () => void
   /**
    * 1 ページ目の中身。overlay は表の左上に重ねる層（1 ページ目へ移したカード）。
@@ -231,6 +264,8 @@ export function PrintLayoutModal({
         const k = s1.width / SHEET_WIDTH_PX
         const w = current?.w ?? Math.round(cardRect.width / k)
         const h = cardRect.height / k
+        // 2 ページ目で高さを決めていたカードは、その高さのまま移す
+        const fixedH = current?.h ?? (sizes[id]?.h != null ? Math.round(h) : undefined)
         const top = (layer.top - s1.top) / k
         const x = (cardRect.left - layer.left) / k
         const y = (cardRect.top - layer.top) / k
@@ -243,19 +278,32 @@ export function PrintLayoutModal({
           ),
           y: Math.round(Math.min(Math.max(-top, SHEET_HEIGHT_PX - top - h), Math.max(-top, y))),
           w,
+          ...(fixedH != null ? { h: fixedH } : {}),
         })
         return
       }
       if (inside(s2) && placements[id] && !page1Only) onPlacementChange(id, null)
     },
-    [defaultPlacements, onPlacementChange, placements],
+    [defaultPlacements, onPlacementChange, placements, sizes],
   )
 
-  /** 拡大率を変える。1 ページ目のカードは見た目の幅も一緒に変える */
-  const handleZoom = (id: PrintCardId, zoom: number, width: number | null) => {
+  /** 拡大率を変える。幅・高さを決めてあるカードはそれも同じ比率で変える */
+  const handleZoom = (id: PrintCardId, zoom: number, box: PrintCardSize | null) => {
     onZoomChange(id, Math.abs(zoom - 1) < 0.005 ? null : zoom)
+    if (box) handleBoxChange(id, box)
+  }
+
+  /** 辺のドラッグで決めた位置・大きさを、1 ページ目なら配置に、2 ページ目なら大きさに保存する */
+  const handleBoxChange = (id: PrintCardId, box: Partial<PrintCardPlacement>) => {
     const p = placementOf(id)
-    if (p && width != null) onPlacementChange(id, { ...p, w: width })
+    if (p) {
+      onPlacementChange(id, { ...p, ...box })
+      return
+    }
+    const next: PrintCardSize = { ...sizes[id] }
+    if (box.w != null) next.w = box.w
+    if (box.h != null) next.h = box.h
+    onSizeChange(id, next)
   }
 
   const page1Cards = cards.filter((c) => placementOf(c.id))
@@ -278,11 +326,8 @@ export function PrintLayoutModal({
           zoom={zooms[card.id] ?? 1}
           scale={scale}
           onDrop={handleDrop}
-          onZoom={(z, w) => handleZoom(card.id, z, w)}
-          onResize={(w) => {
-            const p = placementOf(card.id)
-            if (p) onPlacementChange(card.id, { ...p, w })
-          }}
+          onZoom={(z, box) => handleZoom(card.id, z, box)}
+          onBoxChange={(box) => handleBoxChange(card.id, box)}
         />
       ))}
     </div>
@@ -299,14 +344,18 @@ export function PrintLayoutModal({
         <div className="min-w-0">
           <h2 className="text-base font-semibold">印刷レイアウト</h2>
           <p className="text-xs text-muted">
-            カードをドラッグして 1 ページ目の空いているところへ置けます。2 ページ目の用紙へドラッグすると元に戻ります。カードに乗せると出る −／＋ か右下の角で拡大・縮小、1 ページ目のカードは右端で幅を変えられます。
+            カードをドラッグして 1 ページ目の空いているところへ置けます。2 ページ目の用紙へドラッグすると元に戻ります。カードに乗せると出る −／＋ か右下の角で拡大・縮小、辺をドラッグすると形を変えられます（2 ページ目は右と下の辺）。
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
             onClick={onResetPlacements}
-            disabled={Object.keys(placements).length === 0 && Object.keys(zooms).length === 0}
+            disabled={
+              Object.keys(placements).length === 0 &&
+              Object.keys(zooms).length === 0 &&
+              Object.keys(sizes).length === 0
+            }
             className="rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:bg-gray-50 disabled:opacity-40"
           >
             配置をリセット
@@ -365,15 +414,16 @@ export function PrintLayoutModal({
                 <div className="optimize-print-summary-layout">
                   {page2Left.length > 0 ? (
                     <section className="optimize-print-results space-y-4">
-                      <h2 className="text-base font-semibold">材料取り</h2>
                       {page2Left.map((card) => (
                         <SheetCard
                           key={card.id}
                           card={card}
+                          size={sizes[card.id]}
                           zoom={zooms[card.id] ?? 1}
                           scale={scale}
                           onDrop={handleDrop}
-                          onZoom={(z, w) => handleZoom(card.id, z, w)}
+                          onZoom={(z, box) => handleZoom(card.id, z, box)}
+                          onBoxChange={(box) => handleBoxChange(card.id, box)}
                         />
                       ))}
                     </section>
@@ -388,10 +438,12 @@ export function PrintLayoutModal({
                         <SheetCard
                           key={card.id}
                           card={card}
+                          size={sizes[card.id]}
                           zoom={zooms[card.id] ?? 1}
                           scale={scale}
                           onDrop={handleDrop}
-                          onZoom={(z, w) => handleZoom(card.id, z, w)}
+                          onZoom={(z, box) => handleZoom(card.id, z, box)}
+                          onBoxChange={(box) => handleBoxChange(card.id, box)}
                         />
                       ))}
                     </section>
@@ -433,35 +485,61 @@ function SheetFrame({
   )
 }
 
+type CardEdge = 'left' | 'right' | 'top' | 'bottom'
+
+const EDGE_CURSOR: Record<CardEdge, string> = {
+  left: 'ew-resize',
+  right: 'ew-resize',
+  top: 'ns-resize',
+  bottom: 'ns-resize',
+}
+
+/** 辺をつかむ帯の太さ（画面上の px） */
+const EDGE_GRAB_PX = 8
+
 /**
  * 用紙の上のカード。入力欄やボタン以外のどこを掴んでもドラッグできる。
  * placement があれば 1 ページ目の層に絶対配置、無ければ 2 ページ目の流れの中に置く。
+ * 辺をドラッグすると形（幅・高さ）を変えられる。1 ページ目は 4 辺、2 ページ目は右と下の辺。
  */
 function SheetCard({
   card,
   placement,
+  size,
   zoom,
   scale,
   onDrop,
-  onResize,
   onZoom,
+  onBoxChange,
 }: {
   card: PrintCard
   placement?: PrintCardPlacement
+  size?: PrintCardSize
   zoom: number
   scale: number
   onDrop: (info: DropInfo) => void
-  onResize?: (w: number) => void
-  /** 拡大率と、1 ページ目のカードなら新しい幅 */
-  onZoom: (zoom: number, width: number | null) => void
+  /** 拡大率と、幅・高さを決めてあるカードなら同じ比率で変えた幅・高さ */
+  onZoom: (zoom: number, box: PrintCardSize | null) => void
+  onBoxChange: (box: Partial<PrintCardPlacement>) => void
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{ startX: number; startY: number } | null>(null)
   const [offset, setOffset] = useState<{ dx: number; dy: number } | null>(null)
-  const resizeRef = useRef<{ startX: number; startW: number } | null>(null)
-  const [resizeW, setResizeW] = useState<number | null>(null)
+  const edgeRef = useRef<{
+    edge: CardEdge
+    startX: number
+    startY: number
+    box: { x: number; y: number; w: number; h: number }
+  } | null>(null)
+  const [liveBox, setLiveBox] = useState<Partial<PrintCardPlacement> | null>(null)
   const zoomRef = useRef<{ startX: number; startW: number; startZoom: number } | null>(null)
-  const [liveZoom, setLiveZoom] = useState<{ zoom: number; width: number | null } | null>(null)
+  const [liveZoom, setLiveZoom] = useState<{ zoom: number; box: PrintCardSize | null } | null>(
+    null,
+  )
+
+  const onPage1 = placement != null
+  const boxW = placement?.w ?? size?.w
+  const boxH = placement?.h ?? size?.h
 
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
@@ -494,46 +572,79 @@ function SheetCard({
     setOffset(null)
   }
 
-  const handleResizePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+  // --- 辺のドラッグ（形を変える）
+  const handleEdgePointerDown = (edge: CardEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !cardRef.current) return
     e.preventDefault()
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
-    resizeRef.current = { startX: e.clientX, startW: cardRef.current.offsetWidth }
-    setResizeW(resizeRef.current.startW)
+    edgeRef.current = {
+      edge,
+      startX: e.clientX,
+      startY: e.clientY,
+      box: {
+        x: placement?.x ?? 0,
+        y: placement?.y ?? 0,
+        // offset* は用紙の縮小（transform）の影響を受けない実寸
+        w: cardRef.current.offsetWidth,
+        h: cardRef.current.offsetHeight,
+      },
+    }
+    setLiveBox({})
   }
 
-  const handleResizePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    const r = resizeRef.current
-    if (!r || !placement) return
-    const maxW = SHEET_RIGHT_FROM_TABLE_PX - placement.x
-    setResizeW(
-      Math.min(maxW, Math.max(MIN_CARD_WIDTH_PX, r.startW + (e.clientX - r.startX) / scale)),
-    )
+  const handleEdgePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const r = edgeRef.current
+    if (!r) return
+    const dx = (e.clientX - r.startX) / scale
+    const dy = (e.clientY - r.startY) / scale
+    const { x, y, w, h } = r.box
+    if (r.edge === 'right') {
+      const maxW = onPage1 ? SHEET_RIGHT_FROM_TABLE_PX - x : Infinity
+      setLiveBox({ w: Math.round(Math.min(maxW, Math.max(MIN_CARD_WIDTH_PX, w + dx))) })
+    } else if (r.edge === 'left') {
+      const nextX = Math.min(x + w - MIN_CARD_WIDTH_PX, Math.max(-SECTION_PADDING_X_PX, x + dx))
+      setLiveBox({ x: Math.round(nextX), w: Math.round(w + x - nextX) })
+    } else if (r.edge === 'bottom') {
+      setLiveBox({ h: Math.round(Math.max(MIN_CARD_HEIGHT_PX, h + dy)) })
+    } else {
+      const nextY = Math.min(y + h - MIN_CARD_HEIGHT_PX, y + dy)
+      setLiveBox({ y: Math.round(nextY), h: Math.round(h + y - nextY) })
+    }
   }
 
-  const handleResizePointerUp = () => {
-    if (!resizeRef.current) return
-    resizeRef.current = null
-    if (resizeW != null) onResize?.(Math.round(resizeW))
-    setResizeW(null)
+  const handleEdgePointerUp = () => {
+    const r = edgeRef.current
+    if (!r) return
+    edgeRef.current = null
+    const el = cardRef.current
+    if (liveBox && Object.keys(liveBox).length > 0 && el) {
+      // 中身より小さくはならないので、実際に描かれた大きさで保存する（左辺・上辺は反対側の辺を固定）
+      const box = { ...liveBox }
+      if (box.w != null) box.w = el.offsetWidth
+      if (box.h != null) box.h = el.offsetHeight
+      if (r.edge === 'left' && box.w != null) box.x = r.box.x + r.box.w - box.w
+      if (r.edge === 'top' && box.h != null) box.y = r.box.y + r.box.h - box.h
+      onBoxChange(box)
+    }
+    setLiveBox(null)
   }
 
-  // 右下の角: カードを中身ごと拡大・縮小する。横方向に動かした分の比率で決める
-  /** fromZoom のときの幅を基準に、拡大率 target での幅を求める（用紙の右端は越えない） */
+  /** fromZoom のときの大きさを基準に、拡大率 target での幅・高さを求める（用紙の右端は越えない） */
   const sizeFor = (target: number, fromZoom: number) => {
     let next = Math.min(MAX_CARD_ZOOM, Math.max(MIN_CARD_ZOOM, target))
-    let width: number | null = null
-    if (placement?.w != null) {
+    if (onPage1 && boxW != null) {
       const maxW = SHEET_RIGHT_FROM_TABLE_PX - placement.x
-      width = (placement.w * next) / fromZoom
-      if (width > maxW) {
-        width = maxW
-        next = (fromZoom * maxW) / placement.w
-      }
-      width = Math.round(width)
+      if ((boxW * next) / fromZoom > maxW) next = (fromZoom * maxW) / boxW
     }
-    return { zoom: Math.round(next * 100) / 100, width }
+    const ratio = next / fromZoom
+    const box: PrintCardSize = {}
+    if (boxW != null) box.w = Math.round(boxW * ratio)
+    if (boxH != null) box.h = Math.round(boxH * ratio)
+    return {
+      zoom: Math.round(next * 100) / 100,
+      box: box.w != null || box.h != null ? box : null,
+    }
   }
 
   const zoomFromPointer = (clientX: number) => {
@@ -547,7 +658,12 @@ function SheetCard({
   const stepZoom = (direction: 1 | -1) => {
     const target = Math.round((zoom + direction * CARD_ZOOM_STEP) * 10) / 10
     const next = sizeFor(target, zoom)
-    if (next.zoom !== zoom) onZoom(next.zoom, next.width)
+    if (next.zoom !== zoom) onZoom(next.zoom, next.box)
+  }
+
+  const resetZoom = () => {
+    const next = sizeFor(1, zoom)
+    onZoom(1, next.box)
   }
 
   const handleZoomPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -556,7 +672,7 @@ function SheetCard({
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
     zoomRef.current = { startX: e.clientX, startW: cardRef.current.offsetWidth, startZoom: zoom }
-    setLiveZoom({ zoom, width: placement?.w ?? null })
+    setLiveZoom({ zoom, box: null })
   }
 
   const handleZoomPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -567,12 +683,18 @@ function SheetCard({
   const handleZoomPointerUp = () => {
     if (!zoomRef.current) return
     zoomRef.current = null
-    if (liveZoom) onZoom(liveZoom.zoom, liveZoom.width)
+    if (liveZoom) onZoom(liveZoom.zoom, liveZoom.box)
     setLiveZoom(null)
   }
 
-  const width = resizeW ?? liveZoom?.width ?? placement?.w
+  const left = liveBox?.x ?? placement?.x
+  const top = liveBox?.y ?? placement?.y
+  const width = liveBox?.w ?? liveZoom?.box?.w ?? boxW
+  const height = liveBox?.h ?? liveZoom?.box?.h ?? boxH
   const shownZoom = liveZoom?.zoom ?? zoom
+  const edges: CardEdge[] = onPage1 ? ['left', 'right', 'top', 'bottom'] : ['right', 'bottom']
+  const grab = EDGE_GRAB_PX / scale
+
   return (
     <div
       ref={cardRef}
@@ -581,10 +703,15 @@ function SheetCard({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       title={`${card.label}：ドラッグで移動`}
-      className={`group ${placement ? 'print-page1-card absolute' : 'relative'} cursor-move touch-none rounded-lg hover:outline hover:outline-2 hover:outline-offset-2 hover:outline-primary/40`}
+      className={`group ${onPage1 ? 'print-page1-card absolute' : 'relative'} ${
+        height != null ? 'print-card-fill' : ''
+      } cursor-move touch-none rounded-lg hover:outline hover:outline-2 hover:outline-offset-2 hover:outline-primary/40`}
       style={{
-        ...(placement ? { left: placement.x, top: placement.y } : {}),
+        ...(onPage1 ? { left, top } : {}),
         width: width ?? undefined,
+        height: height ?? undefined,
+        // 幅を決めても中身（表）より狭くはしない（切れて印刷されないように）
+        minWidth: width != null ? 'min-content' : undefined,
         ...(offset
           ? {
               transform: `translate(${offset.dx}px, ${offset.dy}px)`,
@@ -595,13 +722,40 @@ function SheetCard({
           : {}),
       }}
     >
-      <div style={{ zoom: shownZoom }}>{card.node}</div>
-      {/* 用紙ごと縮小表示しているので、操作部品は逆に拡大して画面上の大きさを保つ */}
+      <div className="print-card-body" style={{ zoom: shownZoom }}>
+        {card.node}
+      </div>
+
+      {/* 辺をつかむ帯。用紙ごと縮小表示しているので、太さは画面上で一定にする */}
+      {edges.map((edge) => {
+        const horizontal = edge === 'left' || edge === 'right'
+        return (
+          <div
+            key={edge}
+            data-no-card-drag
+            aria-label={`${card.label}の${{ left: '左', right: '右', top: '上', bottom: '下' }[edge]}辺を動かす`}
+            onPointerDown={handleEdgePointerDown(edge)}
+            onPointerMove={handleEdgePointerMove}
+            onPointerUp={handleEdgePointerUp}
+            onPointerCancel={handleEdgePointerUp}
+            className="print-sheet-ui absolute z-10 touch-none rounded bg-primary/0 transition-colors hover:bg-primary/30"
+            style={{
+              cursor: EDGE_CURSOR[edge],
+              ...(horizontal
+                ? { top: grab * 2, bottom: grab * 2, width: grab, [edge]: -grab / 2 }
+                : { left: grab * 2, right: grab * 2, height: grab, [edge]: -grab / 2 }),
+            }}
+          />
+        )
+      })}
+
+      {/* 用紙ごと縮小表示しているので、操作部品は逆に拡大して画面上の大きさを保つ。
+          上辺の帯と重ならないよう、カードの上の外側に置く */}
       <div
-        className={`print-sheet-ui absolute right-3 top-0 z-20 flex items-center overflow-hidden rounded-full border border-primary/40 bg-white text-xs text-primary shadow-sm transition-opacity group-hover:opacity-100 ${
-          liveZoom ? 'opacity-100' : 'opacity-0'
+        className={`print-sheet-ui absolute bottom-full right-0 z-20 flex items-center overflow-hidden rounded-full border border-primary/40 bg-white text-xs text-primary shadow-sm transition-opacity group-hover:opacity-100 ${
+          liveZoom || liveBox ? 'opacity-100' : 'opacity-0'
         }`}
-        style={{ transform: `translateY(-50%) scale(${1 / scale})`, transformOrigin: 'right center' }}
+        style={{ transform: `scale(${1 / scale})`, transformOrigin: 'right bottom' }}
       >
         <button
           type="button"
@@ -614,7 +768,7 @@ function SheetCard({
         </button>
         <button
           type="button"
-          onClick={() => onZoom(1, placement?.w != null ? Math.round(placement.w / zoom) : null)}
+          onClick={resetZoom}
           title="クリックで 100% に戻す"
           className="min-w-[3.25rem] border-x border-primary/20 px-1 py-0.5 text-center tabular-nums leading-none hover:bg-primary/10"
         >
@@ -638,24 +792,12 @@ function SheetCard({
         onPointerMove={handleZoomPointerMove}
         onPointerUp={handleZoomPointerUp}
         onPointerCancel={handleZoomPointerUp}
-        onDoubleClick={() => onZoom(1, placement?.w != null ? Math.round(placement.w / zoom) : null)}
+        onDoubleClick={resetZoom}
         style={{ transform: `scale(${1 / scale})` }}
-        className={`print-sheet-ui absolute -bottom-2 -right-2 z-10 h-4 w-4 cursor-nwse-resize touch-none rounded-sm border-2 border-primary bg-white shadow-sm transition-opacity group-hover:opacity-100 ${
+        className={`print-sheet-ui absolute -bottom-2 -right-2 z-20 h-4 w-4 cursor-nwse-resize touch-none rounded-sm border-2 border-primary bg-white shadow-sm transition-opacity group-hover:opacity-100 ${
           liveZoom ? 'opacity-100' : 'opacity-0'
         }`}
       />
-      {placement && onResize ? (
-        <div
-          data-no-card-drag
-          aria-label={`${card.label}の幅を変える`}
-          title="ドラッグで幅を変える"
-          onPointerDown={handleResizePointerDown}
-          onPointerMove={handleResizePointerMove}
-          onPointerUp={handleResizePointerUp}
-          onPointerCancel={handleResizePointerUp}
-          className="print-sheet-ui absolute -right-1.5 bottom-4 top-2 w-3 cursor-ew-resize touch-none rounded bg-primary/0 hover:bg-primary/30"
-        />
-      ) : null}
     </div>
   )
 }
