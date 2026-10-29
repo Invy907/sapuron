@@ -20,7 +20,10 @@ import {
   CORNER_BAR_DIAMETERS,
   cornerBarSegmentLabelAnchors,
   cornerBarLayerMark,
+  cornerBarStrokePathD,
   cornerBarThumbPoints,
+  isFreeShapeCategory,
+  linkedSegmentLeader,
   measurementTypeLabel,
   resolveCornerBarShape,
   type CornerBarShapeDef,
@@ -396,7 +399,7 @@ function buildSheetRows(
       blocks.push({ heading: group.label, rows: list })
     }
 
-    const showShapeFigure = group.category === 'SPECIAL_CORNER'
+    const showShapeFigure = isFreeShapeCategory(group.category)
 
     for (const block of blocks) {
       block.rows.forEach((row, i) => {
@@ -793,8 +796,11 @@ function ShapeFigureSvg({
   if (!shape) return null
 
   const rotation = pickSummaryFigureRotation(shape, metrics.pad)
+  // 同じ寸法の辺の組（四角の 4 辺）は先頭の辺にだけ寸法を書く
   const anchorsFor = (points: Array<{ x: number; y: number }>) =>
-    cornerBarSegmentLabelAnchors(points, 1)
+    cornerBarSegmentLabelAnchors(points, 1).filter(
+      (anchor) => linkedSegmentLeader(shape, anchor.index) === anchor.index,
+    )
   // ラベルの並び（辺の順）は図の大きさによらないので、先に文字だけ決めておく
   const baseAnchors = anchorsFor(
     cornerBarThumbPoints(shape, metrics.width, metrics.height, metrics.pad, rotation, false),
@@ -832,12 +838,19 @@ function ShapeFigureSvg({
     let viewWidth = m.width
     if (m.cropWidth) {
       const { halfWidth } = labelHalfSizes(labelLines, m, placed.scale)
+      // 高さの寸法（形の右に書く）も入るようにする
+      const heightRight =
+        row.heightMm != null
+          ? Math.max(...points.map((p) => p.x)) +
+            (14 + String(row.heightMm).length * m.dimFont * DIGIT_WIDTH_EM) * placed.scale
+          : -Infinity
       const xs = [
         ...points.map((p) => p.x),
         ...placed.anchors.flatMap((a, i) => [
           a.x - (halfWidth[i] ?? 0),
           a.x + (halfWidth[i] ?? 0),
         ]),
+        heightRight,
       ]
       const margin = 4
       viewLeft = Math.min(...xs) - margin
@@ -872,10 +885,21 @@ function ShapeFigureSvg({
   const displayWidth = baseWidth * zoom
   const displayHeight = baseHeight * zoom
 
-  const path = points
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
-    .join(' ')
+  const path = cornerBarStrokePathD(shape, points, 4)
   const lineDy = m.lineDy * scale
+
+  // 高さ（段違い・斜め）は資料と同じく、形の右に「I 320」のように縦の寸法で書く
+  const heightMark = (() => {
+    if (row.heightMm == null) return null
+    const xs = points.map((p) => p.x)
+    const ys = points.map((p) => p.y)
+    const top = Math.min(...ys)
+    const bottom = Math.max(...ys)
+    if (bottom - top < 1) return null
+    const x = Math.max(...xs) + 10 * scale
+    const tick = 3 * scale
+    return { x, top, bottom, tick, labelX: x + 4 * scale, labelY: (top + bottom) / 2 }
+  })()
 
   return (
     <div className="corner-summary-figure flex flex-col items-start">
@@ -898,10 +922,30 @@ function ShapeFigureSvg({
           // 図を列の幅まで縮めても線の太さは変えない（形状によって太さが違って見えないように）
           vectorEffect="non-scaling-stroke"
         />
-        {/* 曲げの位置が分かるように節点に小さな印を打つ */}
-        {points.slice(1, -1).map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r={2.5} fill="#0f172a" />
-        ))}
+        {heightMark ? (
+          <g aria-label={`高さ ${row.heightMm}`}>
+            <path
+              d={`M${heightMark.x} ${heightMark.top} L${heightMark.x} ${heightMark.bottom} M${
+                heightMark.x - heightMark.tick
+              } ${heightMark.top} L${heightMark.x + heightMark.tick} ${heightMark.top} M${
+                heightMark.x - heightMark.tick
+              } ${heightMark.bottom} L${heightMark.x + heightMark.tick} ${heightMark.bottom}`}
+              fill="none"
+              stroke="#0f172a"
+              strokeWidth={1.2}
+              vectorEffect="non-scaling-stroke"
+            />
+            <text
+              x={heightMark.labelX}
+              y={heightMark.labelY}
+              dominantBaseline="central"
+              fontSize={m.dimFont * scale}
+              fill="#0f172a"
+            >
+              {row.heightMm}
+            </text>
+          </g>
+        ) : null}
         {drawnAnchors.map((anchor, i) => (
           <text
             key={anchor.index}

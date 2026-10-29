@@ -24,6 +24,7 @@ export type PrintCardId =
   | 'hook-summary'
   | 'corner-bars'
   | 'special-corner-bars'
+  | 'opening-bars'
   | 'memo'
 
 export type PrintCardPlacement = {
@@ -65,6 +66,7 @@ const PRINT_CARD_IDS: readonly PrintCardId[] = [
   'hook-summary',
   'corner-bars',
   'special-corner-bars',
+  'opening-bars',
   'memo',
 ]
 /** 2 ページ目の既定の並び（左列＝材料取り、残りは右列）。最初の位置を測るときだけ使う */

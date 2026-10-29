@@ -33,6 +33,8 @@ import {
   cornerBarLegacyFieldsFromBars,
   makeCornerBarDraft,
   cornerBarThumbPath,
+  cornerBarStrokePathD,
+  isFreeShapeCategory,
   normalizeCornerBarBars,
   normalizeCornerBarFlip,
   cornerBarOriginKeepingVertex,
@@ -1087,11 +1089,11 @@ export function DrawingViewer({
     () => cornerBars.filter((cb) => !cornerPrintHiddenCategories.includes(cb.category)),
     [cornerBars, cornerPrintHiddenCategories],
   )
-  /** 付加筋タブの入力データの箱は特殊コーナー筋だけ（コーナー筋・添え筋は図面で分かるので出さない） */
+  /** 付加筋タブの入力データの箱は特殊コーナー筋・開口補強筋だけ（コーナー筋・添え筋は図面で分かるので出さない） */
   const cornerBarPrintSummary = useMemo(
     () =>
       buildCornerBarPrintSummary(
-        printCornerBars.filter((cb) => cb.category === 'SPECIAL_CORNER'),
+        printCornerBars.filter((cb) => isFreeShapeCategory(cb.category)),
         normalizeSegmentColor,
       ),
     [printCornerBars],
@@ -1694,10 +1696,7 @@ export function DrawingViewer({
       y: pt.y,
       size_px: clampCornerBarSizePx(sizePx),
       rotation,
-      flipped:
-        draft.category === 'SPECIAL_CORNER'
-          ? normalizeCornerBarFlip(draft.flipped)
-          : false,
+      flipped: isFreeShapeCategory(draft.category) ? normalizeCornerBarFlip(draft.flipped) : false,
       color:
         cornerPlacementColorByCategory[draft.category] ??
         DEFAULT_CORNER_BAR_COLORS[draft.category] ??
@@ -2263,31 +2262,39 @@ export function DrawingViewer({
           cb.id === selectedCornerBarId
         const strokeHex = getSegmentStrokeHex(cb.color, isSelected)
 
-        const tracePath = () => {
+        // フックは半円、四角の継手は内側へずらして描く（形状定義に無ければ折れ線のまま）
+        const strokeShape = resolveCornerBarShape(cb.shape_type, cb.bars)
+        const strokePath = strokeShape
+          ? new Path2D(cornerBarStrokePathD(strokeShape, geometry.points, 4 / scale))
+          : null
+        const strokeTrace = (lineWidth: number) => {
+          if (strokePath) {
+            ctx.lineWidth = lineWidth
+            ctx.stroke(strokePath)
+            return
+          }
           ctx.beginPath()
           geometry.points.forEach((p, i) => {
             if (i === 0) ctx.moveTo(p.x, p.y)
             else ctx.lineTo(p.x, p.y)
           })
+          ctx.lineWidth = lineWidth
+          ctx.stroke()
         }
 
         if (isSelected) {
           ctx.save()
-          tracePath()
           ctx.strokeStyle = 'rgba(250, 204, 21, 0.34)'
-          ctx.lineWidth = 10 / scale
           ctx.lineCap = 'round'
-          ctx.stroke()
+          strokeTrace(10 / scale)
           ctx.restore()
         }
 
         ctx.save()
-        tracePath()
         ctx.strokeStyle = strokeHex
-        ctx.lineWidth = (isSelected ? 3 : 2) / scale
         ctx.lineCap = 'round'
         ctx.lineJoin = 'round'
-        ctx.stroke()
+        strokeTrace((isSelected ? 3 : 2) / scale)
         ctx.restore()
 
         const xs = geometry.points.map((p) => p.x)

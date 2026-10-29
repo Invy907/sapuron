@@ -32,7 +32,7 @@ export function measurementTypeLabel(value: MeasurementType | null | undefined):
 }
 
 /** 筋種類。UI ラベルは日本語、保存値は英字キー */
-export type CornerBarCategory = 'CORNER' | 'SOE' | 'SPECIAL_CORNER'
+export type CornerBarCategory = 'CORNER' | 'SOE' | 'SPECIAL_CORNER' | 'OPENING'
 
 export const CORNER_BAR_CATEGORIES: Array<{
   id: CornerBarCategory
@@ -41,6 +41,7 @@ export const CORNER_BAR_CATEGORIES: Array<{
   { id: 'CORNER', label: 'コーナー筋' },
   { id: 'SOE', label: '添え筋' },
   { id: 'SPECIAL_CORNER', label: '特殊コーナー筋' },
+  { id: 'OPENING', label: '開口補強筋' },
 ]
 
 /** 付加筋を新しく置くときの既定の色。筋種類ごとに見分けやすい色にする */
@@ -48,6 +49,15 @@ export const DEFAULT_CORNER_BAR_COLORS: Record<CornerBarCategory, SegmentColor> 
   CORNER: 'yellow',
   SOE: 'slate',
   SPECIAL_CORNER: 'fuchsia',
+  OPENING: 'teal',
+}
+
+/**
+ * 形状を選んで寸法を手で入れる筋種類（特殊コーナー筋・開口補強筋）。
+ * 反転・寸法の減り・結果ページの形状図などを同じ扱いにする
+ */
+export function isFreeShapeCategory(category: string): boolean {
+  return category === 'SPECIAL_CORNER' || category === 'OPENING'
 }
 
 const LEGACY_CORNER_BAR_CATEGORY_LABELS: Record<string, string> = {
@@ -84,6 +94,12 @@ export type CornerBarShapeType =
   | 'BENT'
   | 'L_LONG'
   | 'V_STEP3'
+  | 'OPENING_RING'
+  | 'OPENING_HOOK_L'
+  | 'OPENING_L'
+  | 'OPENING_CRANK'
+  | 'OPENING_SLANT'
+  | 'OPENING_BRACKET'
 
 /**
  * 形状定義。辺の向きだけを持ち、寸法は持たない。
@@ -103,6 +119,23 @@ export interface CornerBarShapeDef {
    * directions[1] は既定角度のときの向きで、実際の向きは resolveCornerBarShape で角度から作る
    */
   adjustableAngle?: boolean
+  /**
+   * 常に同じ寸法になる辺の組（例: 四角形の 4 辺）。組の先頭の辺だけを入力欄に出し、
+   * 寸法・寸法基準・図面上の長さは先頭の辺の値を組の全ての辺に入れる
+   */
+  linkedSegments?: number[][]
+  /** 番号の代わりに出す辺の名前（例: 'フ'）。無い辺は番号 */
+  segmentLabels?: Array<string | null>
+  /** 入力欄を並べる順（辺の番号）。無ければ辺の順 */
+  inputOrder?: number[]
+  /** ほかの辺に重なる辺。重なって見えなくならないよう、形の内側へ少しずらして描く */
+  lapSegments?: number[]
+  /** 180° フックとして半円で描く辺（形状の先頭か最後の辺） */
+  hookSegments?: number[]
+  /** 資料の図のように、太さのある鉄筋として二重線（両端を閉じた輪郭）で描く */
+  doubleLine?: boolean
+  /** 高さ(mm)を入れられる形状（段違い・斜め）。高さは図に書くだけで加工長には使わない */
+  hasHeight?: boolean
 }
 
 export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
@@ -273,7 +306,134 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
     ],
     defaultLengths: [100, 100, 100, 100, 100, 100, 100],
   },
+  /**
+   * 開口補強筋 A: 四角に 1 周させ、右上の角で両端を重ねる。
+   * 継手 a（上の辺の内側）→ 右の辺 → 下 → 左 → 上 → 継手 b（右の辺の外側）の順。
+   * 手書き図どおり、a と右の辺は内側にずらして描き、右上の角を 2 つに分ける。
+   * 4 辺は同じ寸法で「1」、a が「2」、b が「3」
+   */
+  {
+    id: 'OPENING_RING',
+    label: '四角',
+    directions: [
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+      { x: -1, y: 0 },
+      { x: 0, y: -1 },
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+    ],
+    defaultLengths: [150, 600, 600, 600, 600, 150],
+    linkedSegments: [[1, 2, 3, 4]],
+    segmentLabels: ['2', '1', '1', '1', '1', '3'],
+    inputOrder: [1, 0, 5],
+    lapSegments: [0, 1],
+  },
+  /** 開口補強筋 B: 縦の上端に 180° フックが付いた L 形（フック → 下 → 右） */
+  {
+    id: 'OPENING_HOOK_L',
+    label: 'L形（フック付）',
+    directions: [
+      { x: -1, y: 0 },
+      { x: 0, y: 1 },
+      { x: 1, y: 0 },
+    ],
+    defaultLengths: [120, 500, 400],
+    segmentLabels: ['フ', '1', '2'],
+    hookSegments: [0],
+  },
+  /** 開口補強筋 B のフックなし（下 → 右） */
+  {
+    id: 'OPENING_L',
+    label: 'L形（フックなし）',
+    directions: [
+      { x: 0, y: 1 },
+      { x: 1, y: 0 },
+    ],
+    defaultLengths: [500, 400],
+  },
+  /** 開口補強筋 C: 横 → 斜め下 → 横 */
+  {
+    id: 'OPENING_CRANK',
+    label: '段違い',
+    directions: [
+      { x: 1, y: 0 },
+      { x: Math.SQRT1_2, y: Math.SQRT1_2 },
+      { x: 1, y: 0 },
+    ],
+    defaultLengths: [400, 300, 400],
+    hasHeight: true,
+  },
+  /** 開口補強筋 D: 斜め下 → 横 */
+  {
+    id: 'OPENING_SLANT',
+    label: '斜め',
+    directions: [
+      { x: Math.SQRT1_2, y: Math.SQRT1_2 },
+      { x: 1, y: 0 },
+    ],
+    defaultLengths: [300, 500],
+    hasHeight: true,
+  },
+  /** 開口補強筋 E: 右が開いたコの字（左 → 下 → 右） */
+  {
+    id: 'OPENING_BRACKET',
+    label: 'コの字',
+    directions: [
+      { x: -1, y: 0 },
+      { x: 0, y: 1 },
+      { x: 1, y: 0 },
+    ],
+    defaultLengths: [300, 400, 300],
+    doubleLine: true,
+  },
 ]
+
+/** 辺 i と常に同じ寸法になる辺（自分を含む）。組が無ければ [i] */
+export function linkedSegmentIndices(shape: CornerBarShapeDef, index: number): number[] {
+  return shape.linkedSegments?.find((group) => group.includes(index)) ?? [index]
+}
+
+/** 辺 i の値を代表する辺（組の先頭）。入力欄はこの辺にだけ出す */
+export function linkedSegmentLeader(shape: CornerBarShapeDef, index: number): number {
+  return linkedSegmentIndices(shape, index)[0] ?? index
+}
+
+/** 辺の番号バッジ・入力欄に出す名前 */
+export function cornerBarSegmentLabel(shape: CornerBarShapeDef, index: number): string {
+  return shape.segmentLabels?.[index] ?? String(index + 1)
+}
+
+/** 組になった辺に、組の先頭の寸法・寸法基準・図面上の長さを入れる */
+function syncLinkedSegments(
+  shape: CornerBarShapeDef,
+  segments: CornerBarSegment[],
+): CornerBarSegment[] {
+  if (!shape.linkedSegments?.length) return segments
+  return segments.map((seg, i) => {
+    const leader = segments[linkedSegmentLeader(shape, i)]
+    if (!leader || leader === seg) return seg
+    const next: CornerBarSegment = {
+      ...seg,
+      lengthMm: leader.lengthMm,
+      measurementType: leader.measurementType,
+    }
+    if (leader.drawScale != null) next.drawScale = leader.drawScale
+    else delete next.drawScale
+    return next
+  })
+}
+
+/** 辺 i への変更を、組になった辺すべてに当てる */
+export function patchCornerBarSegment(
+  shape: CornerBarShapeDef,
+  segments: CornerBarSegment[],
+  index: number,
+  patch: Partial<CornerBarSegment>,
+): CornerBarSegment[] {
+  const targets = linkedSegmentIndices(shape, index)
+  return segments.map((seg, j) => (targets.includes(j) ? { ...seg, ...patch } : seg))
+}
 
 export function getCornerBarShape(shapeType: string): CornerBarShapeDef | null {
   return CORNER_BAR_SHAPES.find((s) => s.id === shapeType) ?? null
@@ -350,6 +510,22 @@ export const SPECIAL_CORNER_SHAPE_TYPES: CornerBarShapeType[] = [
   'STRAIGHT',
 ]
 
+/** 開口補強筋で選べる形状（資料の手書き図 A〜E。B はフックあり・なしの 2 つ） */
+export const OPENING_SHAPE_TYPES: CornerBarShapeType[] = [
+  'OPENING_RING',
+  'OPENING_HOOK_L',
+  'OPENING_L',
+  'OPENING_CRANK',
+  'OPENING_SLANT',
+  'OPENING_BRACKET',
+]
+
+/** パレットに並べる形状が決まっている筋種類 */
+const CATEGORY_PALETTE_SHAPE_TYPES: Partial<Record<CornerBarCategory, CornerBarShapeType[]>> = {
+  SPECIAL_CORNER: SPECIAL_CORNER_SHAPE_TYPES,
+  OPENING: OPENING_SHAPE_TYPES,
+}
+
 /** 上・下を選べる形状（特殊コーナー筋の L 形・ストレートだけ） */
 const LAYER_SHAPE_TYPES: readonly string[] = ['L_LONG', 'L', 'STRAIGHT']
 
@@ -375,8 +551,9 @@ export function getCornerBarShapesForCategory(
     const shape = getCornerBarShape(fixed)
     return shape ? [shape] : []
   }
-  if (category === 'SPECIAL_CORNER') {
-    return SPECIAL_CORNER_SHAPE_TYPES.map((id) => getCornerBarShape(id)).filter(
+  const palette = CATEGORY_PALETTE_SHAPE_TYPES[category]
+  if (palette) {
+    return palette.map((id) => getCornerBarShape(id)).filter(
       (shape): shape is CornerBarShapeDef => shape != null,
     )
   }
@@ -417,8 +594,9 @@ export function getCornerBarShapeOptionsForCategory(
       shape,
     }))
   }
-  if (category === 'SPECIAL_CORNER') {
-    return SPECIAL_CORNER_SHAPE_TYPES.flatMap((shapeType) => {
+  const palette = CATEGORY_PALETTE_SHAPE_TYPES[category]
+  if (palette) {
+    return palette.flatMap((shapeType) => {
       const shape = getCornerBarShape(shapeType)
       if (!shape) return []
       return [
@@ -447,12 +625,13 @@ export function resolveCategoryShape(
 ): CornerBarShapeType {
   const fixed = getFixedShapeForCategory(category)
   if (fixed) return fixed
-  // 特殊コーナー筋はパレットにある形状だけを持つ（ストレートなどが残らないように）
-  if (category === 'SPECIAL_CORNER') {
-    if (shapeType && SPECIAL_CORNER_SHAPE_TYPES.includes(shapeType as CornerBarShapeType)) {
+  // 特殊コーナー筋・開口補強筋はパレットにある形状だけを持つ（ストレートなどが残らないように）
+  const palette = CATEGORY_PALETTE_SHAPE_TYPES[category]
+  if (palette) {
+    if (shapeType && palette.includes(shapeType as CornerBarShapeType)) {
       return shapeType as CornerBarShapeType
     }
-    return SPECIAL_CORNER_SHAPE_TYPES[0] ?? 'V_OFFSET'
+    return palette[0] ?? 'V_OFFSET'
   }
   if (shapeType && getCornerBarShape(shapeType)) return shapeType as CornerBarShapeType
   return 'STRAIGHT'
@@ -486,11 +665,87 @@ export function hasStandardSegmentLengths(category: CornerBarCategory): boolean 
 }
 
 /** 筋種類・径に対応する標準寸法（mm）。未定義の径は null */
+/**
+ * 開口補強筋の形状ごとの標準（客先資料「開口補強筋」「スリーブ補強筋」の拾い出しによる）。
+ * 形状を選んだときはこの径で置き、径がこれと同じときだけ寸法・寸法基準・減り・高さを入れる
+ */
+interface OpeningStandard {
+  diameter: string
+  lengths: number[]
+  measurementTypes?: Array<MeasurementType | null>
+  deductionTotalMm?: number
+  heightMm?: number
+}
+
+/** 形状ごとに径別の標準。先頭が形状を選んだときの径 */
+const OPENING_STANDARDS: Partial<Record<CornerBarShapeType, OpeningStandard[]>> = {
+  // (350 × 4) + 100 + 100 − 80 = 1520。4 辺は外々
+  OPENING_RING: [
+    {
+      diameter: 'D13',
+      lengths: [100, 350, 350, 350, 350, 100],
+      measurementTypes: [null, 'SOTO_SOTO', 'SOTO_SOTO', 'SOTO_SOTO', 'SOTO_SOTO', null],
+      deductionTotalMm: 80,
+    },
+  ],
+  // 外周: 100 + 620 + 100 − 20 = 800（D13 は 620 が 380）。中央の辺は外々
+  OPENING_HOOK_L: [
+    {
+      diameter: 'D10',
+      lengths: [100, 620, 100],
+      measurementTypes: [null, 'SOTO_SOTO', null],
+      deductionTotalMm: 20,
+    },
+    {
+      diameter: 'D13',
+      lengths: [100, 380, 100],
+      measurementTypes: [null, 'SOTO_SOTO', null],
+      deductionTotalMm: 20,
+    },
+  ],
+  // 外周のフックなし（「なしの分」）。径ごとの寸法はフック付と同じ
+  OPENING_L: [
+    {
+      diameter: 'D10',
+      lengths: [620, 100],
+      measurementTypes: ['SOTO_SOTO', null],
+      deductionTotalMm: 20,
+    },
+    {
+      diameter: 'D13',
+      lengths: [380, 100],
+      measurementTypes: ['SOTO_SOTO', null],
+      deductionTotalMm: 20,
+    },
+  ],
+  // 150 + 450 + 650 = 1250、高さ 320
+  OPENING_CRANK: [{ diameter: 'D13', lengths: [150, 450, 650], heightMm: 320 }],
+  // 600 + 650 = 1250、高さ 425
+  OPENING_SLANT: [{ diameter: 'D13', lengths: [600, 650], heightMm: 425 }],
+  // 100 + 380 + 100 − 20 = 560
+  OPENING_BRACKET: [{ diameter: 'D13', lengths: [100, 380, 100], deductionTotalMm: 20 }],
+}
+
+/** 開口補強筋の形状の標準。diameter を渡したときはその径の標準、なければ先頭（形状を選んだときの径） */
+function openingStandardFor(
+  category: string,
+  shapeType: string,
+  diameter?: string,
+): OpeningStandard | null {
+  if (category !== 'OPENING') return null
+  const stds = OPENING_STANDARDS[shapeType as CornerBarShapeType]
+  if (!stds?.length) return null
+  if (diameter == null) return stds[0]
+  return stds.find((std) => std.diameter === diameter) ?? null
+}
+
 export function getStandardSegmentLengthsMm(
   category: CornerBarCategory,
   diameter: string,
   shapeType: CornerBarShapeType,
 ): number[] | null {
+  const opening = openingStandardFor(category, shapeType, diameter)
+  if (opening) return [...opening.lengths]
   if (category === 'SOE' && shapeType === 'STRAIGHT') {
     const len = SOE_STANDARD_LENGTHS_MM[diameter]
     return len != null ? [len] : null
@@ -563,9 +818,9 @@ export function clampCornerBarDrawScale(value: unknown): number {
   return Math.min(MAX_CORNER_BAR_DRAW_SCALE, Math.max(MIN_CORNER_BAR_DRAW_SCALE, n))
 }
 
-/** コーナー筋・特殊コーナー筋のみ辺ごとの図面長調整を行う */
+/** コーナー筋・特殊コーナー筋・開口補強筋のみ辺ごとの図面長調整を行う */
 export function isPerEdgeVisualDrawCategory(category: string): boolean {
-  return category === 'CORNER' || category === 'SPECIAL_CORNER'
+  return category === 'CORNER' || isFreeShapeCategory(category)
 }
 
 export function scaleCornerBarDrawScale(current: unknown, factor: number): number {
@@ -588,8 +843,11 @@ export function makeCornerBarSegments(shape: CornerBarShapeDef): CornerBarSegmen
 function defaultSegmentMeasurementType(
   shape: CornerBarShapeDef,
   category: CornerBarCategory,
+  diameter: string,
   index: number,
 ): MeasurementType | null {
+  const opening = openingStandardFor(category, shape.id, diameter)
+  if (opening) return opening.measurementTypes?.[index] ?? null
   if (category !== 'SPECIAL_CORNER' || shape.adjustableAngle) return null
   const last = shape.directions.length - 1
   return index > 0 && index < last ? 'SHIN_SHIN' : null
@@ -610,7 +868,7 @@ export function applyStandardSegmentLengths(
     diameter,
     shape.id as CornerBarShapeType,
   )
-  return shape.directions.map((_, i) => {
+  const segments = shape.directions.map((_, i) => {
     const prev = existing?.[i]
     return {
       id: prev?.id ?? `s${i + 1}`,
@@ -618,7 +876,7 @@ export function applyStandardSegmentLengths(
       // 既存の辺は未設定（null）も含めて保つ。手で外した芯々を戻さないため
       measurementType: prev
         ? prev.measurementType ?? null
-        : defaultSegmentMeasurementType(shape, category, i),
+        : defaultSegmentMeasurementType(shape, category, diameter, i),
       ...(Number.isFinite(Number(prev?.labelOffsetX))
         ? { labelOffsetX: Number(prev?.labelOffsetX) }
         : {}),
@@ -630,6 +888,7 @@ export function applyStandardSegmentLengths(
         : {}),
     }
   })
+  return syncLinkedSegments(shape, segments)
 }
 
 /**
@@ -641,7 +900,7 @@ export function normalizeCornerBarSegments(
   stored: unknown,
 ): CornerBarSegment[] {
   const list = Array.isArray(stored) ? stored : []
-  return shape.directions.map((_, i) => {
+  const segments = shape.directions.map((_, i) => {
     const raw = list[i] as Partial<CornerBarSegment> | undefined
     const lengthRaw = Number(raw?.lengthMm)
     const measurement = raw?.measurementType
@@ -665,6 +924,7 @@ export function normalizeCornerBarSegments(
         : {}),
     }
   })
+  return syncLinkedSegments(shape, segments)
 }
 
 /** 寸法が全部入っているか（一覧で未入力を目立たせるため） */
@@ -714,6 +974,11 @@ export interface CornerBarBarItem {
   deductionTotalMm?: number
   /** くの字: 辺のあいだの角度（度）。配置ごとに 1 つで、全ての bars に同じ値を書く */
   bendAngleDeg?: number
+  /**
+   * 段違い・斜め: 高さ(mm)。図に書くだけで加工長には使わない。
+   * 配置ごとに 1 つで、全ての bars に同じ値を書く。未入力は付けない
+   */
+  heightMm?: number
   /** 特殊コーナー筋: 上筋・下筋のどちらか。無い（なし）ときは付けない */
   layer?: CornerBarLayer
   /**
@@ -863,6 +1128,39 @@ function withBendAngle(
   return shape.adjustableAngle ? { bendAngleDeg: clampCornerBarBendAngle(angleDeg) } : {}
 }
 
+/** 高さ(mm) を 1 以上の整数に揃える。未入力・不正は null */
+export function normalizeCornerBarHeightMm(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Math.round(Number(value))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** 高さを入れられる形状のときだけ高さを引き継ぐ（ほかの形状に変えたら外す） */
+function withHeight(shape: CornerBarShapeDef, heightMm: unknown): Pick<CornerBarBarItem, 'heightMm'> {
+  const n = shape.hasHeight ? normalizeCornerBarHeightMm(heightMm) : null
+  return n != null ? { heightMm: n } : {}
+}
+
+/** 配置の高さ（先頭の鉄筋を代表にする）。未入力は null */
+export function cornerBarHeightMm(bars: unknown): number | null {
+  const first = Array.isArray(bars) ? (bars[0] as { heightMm?: unknown } | undefined) : undefined
+  return normalizeCornerBarHeightMm(first?.heightMm)
+}
+
+/** 高さを配置の全ての鉄筋に書く。null のときは外す */
+export function setCornerBarHeightMm(
+  bars: CornerBarBarItem[],
+  heightMm: number | null,
+): CornerBarBarItem[] {
+  const n = normalizeCornerBarHeightMm(heightMm)
+  return bars.map((bar) => {
+    const next: CornerBarBarItem = { ...bar }
+    if (n != null) next.heightMm = n
+    else delete next.heightMm
+    return next
+  })
+}
+
 export const DEFAULT_CORNER_BAR_DIAMETER = 'D13'
 
 function normalizeBarQuantity(value: unknown): number {
@@ -896,19 +1194,23 @@ export function makeCornerBarBar(
       | 'measurementDeductionsMm'
       | 'deductionTotalMm'
       | 'bendAngleDeg'
+      | 'heightMm'
       | 'layer'
       | 'calloutOffset'
     >
   >,
 ): CornerBarBarItem {
+  // 開口補強筋は資料の減り・高さを、まだ入っていないときだけ入れる
+  const opening = openingStandardFor(category, shape.id, barType)
   return {
     id: base?.id ?? 'b1',
     barType,
     quantity: normalizeBarQuantity(base?.quantity),
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
     ...withDeductions(base?.measurementDeductionsMm),
-    ...withDeductionTotal(base?.deductionTotalMm),
+    ...withDeductionTotal(base?.deductionTotalMm ?? opening?.deductionTotalMm),
     ...withBendAngle(shape, base?.bendAngleDeg),
+    ...withHeight(shape, base?.heightMm ?? opening?.heightMm),
     // 上・下は特殊コーナー筋の L 形・ストレートだけ。ほかの形状・筋種類に変えたら外す
     ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(base?.layer) : {}),
     ...withCalloutOffset(base?.calloutOffset),
@@ -934,17 +1236,21 @@ export function changeCornerBarBarDiameter(
     barType,
     shape.id as CornerBarShapeType,
   )
-  const clearWhenNoStandard = hasStandardSegmentLengths(category)
+  // 開口補強筋の標準は資料の径だけのもの。ほかの径に変えたら資料の寸法・寸法基準を残さない
+  const openingShape = openingStandardFor(category, shape.id) != null
+  const clearWhenNoStandard = hasStandardSegmentLengths(category) || openingShape
   return {
     id: bar.id,
     barType,
     quantity: normalizeBarQuantity(bar.quantity),
-    segments: shape.directions.map((_, i) => {
+    segments: syncLinkedSegments(shape, shape.directions.map((_, i) => {
       const prev = bar.segments[i]
       return {
         id: prev?.id ?? `s${i + 1}`,
         lengthMm: standard?.[i] ?? (clearWhenNoStandard ? null : prev?.lengthMm ?? null),
-        measurementType: prev?.measurementType ?? null,
+        measurementType: openingShape
+          ? defaultSegmentMeasurementType(shape, category, barType, i)
+          : prev?.measurementType ?? null,
         ...(Number.isFinite(Number(prev?.labelOffsetX))
           ? { labelOffsetX: Number(prev?.labelOffsetX) }
           : {}),
@@ -952,10 +1258,11 @@ export function changeCornerBarBarDiameter(
           ? { labelOffsetY: Number(prev?.labelOffsetY) }
           : {}),
       }
-    }),
+    })),
     ...withDeductions(bar.measurementDeductionsMm),
     ...withDeductionTotal(bar.deductionTotalMm),
     ...withBendAngle(shape, bar.bendAngleDeg),
+    ...withHeight(shape, bar.heightMm),
     ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(bar.layer) : {}),
     ...withCalloutOffset(bar.calloutOffset),
   }
@@ -984,6 +1291,7 @@ export function normalizeCornerBarBars(
         ...withDeductions(normalizeMeasurementDeductions(rec.measurementDeductionsMm)),
         ...withDeductionTotal(rec.deductionTotalMm),
         ...withBendAngle(shape, rec.bendAngleDeg),
+        ...withHeight(shape, rec.heightMm),
         ...withLayer(rec.layer),
         ...withCalloutOffset(rec.calloutOffset),
       }
@@ -1025,6 +1333,7 @@ export function remapCornerBarBarsToShape(
       measurementDeductionsMm: bar.measurementDeductionsMm,
       deductionTotalMm: bar.deductionTotalMm,
       bendAngleDeg: bar.bendAngleDeg,
+      heightMm: bar.heightMm,
       layer: bar.layer,
       calloutOffset: bar.calloutOffset,
     }),
@@ -1112,7 +1421,7 @@ export function getDefaultCornerBarSizePxForPlacement(
   category: CornerBarCategory = 'CORNER',
 ): number {
   if (category === 'SOE') return DEFAULT_SOE_PLACEMENT_SIZE_PX
-  if (category === 'SPECIAL_CORNER') return DEFAULT_SPECIAL_CORNER_PLACEMENT_SIZE_PX
+  if (isFreeShapeCategory(category)) return DEFAULT_SPECIAL_CORNER_PLACEMENT_SIZE_PX
   return DEFAULT_CORNER_BAR_PLACEMENT_SIZE_PX
 }
 
@@ -1535,7 +1844,9 @@ export function cornerBarThumbPoints(
       applyCornerBarOrientation(p, rotationSteps, flipped),
     ),
   }
-  const b = cornerBarGeometryBounds(rotated)
+  const b = cornerBarGeometryBounds({
+    points: [...rotated.points, ...hookApexPoints(shape, rotated.points)],
+  })
   const w = Math.max(1, b.maxX - b.minX)
   const h = Math.max(1, b.maxY - b.minY)
   const scale = Math.min((boxW - pad * 2) / w, (boxH - pad * 2) / h)
@@ -1581,6 +1892,206 @@ export function cornerBarSegmentLabelAnchors(
   })
 }
 
+type Point2 = { x: number; y: number }
+
+/**
+ * フックの半円がふくらむ向き（単位ベクトル）。
+ * 先頭の辺のフックは次の辺と反対へ、最後の辺のフックは前の辺の進む向きへふくらむ
+ */
+function hookBulgeDirection(points: Point2[], index: number): Point2 {
+  const p1 = points[index]!
+  const p2 = points[index + 1]!
+  const neighbor =
+    index === 0
+      ? points[index + 2] && { from: points[index + 2]!, to: p2 }
+      : { from: points[index - 1]!, to: p1 }
+  const x = neighbor ? neighbor.to.x - neighbor.from.x : -(p2.y - p1.y)
+  const y = neighbor ? neighbor.to.y - neighbor.from.y : p2.x - p1.x
+  const len = Math.hypot(x, y) || 1
+  return { x: x / len, y: y / len }
+}
+
+/** フックの半円の頂点。図を箱に収めるときに半円がはみ出さないよう、外形に含める */
+function hookApexPoints(shape: CornerBarShapeDef, points: Point2[]): Point2[] {
+  return (shape.hookSegments ?? []).flatMap((i) => {
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    if (!p1 || !p2) return []
+    const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2
+    const bulge = hookBulgeDirection(points, i)
+    return [{ x: (p1.x + p2.x) / 2 + bulge.x * r, y: (p1.y + p2.y) / 2 + bulge.y * r }]
+  })
+}
+
+/** 描くときの辺 1 本。フックは半円（sweep は SVG の円弧の向き）、継手は内側へずらした線 */
+export type CornerBarStrokePiece =
+  | { kind: 'line'; index: number; p1: Point2; p2: Point2 }
+  | { kind: 'arc'; index: number; p1: Point2; p2: Point2; radius: number; sweep: 0 | 1 }
+
+/** 2 本の直線（点と向き）の交点。平行なら null */
+function intersectLines(a: Point2, da: Point2, b: Point2, db: Point2): Point2 | null {
+  const cross = da.x * db.y - da.y * db.x
+  if (Math.abs(cross) < 1e-9) return null
+  const t = ((b.x - a.x) * db.y - (b.y - a.y) * db.x) / cross
+  return { x: a.x + da.x * t, y: a.y + da.y * t }
+}
+
+/**
+ * 頂点列を、描くための辺に分ける。
+ * lapSegments の辺は形の中心側へ lapInset だけずらし、隣の辺との角はずらした線どうしの交点にする
+ * （四角の右上で、継手の側の角が内側にずれて 2 つの角に分かれる）。
+ * フックの辺は隣の辺と反対側へふくらむ半円にする。
+ */
+export function cornerBarStrokePieces(
+  shape: CornerBarShapeDef,
+  points: Point2[],
+  lapInset: number,
+): CornerBarStrokePiece[] {
+  const xs = points.map((p) => p.x)
+  const ys = points.map((p) => p.y)
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2
+  const segCount = points.length - 1
+
+  // 辺ごとのずらす量（継手の辺だけ内向き）
+  const offsets: Point2[] = []
+  for (let i = 0; i < segCount; i += 1) {
+    const p1 = points[i]!
+    const p2 = points[i + 1]!
+    const dx = p2.x - p1.x
+    const dy = p2.y - p1.y
+    const len = Math.hypot(dx, dy)
+    if (!shape.lapSegments?.includes(i) || len <= 0 || lapInset <= 0) {
+      offsets.push({ x: 0, y: 0 })
+      continue
+    }
+    let nx = -dy / len
+    let ny = dx / len
+    const mx = (p1.x + p2.x) / 2
+    const my = (p1.y + p2.y) / 2
+    if (nx * (cx - mx) + ny * (cy - my) < 0) {
+      nx = -nx
+      ny = -ny
+    }
+    offsets.push({ x: nx * lapInset, y: ny * lapInset })
+  }
+
+  // 頂点 j は辺 j-1 と辺 j の境目。ずらし方が違えば、ずらした 2 本の線の交点にする
+  const vertexOf = (j: number): Point2 => {
+    const p = points[j]!
+    const before = offsets[j - 1]
+    const after = offsets[j]
+    if (!before || !after) {
+      const o = before ?? after ?? { x: 0, y: 0 }
+      return { x: p.x + o.x, y: p.y + o.y }
+    }
+    if (before.x === after.x && before.y === after.y) {
+      return { x: p.x + before.x, y: p.y + before.y }
+    }
+    const prev = points[j - 1]!
+    const next = points[j + 1]!
+    const hit = intersectLines(
+      { x: p.x + before.x, y: p.y + before.y },
+      { x: p.x - prev.x, y: p.y - prev.y },
+      { x: p.x + after.x, y: p.y + after.y },
+      { x: next.x - p.x, y: next.y - p.y },
+    )
+    return hit ?? { x: p.x + after.x, y: p.y + after.y }
+  }
+  const drawn = points.map((_, j) => vertexOf(j))
+
+  const pieces: CornerBarStrokePiece[] = []
+  for (let i = 0; i < segCount; i += 1) {
+    const p1 = drawn[i]!
+    const p2 = drawn[i + 1]!
+    const dx = p2.x - p1.x
+    const dy = p2.y - p1.y
+    const len = Math.hypot(dx, dy)
+    if (shape.hookSegments?.includes(i) && len > 0) {
+      const bulge = hookBulgeDirection(points, i)
+      // y 下向きの座標で sweep=1 の円弧は、進む向きの左手側へふくらむ
+      const sweep = dy * bulge.x - dx * bulge.y > 0 ? 1 : 0
+      pieces.push({ kind: 'arc', index: i, p1, p2, radius: len / 2, sweep })
+      continue
+    }
+    pieces.push({ kind: 'line', index: i, p1, p2 })
+  }
+  return pieces
+}
+
+/** 辺 1 本ぶんの SVG path（続けて描くときは moveTo を省けるよう start を分ける） */
+function strokePieceCommand(piece: CornerBarStrokePiece): string {
+  const { p2 } = piece
+  if (piece.kind === 'arc') {
+    const r = piece.radius.toFixed(1)
+    return `A${r} ${r} 0 0 ${piece.sweep} ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`
+  }
+  return `L${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`
+}
+
+export function cornerBarStrokePieceD(piece: CornerBarStrokePiece): string {
+  return `M${piece.p1.x.toFixed(1)} ${piece.p1.y.toFixed(1)} ${strokePieceCommand(piece)}`
+}
+
+/**
+ * 折れ線の片側へ halfWidth だけずらした線。曲げの所は両側の辺の交点（留め継ぎ）にする。
+ * side は +1 / -1 でずらす側を選ぶ
+ */
+function offsetPolyline(points: Point2[], halfWidth: number, side: 1 | -1): Point2[] {
+  const normals = points.slice(0, -1).map((p1, i) => {
+    const p2 = points[i + 1]!
+    const len = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1
+    return { x: (-(p2.y - p1.y) / len) * side, y: ((p2.x - p1.x) / len) * side }
+  })
+  return points.map((p, i) => {
+    const prev = normals[i - 1]
+    const next = normals[i]
+    const a = prev ?? next!
+    const b = next ?? prev!
+    const mx = a.x + b.x
+    const my = a.y + b.y
+    const mLen = Math.hypot(mx, my)
+    if (mLen < 1e-6) return { x: p.x + a.x * halfWidth, y: p.y + a.y * halfWidth }
+    // 留め継ぎの長さは halfWidth / cos(曲げ角の半分)
+    const ux = mx / mLen
+    const uy = my / mLen
+    const k = halfWidth / Math.max(0.2, ux * a.x + uy * a.y)
+    return { x: p.x + ux * k, y: p.y + uy * k }
+  })
+}
+
+/** 二重線で描く形状の輪郭。片側の線 → 端を閉じる → 反対側の線を戻る */
+function doubleLineOutlineD(points: Point2[], halfWidth: number): string {
+  if (points.length < 2 || halfWidth <= 0) {
+    return points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')
+  }
+  const outline = [
+    ...offsetPolyline(points, halfWidth, 1),
+    ...offsetPolyline(points, halfWidth, -1).reverse(),
+  ]
+  return `${outline
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
+    .join(' ')} Z`
+}
+
+/** 形状全体の SVG path。キャンバスでも Path2D に渡して同じ形で描く */
+export function cornerBarStrokePathD(
+  shape: CornerBarShapeDef,
+  points: Point2[],
+  lapInset: number,
+): string {
+  if (shape.doubleLine) return doubleLineOutlineD(points, lapInset)
+  const parts: string[] = []
+  let last: Point2 | null = null
+  for (const piece of cornerBarStrokePieces(shape, points, lapInset)) {
+    const joined =
+      last && Math.abs(last.x - piece.p1.x) < 1e-6 && Math.abs(last.y - piece.p1.y) < 1e-6
+    parts.push(joined ? strokePieceCommand(piece) : cornerBarStrokePieceD(piece))
+    last = piece.p2
+  }
+  return parts.join(' ')
+}
+
 /** パレットのサムネイル用 SVG path */
 export function cornerBarThumbPath(
   shape: CornerBarShapeDef,
@@ -1590,9 +2101,8 @@ export function cornerBarThumbPath(
   rotationSteps = 0,
   flipped = false,
 ): string {
-  return cornerBarThumbPoints(shape, boxW, boxH, pad, rotationSteps, flipped)
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
-    .join(' ')
+  const points = cornerBarThumbPoints(shape, boxW, boxH, pad, rotationSteps, flipped)
+  return cornerBarStrokePathD(shape, points, 3)
 }
 
 // --- 印刷要約（パネル下部・印刷プレビューで共有） -------------------------
@@ -1685,7 +2195,7 @@ export interface CornerBarPlacementDraft {
   bars: CornerBarBarItem[]
   /** 0/1/2/3 = 0/90/180/270 度 */
   rotation: number
-  /** 特殊コーナー筋のみ: 左右反転 */
+  /** 特殊コーナー筋・開口補強筋のみ: 左右反転 */
   flipped?: boolean
 }
 
@@ -1695,15 +2205,24 @@ export function makeCornerBarDraft(
 ): CornerBarPlacementDraft {
   const category = base?.category ?? 'CORNER'
   const shape = getCornerBarShape(shapeType)
-  // 形状を変えたときは径と本数だけ引き継ぎ、辺の寸法は入れ直す
+  // 形状を変えたときは径と本数だけ引き継ぎ、辺の寸法は入れ直す。
+  // 開口補強筋は形状ごとに資料の径・寸法があるので、形状を変えたら標準の 1 件から始める
   const sameShape = base?.shapeType === shapeType
+  const opening = openingStandardFor(category, shapeType)
+  const fresh = () =>
+    shape
+      ? [
+          makeCornerBarBar(shape, category, opening?.diameter ?? DEFAULT_CORNER_BAR_DIAMETER, {
+            id: 'b1',
+          }),
+        ]
+      : []
   const bars = !shape
     ? base?.bars ?? []
-    : base?.bars?.length
+    : base?.bars?.length && (sameShape || !opening)
       ? remapCornerBarBarsToShape(shape, category, base.bars, sameShape)
-      : [makeCornerBarBar(shape, category, DEFAULT_CORNER_BAR_DIAMETER, { id: 'b1' })]
-  const flipped =
-    category === 'SPECIAL_CORNER' ? normalizeCornerBarFlip(base?.flipped) : false
+      : fresh()
+  const flipped = isFreeShapeCategory(category) ? normalizeCornerBarFlip(base?.flipped) : false
   return {
     category,
     shapeType,
@@ -1721,8 +2240,8 @@ export function defaultPlacementDraftForCategory(
   if (category === 'SOE') {
     return makeCornerBarDraft('STRAIGHT', { category, rotation })
   }
-  if (category === 'SPECIAL_CORNER') {
-    return makeCornerBarDraft(resolveCategoryShape('SPECIAL_CORNER'), {
+  if (isFreeShapeCategory(category)) {
+    return makeCornerBarDraft(resolveCategoryShape(category), {
       category,
       rotation,
     })

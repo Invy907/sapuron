@@ -941,12 +941,16 @@ export function OptimizeClient({
   // 大きさ・位置を別々に変えられるようにする（行 key は同じなので手入力はそのまま効く）
   const cornerBarsCard = renderCornerBarsCard(cornerBars)
   const plainCornerBarsCard = renderCornerBarsCard(
-    cornerBars.filter((cb) => cb.category !== 'SPECIAL_CORNER'),
+    cornerBars.filter((cb) => cb.category !== 'SPECIAL_CORNER' && cb.category !== 'OPENING'),
     'corner-bars',
   )
   const specialCornerBarsCard = renderCornerBarsCard(
     cornerBars.filter((cb) => cb.category === 'SPECIAL_CORNER'),
     'special-corner-bars',
+  )
+  const openingBarsCard = renderCornerBarsCard(
+    cornerBars.filter((cb) => cb.category === 'OPENING'),
+    'opening-bars',
   )
 
   const printCards: PrintCard[] = []
@@ -961,6 +965,9 @@ export function OptimizeClient({
       label: '特殊コーナー筋',
       node: specialCornerBarsCard,
     })
+  }
+  if (openingBarsCard) {
+    printCards.push({ id: 'opening-bars', label: '開口補強筋', node: openingBarsCard })
   }
   if (customerMemo.trim()) {
     printCards.push({

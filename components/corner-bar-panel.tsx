@@ -24,10 +24,18 @@ import {
   cornerBarRotationLabel,
   normalizeCornerBarFlip,
   toggleCornerBarFlip,
+  cornerBarSegmentLabel,
   cornerBarSegmentLabelAnchors,
   cornerBarSegmentSumMm,
+  cornerBarStrokePathD,
+  cornerBarStrokePieceD,
+  cornerBarStrokePieces,
   cornerBarThumbPath,
   cornerBarThumbPoints,
+  isFreeShapeCategory,
+  linkedSegmentIndices,
+  linkedSegmentLeader,
+  patchCornerBarSegment,
   changeCornerBarBarDiameter,
   DEFAULT_CORNER_BAR_COLORS,
   DEFAULT_CORNER_BAR_DIAMETER,
@@ -50,6 +58,8 @@ import {
   resolveCornerBarShape,
   setCornerBarBendAngle,
   setCornerBarDeductionTotal,
+  setCornerBarHeightMm,
+  cornerBarHeightMm,
   MAX_CORNER_BAR_BEND_ANGLE_DEG,
   MIN_CORNER_BAR_BEND_ANGLE_DEG,
   clampCornerBarBendAngle,
@@ -190,19 +200,23 @@ export function CornerBarPanel({
   }
 
   function adjustSelectedDrawScale(factor: number) {
-    if (!selected || activeSegIndex == null || !isPerEdgeVisualDrawCategory(selected.category)) {
+    if (
+      !selected ||
+      !selectedShape ||
+      activeSegIndex == null ||
+      !isPerEdgeVisualDrawCategory(selected.category)
+    ) {
       return
     }
     const segIndex = activeSegIndex
+    const shape = selectedShape
     commitSelectedBars(
       (bars) =>
         bars.map((bar) => ({
           ...bar,
-          segments: bar.segments.map((seg, j) =>
-            j === segIndex
-              ? { ...seg, drawScale: scaleCornerBarDrawScale(seg.drawScale, factor) }
-              : seg,
-          ),
+          segments: patchCornerBarSegment(shape, bar.segments, segIndex, {
+            drawScale: scaleCornerBarDrawScale(bar.segments[segIndex]?.drawScale, factor),
+          }),
         })),
       // 選んだ辺の付け根を止め、図面上の他の部分がずれないようにする
       { keepVertexIndex: cornerBarFixedVertexForEdge(segIndex) },
@@ -243,7 +257,7 @@ export function CornerBarPanel({
     selected &&
     activeSegIndex != null &&
     isPerEdgeVisualDrawCategory(selected.category)
-      ? `辺${activeSegIndex + 1}を選択中: 図面上の長さのみ変更（mm は変わりません）`
+      ? `辺${selectedShape ? cornerBarSegmentLabel(selectedShape, activeSegIndex) : activeSegIndex + 1}を選択中: 図面上の長さのみ変更（mm は変わりません）`
       : '図面上の全体の大きさを変更'
 
   function handleSelectedCategoryChange(category: CornerBarCategory) {
@@ -266,7 +280,7 @@ export function CornerBarPanel({
       shape_type: shapeType,
       bars,
       ...cornerBarLegacyFieldsFromBars(bars),
-      flipped: category === 'SPECIAL_CORNER' ? normalizeCornerBarFlip(selected.flipped) : false,
+      flipped: isFreeShapeCategory(category) ? normalizeCornerBarFlip(selected.flipped) : false,
     }
     onUpdate(selected.id, updates)
   }
@@ -301,13 +315,12 @@ export function CornerBarPanel({
     segIndex: number,
     patch: Partial<CornerBarSegment>,
   ) {
+    if (!selectedShape) return
+    const shape = selectedShape
     commitSelectedBars((bars) =>
       bars.map((bar, i) =>
         i === barIndex
-          ? {
-              ...bar,
-              segments: bar.segments.map((s, j) => (j === segIndex ? { ...s, ...patch } : s)),
-            }
+          ? { ...bar, segments: patchCornerBarSegment(shape, bar.segments, segIndex, patch) }
           : bar,
       ),
     )
@@ -324,8 +337,13 @@ export function CornerBarPanel({
         measurementDeductionsMm: bars[0]?.measurementDeductionsMm,
         deductionTotalMm: bars[0]?.deductionTotalMm,
         bendAngleDeg: bars[0]?.bendAngleDeg,
+        heightMm: bars[0]?.heightMm,
       }),
     ])
+  }
+
+  function handleSelectedHeightChange(heightMm: number | null) {
+    commitSelectedBars((bars) => setCornerBarHeightMm(bars, heightMm))
   }
 
   function handleSelectedDeductionsChange(totalMm: number) {
@@ -389,14 +407,12 @@ export function CornerBarPanel({
     segIndex: number,
     patch: Partial<CornerBarSegment>,
   ) {
-    if (!placementDraft) return
+    if (!placementDraft || !placementShape) return
+    const shape = placementShape
     commitPlacementBars(
       placementDraft.bars.map((bar, i) =>
         i === barIndex
-          ? {
-              ...bar,
-              segments: bar.segments.map((s, j) => (j === segIndex ? { ...s, ...patch } : s)),
-            }
+          ? { ...bar, segments: patchCornerBarSegment(shape, bar.segments, segIndex, patch) }
           : bar,
       ),
     )
@@ -412,8 +428,14 @@ export function CornerBarPanel({
         measurementDeductionsMm: placementDraft.bars[0]?.measurementDeductionsMm,
         deductionTotalMm: placementDraft.bars[0]?.deductionTotalMm,
         bendAngleDeg: placementDraft.bars[0]?.bendAngleDeg,
+        heightMm: placementDraft.bars[0]?.heightMm,
       }),
     ])
+  }
+
+  function handlePlacementHeightChange(heightMm: number | null) {
+    if (!placementDraft) return
+    commitPlacementBars(setCornerBarHeightMm(placementDraft.bars, heightMm))
   }
 
   function handlePlacementDeductionsChange(totalMm: number) {
@@ -507,7 +529,7 @@ export function CornerBarPanel({
                   ↻ {cornerBarRotationLabel(selected.rotation)}
                 </button>
               </div>
-              {selected.category === 'SPECIAL_CORNER' ? (
+              {isFreeShapeCategory(selected.category) ? (
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] text-muted">反転</span>
                   <button
@@ -557,6 +579,8 @@ export function CornerBarPanel({
               }
               activeIndex={activeSegIndex}
               onActiveIndexChange={setActiveSegIndex}
+              heightMm={cornerBarHeightMm(selectedBars)}
+              heightInputId="corner-bar-selected-height"
             />
 
             {selectedShape.adjustableAngle ? (
@@ -567,8 +591,17 @@ export function CornerBarPanel({
               />
             ) : null}
 
+            {selectedShape.hasHeight ? (
+              <HeightField
+                id="corner-bar-selected-height"
+                heightMm={cornerBarHeightMm(selectedBars)}
+                onChange={handleSelectedHeightChange}
+              />
+            ) : null}
+
             {/* 径ごとの本数と辺の寸法。同じ位置でも径によって実寸が違うため個別に持つ */}
             <CornerBarBarsField
+              shape={selectedShape}
               category={selected.category as CornerBarCategory}
               showLayer={cornerBarSupportsLayer(selected.category, selected.shape_type)}
               bars={selectedBars}
@@ -586,7 +619,7 @@ export function CornerBarPanel({
               <p className="text-[10px] text-amber-700">寸法が未入力の辺があります。</p>
             )}
 
-            {selected.category === 'SPECIAL_CORNER' ? (
+            {isFreeShapeCategory(selected.category) ? (
               <MeasurementDeductionsField
                 bars={selectedBars}
                 onChange={handleSelectedDeductionsChange}
@@ -702,7 +735,7 @@ export function CornerBarPanel({
                   ↻ {cornerBarRotationLabel(placementDraft?.rotation ?? 0)}
                 </button>
               </div>
-              {placementCategory === 'SPECIAL_CORNER' ? (
+              {isFreeShapeCategory(placementCategory) ? (
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] text-muted">反転</span>
                   <button
@@ -731,6 +764,8 @@ export function CornerBarPanel({
                 flipped={normalizeCornerBarFlip(placementDraft.flipped)}
                 activeIndex={activeSegIndex}
                 onActiveIndexChange={setActiveSegIndex}
+                heightMm={cornerBarHeightMm(placementDraft.bars)}
+                heightInputId="corner-bar-placement-height"
               />
             ) : null}
 
@@ -741,8 +776,17 @@ export function CornerBarPanel({
               />
             ) : null}
 
+            {placementShape?.hasHeight && placementDraft ? (
+              <HeightField
+                id="corner-bar-placement-height"
+                heightMm={cornerBarHeightMm(placementDraft.bars)}
+                onChange={handlePlacementHeightChange}
+              />
+            ) : null}
+
             {/* 径と本数に加えて辺の寸法もここで決める。配置後も右パネルで直せる */}
             <CornerBarBarsField
+              shape={placementShape}
               category={placementCategory}
               showLayer={cornerBarSupportsLayer(placementCategory, placementDraft?.shapeType ?? '')}
               bars={placementBars}
@@ -767,7 +811,7 @@ export function CornerBarPanel({
               )
             )}
 
-            {placementCategory === 'SPECIAL_CORNER' && placementDraft ? (
+            {isFreeShapeCategory(placementCategory) && placementDraft ? (
               <MeasurementDeductionsField
                 bars={placementDraft.bars}
                 onChange={handlePlacementDeductionsChange}
@@ -847,6 +891,7 @@ export function CornerBarPanel({
  * 配置設定では形状未選択のあいだ disabled になる。
  */
 function CornerBarBarsField({
+  shape,
   category,
   showLayer,
   bars,
@@ -881,7 +926,11 @@ function CornerBarBarsField({
   ) => void
   onAdd: () => void
   onRemove: (index: number) => void
+  /** 辺の名前と、同じ寸法になる辺の組を知るため。形状未選択のときは null */
+  shape: CornerBarShapeDef | null
 }) {
+  const activeLeader =
+    activeSegIndex != null && shape ? linkedSegmentLeader(shape, activeSegIndex) : activeSegIndex
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -959,8 +1008,14 @@ function CornerBarBarsField({
 
           {showSegments && onChangeSegment && bar.segments.length > 0 ? (
             <div className="space-y-1 border-t border-border pt-1.5">
-              {bar.segments.map((seg, segIdx) => {
-                const isActiveSeg = segIdx === activeSegIndex
+              {(shape?.inputOrder ?? bar.segments.map((_, i) => i)).map((segIdx) => {
+                const seg = bar.segments[segIdx]
+                if (!seg) return null
+                // 組になった辺（四角の 4 辺など）は先頭の辺の欄だけで入力する
+                if (shape && linkedSegmentLeader(shape, segIdx) !== segIdx) return null
+                const isActiveSeg = segIdx === activeLeader
+                const segLabel = shape ? cornerBarSegmentLabel(shape, segIdx) : String(segIdx + 1)
+                const linkedCount = shape ? linkedSegmentIndices(shape, segIdx).length : 1
                 return (
                 <div
                   key={seg.id}
@@ -970,8 +1025,10 @@ function CornerBarBarsField({
                 >
                   <button
                     type="button"
-                    aria-label={`辺${segIdx + 1}を選択`}
-                    title={`辺${segIdx + 1}を選択（大きさ±で図面上の長さを変更）`}
+                    aria-label={`辺${segLabel}を選択`}
+                    title={`辺${segLabel}を選択（大きさ±で図面上の長さを変更）${
+                      linkedCount > 1 ? `。${linkedCount} 辺とも同じ寸法` : ''
+                    }`}
                     onClick={() =>
                       onActiveSegIndexChange(isActiveSeg ? null : segIdx)
                     }
@@ -981,7 +1038,7 @@ function CornerBarBarsField({
                         : 'border-slate-400 bg-white text-slate-600 hover:border-primary/60'
                     }`}
                   >
-                    {segIdx + 1}
+                    {segLabel}
                   </button>
                   <input
                     type="number"
@@ -1099,6 +1156,37 @@ function BendAngleField({
   )
 }
 
+/** 段違い・斜めの高さ(mm)。図に書くだけで加工長には使わない */
+function HeightField({
+  id,
+  heightMm,
+  onChange,
+}: {
+  id: string
+  heightMm: number | null
+  onChange: (heightMm: number | null) => void
+}) {
+  return (
+    <label className="flex items-center gap-1.5 text-[10px] text-muted">
+      <span className="shrink-0 font-medium text-foreground">高さ</span>
+      <input
+        id={id}
+        type="number"
+        min={1}
+        placeholder="mm"
+        value={heightMm ?? ''}
+        onChange={(e) => {
+          const n = Number.parseInt(e.target.value, 10)
+          onChange(Number.isFinite(n) && n > 0 ? n : null)
+        }}
+        aria-label="高さ(mm)"
+        className="w-20 rounded border border-border bg-white px-1 py-1 text-xs text-foreground outline-none [appearance:textfield] focus:border-primary [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      />
+      <span className="shrink-0">mm（加工長には入りません）</span>
+    </label>
+  )
+}
+
 /**
  * 特殊コーナー筋の加工長で、辺の合計から引く長さ（全体で何 mm 引くか）を入れる欄。
  * 配置ごとに 1 つ（全ての鉄筋に同じ値を書く）。下に径ごとの加工長を出して確かめられるようにする。
@@ -1159,6 +1247,10 @@ const FIG_H = 200
 const FIG_PAD = 24
 const FIG_LABEL_GAP = 13
 const FIG_BADGE_R = 8
+/** 継手の辺（四角の a・b）を元の辺から内側へずらす幅 */
+const FIG_LAP_INSET = 6
+/** 高さの寸法線と数字のために右に空ける幅 */
+const FIG_HEIGHT_ROOM = 30
 
 /**
  * 辺の番号を書き込んだ形状図。「辺1」がどの辺なのかを目で確かめるためのもの。
@@ -1173,6 +1265,8 @@ function CornerBarSegmentFigure({
   segments,
   activeIndex,
   onActiveIndexChange,
+  heightMm,
+  heightInputId,
 }: {
   shape: CornerBarShapeDef
   rotation: number
@@ -1180,10 +1274,15 @@ function CornerBarSegmentFigure({
   segments?: CornerBarSegment[]
   activeIndex: number | null
   onActiveIndexChange: (index: number | null) => void
+  /** 高さを入れられる形状のときの入力値（未入力は null） */
+  heightMm?: number | null
+  /** 高さの寸法線を押したときにフォーカスする入力欄 */
+  heightInputId?: string
 }) {
+  // 高さの寸法線と数字を形の右に置くので、その分だけ形を左に寄せる
   const points = cornerBarThumbPoints(
     shape,
-    FIG_W,
+    shape.hasHeight ? FIG_W - FIG_HEIGHT_ROOM : FIG_W,
     FIG_H,
     FIG_PAD,
     rotation,
@@ -1193,7 +1292,46 @@ function CornerBarSegmentFigure({
   )
   if (points.length < 3) return null
 
-  const anchors = cornerBarSegmentLabelAnchors(points, FIG_LABEL_GAP)
+  const pieces = cornerBarStrokePieces(shape, points, FIG_LAP_INSET)
+  // 継手の辺は内側へずらして描くので、番号もずらした線に合わせる
+  const anchors = cornerBarSegmentLabelAnchors(points, FIG_LABEL_GAP).map((anchor) => {
+    const piece = pieces[anchor.index]
+    if (piece?.kind === 'arc') {
+      // フックの半円の外へ出す（中点からの向きはそのまま、半径の分だけ遠くする）
+      const k = (FIG_LABEL_GAP + piece.radius) / FIG_LABEL_GAP
+      return {
+        ...anchor,
+        x: anchor.mx + (anchor.x - anchor.mx) * k,
+        y: anchor.my + (anchor.y - anchor.my) * k,
+      }
+    }
+    if (!piece || !shape.lapSegments?.includes(anchor.index)) return anchor
+    const mx = (piece.p1.x + piece.p2.x) / 2
+    const my = (piece.p1.y + piece.p2.y) / 2
+    // anchor は中点から外向きに FIG_LABEL_GAP 離れている
+    const ox = (anchor.x - anchor.mx) / FIG_LABEL_GAP
+    const oy = (anchor.y - anchor.my) / FIG_LABEL_GAP
+    // 継手（四角の a）は外に出すと重なっている辺の番号とぶつかるので内側へ置く
+    const side = linkedSegmentIndices(shape, anchor.index).length > 1 ? 1 : -1
+    return {
+      ...anchor,
+      x: mx + ox * FIG_LABEL_GAP * side,
+      y: my + oy * FIG_LABEL_GAP * side,
+      mx,
+      my,
+    }
+  })
+  const activeIndices = activeIndex != null ? linkedSegmentIndices(shape, activeIndex) : []
+
+  // 高さは資料と同じく形の右に縦の寸法線で示す（未入力のうちは「高さ」と出す）
+  const heightMark = (() => {
+    if (!shape.hasHeight) return null
+    const ys = points.map((p) => p.y)
+    const top = Math.min(...ys)
+    const bottom = Math.max(...ys)
+    if (bottom - top < 1) return null
+    return { x: Math.max(...points.map((p) => p.x)) + 8, top, bottom }
+  })()
 
   return (
     <div className="rounded border border-border bg-white p-1">
@@ -1203,17 +1341,51 @@ function CornerBarSegmentFigure({
         role="img"
         aria-label={`${shape.label}の辺の並び`}
       >
-        {anchors.map((anchor) => {
-          const p1 = points[anchor.index]!
-          const p2 = points[anchor.index + 1]!
-          const isActive = anchor.index === activeIndex
+        {heightMark ? (
+          <g
+            role="button"
+            tabIndex={0}
+            aria-label="高さを入力"
+            className="cursor-pointer outline-none"
+            onClick={() => heightInputId && document.getElementById(heightInputId)?.focus()}
+          >
+            <path
+              d={`M${heightMark.x} ${heightMark.top} V${heightMark.bottom} M${heightMark.x - 4} ${heightMark.top} H${heightMark.x + 4} M${heightMark.x - 4} ${heightMark.bottom} H${heightMark.x + 4}`}
+              fill="none"
+              stroke={heightMm != null ? '#0f172a' : '#94a3b8'}
+              strokeWidth={1.2}
+            />
+            <text
+              x={heightMark.x + 6}
+              y={(heightMark.top + heightMark.bottom) / 2}
+              dominantBaseline="central"
+              fontSize={10}
+              fontWeight={600}
+              fill={heightMm != null ? '#0f172a' : '#94a3b8'}
+            >
+              {heightMm ?? '高さ'}
+            </text>
+          </g>
+        ) : null}
+        {shape.doubleLine ? (
+          <path
+            d={cornerBarStrokePathD(shape, points, FIG_LAP_INSET)}
+            fill="none"
+            stroke="#94a3b8"
+            strokeWidth={2}
+            strokeLinejoin="round"
+            pointerEvents="none"
+          />
+        ) : null}
+        {pieces.map((piece) => {
+          const isActive = activeIndices.includes(piece.index)
+          // 二重線の形状は輪郭を上で描いたので、選んだ辺だけ中心線で示す
+          if (shape.doubleLine && !isActive) return null
           return (
-            <line
-              key={anchor.index}
-              x1={p1.x}
-              y1={p1.y}
-              x2={p2.x}
-              y2={p2.y}
+            <path
+              key={piece.index}
+              d={cornerBarStrokePieceD(piece)}
+              fill="none"
               stroke={isActive ? '#2563eb' : '#94a3b8'}
               strokeWidth={isActive ? 3.5 : 2.5}
               strokeLinecap="round"
@@ -1227,15 +1399,16 @@ function CornerBarSegmentFigure({
         ))}
         {/* 番号と当たり判定は最後に重ねる。細い線のままでは狙いにくいので判定だけ太くする */}
         {anchors.map((anchor) => {
-          const p1 = points[anchor.index]!
-          const p2 = points[anchor.index + 1]!
-          const isActive = anchor.index === activeIndex
+          const piece = pieces[anchor.index]
+          if (!piece) return null
+          const isActive = activeIndices.includes(anchor.index)
+          const label = cornerBarSegmentLabel(shape, anchor.index)
           return (
             <g
               key={anchor.index}
               role="button"
               tabIndex={0}
-              aria-label={`辺${anchor.index + 1}を選択`}
+              aria-label={`辺${label}を選択`}
               aria-pressed={isActive}
               className="cursor-pointer outline-none"
               onClick={() =>
@@ -1248,11 +1421,9 @@ function CornerBarSegmentFigure({
                 }
               }}
             >
-              <line
-                x1={p1.x}
-                y1={p1.y}
-                x2={p2.x}
-                y2={p2.y}
+              <path
+                d={cornerBarStrokePieceD(piece)}
+                fill="none"
                 stroke="transparent"
                 strokeWidth={16}
                 strokeLinecap="round"
@@ -1274,7 +1445,7 @@ function CornerBarSegmentFigure({
                 fontWeight={600}
                 fill={isActive ? '#ffffff' : '#475569'}
               >
-                {anchor.index + 1}
+                {label}
               </text>
             </g>
           )

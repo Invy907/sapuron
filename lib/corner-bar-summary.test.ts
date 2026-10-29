@@ -300,4 +300,35 @@ test('本数 0 の鉄筋と空の配置は結果に出ない', () => {
   assert.equal(summary.totalQuantity, 0)
 })
 
+// 7) 開口補強筋は資料（スリーブ補強筋・開口補強筋）の計算式どおりになる
+test('開口補強筋: 資料の加工長と、加工長に入らない高さ', () => {
+  const opening = (shapeType: string, lengths: number[], extra: Record<string, number>) => ({
+    category: 'OPENING',
+    shape_type: shapeType,
+    bars: [{ barType: 'D13', quantity: 1, segments: segs(lengths), ...extra }],
+  })
+  const summary = aggregateAdditionalRebars([
+    // (350 × 4) + 200 − 80 = 1520
+    opening('OPENING_RING', [100, 350, 350, 350, 350, 100], { deductionTotalMm: 80 }),
+    // 100 + 620 + 100 − 20 = 800
+    opening('OPENING_HOOK_L', [100, 620, 100], { deductionTotalMm: 20 }),
+    // 150 + 450 + 650 = 1250（高さ 320 は計算に入らない）
+    opening('OPENING_CRANK', [150, 450, 650], { heightMm: 320 }),
+    // 600 + 650 = 1250（高さ 425）
+    opening('OPENING_SLANT', [600, 650], { heightMm: 425 }),
+    // 100 + 380 + 100 − 20 = 560
+    opening('OPENING_BRACKET', [100, 380, 100], { deductionTotalMm: 20 }),
+  ])
+  const rows = summary.groups[0]!.specRows
+  const byShape = Object.fromEntries(rows.map((r) => [r.shapeType, r]))
+  assert.equal(byShape.OPENING_RING!.kakouchouMm, 1520)
+  assert.equal(byShape.OPENING_HOOK_L!.kakouchouMm, 800)
+  assert.equal(byShape.OPENING_CRANK!.kakouchouMm, 1250)
+  assert.equal(byShape.OPENING_CRANK!.heightMm, 320)
+  assert.equal(byShape.OPENING_SLANT!.kakouchouMm, 1250)
+  assert.equal(byShape.OPENING_SLANT!.heightMm, 425)
+  assert.equal(byShape.OPENING_BRACKET!.kakouchouMm, 560)
+  assert.equal(byShape.OPENING_BRACKET!.heightMm, undefined)
+})
+
 console.log('\nすべてのテストが通りました')

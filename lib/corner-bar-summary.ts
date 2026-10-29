@@ -8,8 +8,10 @@ import {
   type CornerBarLayer,
   formatCornerBarDims,
   getCornerBarShape,
+  isFreeShapeCategory,
   measurementTypeLabel,
   normalizeCornerBarBars,
+  normalizeCornerBarHeightMm,
   ZERO_MEASUREMENT_DEDUCTIONS,
   type CornerBarBarItem,
   type CornerBarSegment,
@@ -57,6 +59,8 @@ export interface AdditionalRebarSpecRow {
   kakouchouMm: number | null
   /** くの字: 辺のあいだの角度（度）。角度を変えられない形状は undefined */
   bendAngleDeg?: number
+  /** 段違い・斜めの高さ(mm)。図に書くだけで加工長には使わない。未入力は undefined */
+  heightMm?: number
   /** 特殊コーナー筋の上・下。なしは undefined */
   layer?: CornerBarLayer
   quantity: number
@@ -197,6 +201,7 @@ function specKeyOf(
   deductionTotalMm: number | undefined,
   bendAngleDeg: number | undefined,
   layer: CornerBarLayer | undefined,
+  heightMm: number | undefined,
 ): string {
   const dims = segments
     .map((s) => `${s.lengthMm ?? ''}@${s.measurementType ?? ''}`)
@@ -206,7 +211,9 @@ function specKeyOf(
     `${category}|${shapeType}|${barType}|${segments.length}|${dims}` +
     (bendAngleDeg != null ? `|angle:${bendAngleDeg}` : '') +
     // 上と下は別の鉄筋。なしのときは付けず、上下を入れる前と同じ key のまま
-    (layer ? `|layer:${layer}` : '')
+    (layer ? `|layer:${layer}` : '') +
+    // 高さが違えば図が違うので別の行にする（未入力のときは付けない）
+    (heightMm != null ? `|height:${heightMm}` : '')
   // 減りが違えば加工長も違うので別の行にする。0 のときは付けず、
   // 減りを入れる前と同じ key のまま（結果ページの手入力が外れないように）
   if (deductionTotalMm != null) {
@@ -218,14 +225,14 @@ function specKeyOf(
 }
 
 /**
- * 加工長の計算に使う減り。特殊コーナー筋は配置ごとの入力値（未入力は全て 0）、
+ * 加工長の計算に使う減り。特殊コーナー筋・開口補強筋は配置ごとの入力値（未入力は全て 0）、
  * それ以外はこれまでどおり外々・芯々 -20 の既定ルールを使う。
  */
 function deductionsFor(
   category: string,
   bar: CornerBarBarItem,
 ): MeasurementDeductionsMm | undefined {
-  if (category !== 'SPECIAL_CORNER') return undefined
+  if (!isFreeShapeCategory(category)) return undefined
   return bar.measurementDeductionsMm ?? ZERO_MEASUREMENT_DEDUCTIONS
 }
 
@@ -251,6 +258,7 @@ export function aggregateAdditionalRebars(
     const category = placement.category
     const shapeType = placement.shape_type
     const adjustableAngle = getCornerBarShape(shapeType)?.adjustableAngle === true
+    const hasHeight = getCornerBarShape(shapeType)?.hasHeight === true
 
     let group = groups.get(category)
     if (!group) {
@@ -272,9 +280,10 @@ export function aggregateAdditionalRebars(
       group.diameters.set(diameter, (group.diameters.get(diameter) ?? 0) + bar.quantity)
 
       const deductions = deductionsFor(category, bar)
-      // 特殊コーナー筋で全体の減りを入れた配置は、辺ごとの減りの代わりにそれを引く
-      const totalDeduction = category === 'SPECIAL_CORNER' ? bar.deductionTotalMm : undefined
+      // 特殊コーナー筋・開口補強筋で全体の減りを入れた配置は、辺ごとの減りの代わりにそれを引く
+      const totalDeduction = isFreeShapeCategory(category) ? bar.deductionTotalMm : undefined
       const bendAngleDeg = adjustableAngle ? clampCornerBarBendAngle(bar.bendAngleDeg) : undefined
+      const heightMm = hasHeight ? normalizeCornerBarHeightMm(bar.heightMm) ?? undefined : undefined
       const key = specKeyOf(
         category,
         shapeType,
@@ -284,6 +293,7 @@ export function aggregateAdditionalRebars(
         totalDeduction,
         bendAngleDeg,
         bar.layer,
+        heightMm,
       )
       const existing = group.specs.get(key)
       if (existing) {
@@ -309,6 +319,7 @@ export function aggregateAdditionalRebars(
         segmentSumMm: allDimensioned ? cornerBarSegmentSumMm(bar.segments) : null,
         kakouchouMm: cornerBarKakouchouMm(bar.segments, deductions, totalDeduction),
         ...(bendAngleDeg != null ? { bendAngleDeg } : {}),
+        ...(heightMm != null ? { heightMm } : {}),
         ...(bar.layer ? { layer: bar.layer } : {}),
         quantity: bar.quantity,
       })
