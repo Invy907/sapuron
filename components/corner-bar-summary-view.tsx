@@ -18,6 +18,7 @@ import {
 } from '@/lib/corner-bar-summary'
 import {
   CORNER_BAR_DIAMETERS,
+  cornerBarHookApex,
   cornerBarSegmentLabelAnchors,
   cornerBarLayerMark,
   cornerBarStrokePathD,
@@ -797,10 +798,21 @@ function ShapeFigureSvg({
 
   const rotation = pickSummaryFigureRotation(shape, metrics.pad)
   // 同じ寸法の辺の組（四角の 4 辺）は先頭の辺にだけ寸法を書く
+  // フックの寸法は半円の頂点から、ふくらむ向きへ離す（弦の中点からだと半円に重なる）
   const anchorsFor = (points: Array<{ x: number; y: number }>) =>
-    cornerBarSegmentLabelAnchors(points, 1).filter(
-      (anchor) => linkedSegmentLeader(shape, anchor.index) === anchor.index,
-    )
+    cornerBarSegmentLabelAnchors(points, 1)
+      .filter((anchor) => linkedSegmentLeader(shape, anchor.index) === anchor.index)
+      .map((anchor) => {
+        const hook = cornerBarHookApex(shape, points, anchor.index)
+        if (!hook) return anchor
+        return {
+          ...anchor,
+          mx: hook.apex.x,
+          my: hook.apex.y,
+          x: hook.apex.x + hook.direction.x,
+          y: hook.apex.y + hook.direction.y,
+        }
+      })
   // ラベルの並び（辺の順）は図の大きさによらないので、先に文字だけ決めておく
   const baseAnchors = anchorsFor(
     cornerBarThumbPoints(shape, metrics.width, metrics.height, metrics.pad, rotation, false),

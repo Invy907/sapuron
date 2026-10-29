@@ -1923,6 +1923,24 @@ function hookApexPoints(shape: CornerBarShapeDef, points: Point2[]): Point2[] {
   })
 }
 
+/** フックの辺なら、半円の頂点とふくらむ向き。寸法をその外に書くため */
+export function cornerBarHookApex(
+  shape: CornerBarShapeDef,
+  points: Point2[],
+  index: number,
+): { apex: Point2; direction: Point2 } | null {
+  if (!shape.hookSegments?.includes(index)) return null
+  const p1 = points[index]
+  const p2 = points[index + 1]
+  if (!p1 || !p2) return null
+  const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2
+  const direction = hookBulgeDirection(points, index)
+  return {
+    apex: { x: (p1.x + p2.x) / 2 + direction.x * r, y: (p1.y + p2.y) / 2 + direction.y * r },
+    direction,
+  }
+}
+
 /** 描くときの辺 1 本。フックは半円（sweep は SVG の円弧の向き）、継手は内側へずらした線 */
 export type CornerBarStrokePiece =
   | { kind: 'line'; index: number; p1: Point2; p2: Point2 }
