@@ -1,6 +1,15 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import {
   aggregateAdditionalRebars,
   type AdditionalRebarGroup,
@@ -9,10 +18,15 @@ import {
 } from '@/lib/corner-bar-summary'
 import {
   CORNER_BAR_DIAMETERS,
+  cornerBarHookApex,
   cornerBarSegmentLabelAnchors,
+  cornerBarLayerMark,
+  cornerBarStrokePathD,
   cornerBarThumbPoints,
-  getCornerBarShape,
+  isFreeShapeCategory,
+  linkedSegmentLeader,
   measurementTypeLabel,
+  resolveCornerBarShape,
   type CornerBarShapeDef,
 } from '@/lib/corner-bar-presets'
 
@@ -95,6 +109,7 @@ function DimsText({ row }: { row: AdditionalRebarSpecRow }) {
 function SpecWithDiameter({ row }: { row: AdditionalRebarSpecRow }) {
   return (
     <>
+      {cornerBarLayerMark(row.layer)}
       {row.diameter}
       <span className="text-muted">（</span>
       <DimsText row={row} />
@@ -166,6 +181,65 @@ function KakouchouInput({
 }
 
 /**
+ * 本数の手入力欄。加工長と同じく確定まではローカルの文字列で持ち、
+ * 空欄または集計値と同じ値で確定すると手入力を解除する。
+ */
+function QuantityInput({
+  autoQuantity,
+  overrideQuantity,
+  onChange,
+  label,
+}: {
+  autoQuantity: number
+  overrideQuantity: number | undefined
+  onChange: (value: number | null) => void
+  label: string
+}) {
+  const shown = overrideQuantity ?? autoQuantity
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? String(shown)
+
+  const commit = () => {
+    if (draft == null) return
+    setDraft(null)
+    const raw = draft.trim()
+    if (raw === '') {
+      onChange(null)
+      return
+    }
+    const n = Number.parseInt(raw, 10)
+    if (!Number.isFinite(n) || n < 0) return
+    onChange(n === autoQuantity ? null : n)
+  }
+
+  return (
+    <>
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label={label}
+        title={`集計: ${autoQuantity}（空欄で集計値に戻す）`}
+        value={text}
+        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            setDraft(null)
+            e.currentTarget.blur()
+          }
+        }}
+        style={{ width: `${Math.max(text.length, 1) + 0.5}ch` }}
+        className={`border-0 bg-transparent p-0 text-center font-semibold outline-none focus:underline focus:decoration-primary/40 ${
+          overrideQuantity != null ? 'text-primary print:text-inherit' : ''
+        }`}
+      />
+      <span className="ml-1 text-sm font-normal text-muted">本</span>
+    </>
+  )
+}
+
+/**
  * 筋種類名（「コーナー筋」など）の手入力欄。加工長と同じく確定までは
  * ローカルの文字列で持ち、空欄または元の名前で確定すると手入力を解除する。
  * 全角文字は ch で幅を決められないので、同じ文字列を見えない span に置いて
@@ -232,6 +306,7 @@ function SpecWithKakouchou({
   const shown = overrideMm ?? autoMm
   return (
     <>
+      {cornerBarLayerMark(row.layer)}
       {row.diameter}
       <span className="text-muted">（</span>
       {onOverrideChange ? (
@@ -255,8 +330,23 @@ function buildSheetRows(
   onKakouchouOverrideChange: ((rowKey: string, value: number | null) => void) | undefined,
   labelOverrides: Readonly<Record<string, string>>,
   onLabelOverrideChange: ((rowKey: string, value: string | null) => void) | undefined,
+  quantityOverrides: Readonly<Record<string, number>>,
+  onQuantityOverrideChange: ((rowKey: string, value: number | null) => void) | undefined,
 ): SheetRow[] {
   const rows: SheetRow[] = []
+
+  /** 本数。手入力できるときは入力欄、できないときは手入力した本数か集計値 */
+  const quantityFor = (row: AdditionalRebarSpecRow): ReactNode =>
+    onQuantityOverrideChange ? (
+      <QuantityInput
+        autoQuantity={row.quantity}
+        overrideQuantity={quantityOverrides[row.key]}
+        onChange={(value) => onQuantityOverrideChange(row.key, value)}
+        label={`${row.categoryLabel} ${row.diameter} の本数`}
+      />
+    ) : (
+      <QuantityText quantity={quantityOverrides[row.key] ?? row.quantity} />
+    )
 
   /** 筋種類名。手入力できるときは入力欄、できないときは手入力した名前か元の名前 */
   const labelFor = (rowKey: string, defaultLabel: string): ReactNode =>
@@ -283,7 +373,7 @@ function buildSheetRows(
           label: labelFor(row.key, group.label),
           isGroupStart: i === 0,
           spec: <SpecWithDiameter row={row} />,
-          result: <QuantityText quantity={row.quantity} />,
+          result: quantityFor(row),
           layout: 'inline',
           figure: 'empty',
         })
@@ -310,7 +400,7 @@ function buildSheetRows(
       blocks.push({ heading: group.label, rows: list })
     }
 
-    const showShapeFigure = group.category === 'SPECIAL_CORNER'
+    const showShapeFigure = isFreeShapeCategory(group.category)
 
     for (const block of blocks) {
       block.rows.forEach((row, i) => {
@@ -325,7 +415,7 @@ function buildSheetRows(
               onOverrideChange={onKakouchouOverrideChange}
             />
           ),
-          result: <QuantityText quantity={row.quantity} />,
+          result: quantityFor(row),
           layout: 'inline',
           figure:
             showShapeFigure
@@ -358,6 +448,23 @@ type FigureMetrics = {
   dimFont: number
   measurementFont: number
   lineDy: number
+  /** ラベルが重なるときに試す文字の倍率。印刷は文字を小さくしない */
+  labelScales: readonly number[]
+  /** 図とラベルが入る高さまで上下の余白を詰める（印刷。行の高さを低くするため） */
+  cropHeight?: boolean
+  /**
+   * 文字幅の見積もりに掛けるゆとり。印刷は端末のフォント（Windows など）で
+   * 実際の文字が見積もりより広くなっても重ならないように大きめに見る
+   */
+  labelWidthSafety?: number
+  /** 重なるときに標準の大きさで置き場所を決めて縮める（印刷） */
+  fallbackToStandard?: boolean
+  /**
+   * 左右も図とラベルが入る範囲まで詰め、その幅で描く（行の高さを決めたとき）。
+   * 広い枠の中で縦横比のまま高さいっぱいに描き、余った左右を落とすことで、
+   * 行を高くすると図全体が同じ形のまま大きくなる
+   */
+  cropWidth?: boolean
 }
 
 /** 結果表の形状図は横長ボックスに収め、行の縦幅を抑える */
@@ -369,27 +476,49 @@ const SCREEN_FIGURE_METRICS: FigureMetrics = {
   dimFont: 14,
   measurementFont: 11,
   lineDy: 14,
+  labelScales: [1, 0.85, 0.7, 0.6, 0.5],
 }
 
 /**
- * 印刷では形状図が右列の残り幅（A4 で 110px 前後）まで縮むので、
- * viewBox 上の文字を大きめにして紙の上で読める大きさにする。
+ * 印刷の形状図。幅は実際に置かれる幅（測った値）にして viewBox と 1:1 にし、
+ * 寸法・寸法基準の文字を紙の上で読める大きさ（12px）で印刷する。
+ * 列の幅は端末のフォントで変わるので、狭くて重なるときだけ文字を小さくする。
  */
 const PRINT_FIGURE_METRICS: FigureMetrics = {
   width: 280,
   height: 180,
   pad: 30,
   labelGap: 4,
-  dimFont: 20,
-  measurementFont: 15,
-  lineDy: 19,
+  dimFont: 12,
+  measurementFont: 12,
+  lineDy: 14,
+  // 基本は 12px のまま。列が狭くて重なるときだけ少しずつ小さくする（重ねて書かない）
+  labelScales: [1, 0.85, 0.7],
+  cropHeight: true,
+  labelWidthSafety: 1.2,
+  fallbackToStandard: true,
 }
-
 /**
- * ラベルが収まらないときに順に試す文字の倍率。
- * 辺が多く短い形状（階段形など）でも、小さくすれば数字のまま書ける。
+ * 曲げの多い形状（2段階段・欠き込みなど）は辺が短く寸法が重なりやすいので、
+ * 重なるときは文字を半分まで小さくしてよい（それ以外の形状は 70% まで）
  */
-const FIGURE_LABEL_SCALES = [1, 0.85, 0.7, 0.6, 0.5]
+const COMPACT_PRINT_FIGURE_METRICS: FigureMetrics = {
+  ...PRINT_FIGURE_METRICS,
+  labelScales: [1, 0.85, 0.7, 0.6, 0.5],
+}
+const COMPACT_PRINT_SHAPE_TYPES: ReadonlySet<string> = new Set([
+  'V_STEP2',
+  'V_NOTCH',
+  'V_STEP2_END',
+  'V_NOTCH_SIDE',
+])
+/** 印刷の形状図の幅の範囲。広いカードでも図が大きくなりすぎないようにする */
+const PRINT_FIGURE_MIN_WIDTH = 120
+const PRINT_FIGURE_MAX_WIDTH = 320
+/** 行の高さを決めたときの図の最大の幅。行を高くすると図はこの幅まで同じ形のまま大きくなる */
+const PRINT_FIGURE_FIXED_ROW_MAX_WIDTH = 480
+/** 印刷の形状図の高さ（幅に対する比）。上下の余白は描いたあとに詰める */
+const PRINT_FIGURE_HEIGHT_RATIO = 180 / 280
 
 /** 形状の線の太さ（viewBox 単位） */
 const FIGURE_STROKE_WIDTH = 2.5
@@ -457,7 +586,7 @@ function labelHalfSizes(
     const dimWidth = (lines[0]?.length ?? 1) * metrics.dimFont * DIGIT_WIDTH_EM
     const measurementWidth =
       (lines[1]?.length ?? 0) * metrics.measurementFont * FULL_WIDTH_EM
-    return (Math.max(dimWidth, measurementWidth) * scale) / 2 + 1
+    return (Math.max(dimWidth, measurementWidth) * scale * (metrics.labelWidthSafety ?? 1)) / 2 + 1
   })
   // 2 行のときは 1 行目と 2 行目の中心が lineDy 離れ、その上下に字面の半分ずつ載る
   const digitHeight = metrics.dimFont * DIGIT_HEIGHT_EM
@@ -564,28 +693,87 @@ function layoutLabels(
   textLines: string[][],
   points: Array<{ x: number; y: number }>,
   metrics: FigureMetrics,
-): { anchors: LabelAnchor[]; scale: number } {
-  for (const scale of FIGURE_LABEL_SCALES) {
+): { anchors: LabelAnchor[]; scale: number; fits: boolean } {
+  for (const scale of metrics.labelScales) {
     const placed = resolveLabelAnchors(anchors, textLines, points, metrics, scale)
-    if (placed) return { anchors: placed, scale }
+    if (placed) return { anchors: placed, scale, fits: true }
   }
-  const scale = FIGURE_LABEL_SCALES[FIGURE_LABEL_SCALES.length - 1]!
+  const scale = metrics.labelScales[metrics.labelScales.length - 1] ?? 1
   const { halfWidth, halfHeight } = labelHalfSizes(textLines, metrics, scale)
   return {
     anchors: offsetAnchors(anchors, halfWidth, halfHeight, metrics.labelGap * scale),
     scale,
+    fits: false,
   }
 }
 
+/** 印刷レイアウト画面で行ごとに決めた高さ（行 key → px）。図をその高さに合わせて描く */
+const RowHeightContext = createContext<Readonly<Record<string, number>>>({})
+
+/** 行の高さから図に使える高さを出すときに引く、セルの上下の余白など(px) */
+const PRINT_ROW_FIGURE_PADDING = 6
+
 /** 画面用と印刷用の形状図を両方描き、媒体に応じて片方だけ見せる */
 function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
+  const rowHeight = useContext(RowHeightContext)[row.key]
+  // 印刷用は置かれた幅を測り、その幅で描いて文字が縮まないようにする。
+  // 印刷レイアウト画面のシートの中で測れる（測る前は既定の幅で描き、CSS で縮める）
+  const [printWidth, setPrintWidth] = useState<number | null>(null)
+  const observePrintBox = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return
+    const update = () => {
+      const w = el.clientWidth
+      if (w <= 0) return
+      setPrintWidth(
+        Math.round(Math.min(PRINT_FIGURE_MAX_WIDTH, Math.max(PRINT_FIGURE_MIN_WIDTH, w))),
+      )
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  // どの形状も置かれた幅で描き、文字は 12px 以下に揃える（カードを広げても大きくならない）
+  const baseMetrics = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
+    ? COMPACT_PRINT_FIGURE_METRICS
+    : PRINT_FIGURE_METRICS
+  // 行の高さを決めてあれば、図をその高さいっぱいに描く（余白だけが増えないように）
+  const fixedHeight =
+    rowHeight != null ? Math.max(30, rowHeight - PRINT_ROW_FIGURE_PADDING) : null
+  const printMetrics: FigureMetrics =
+    fixedHeight != null
+      ? {
+          // 行の高さを決めたときは、標準の大きさ（280 幅）で寸法まで置いてから、
+          // 図を丸ごと行の高さに合わせて拡大・縮小する（線も数字も同じ比率で変わる）。
+          // 列の幅で描くと、図が広がる → 列が広がる → … と大きさが決まらないので標準の幅にする
+          ...baseMetrics,
+          width: PRINT_FIGURE_METRICS.width,
+          height: Math.round(PRINT_FIGURE_METRICS.width * PRINT_FIGURE_HEIGHT_RATIO),
+          cropHeight: true,
+          cropWidth: true,
+        }
+      : printWidth
+        ? {
+            ...baseMetrics,
+            width: printWidth,
+            height: Math.round(printWidth * PRINT_FIGURE_HEIGHT_RATIO),
+          }
+        : baseMetrics
+
   return (
     <>
       <div className="print:hidden">
         <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
       </div>
-      <div className="hidden print:block">
-        <ShapeFigureSvg row={row} metrics={PRINT_FIGURE_METRICS} />
+      <div
+        ref={observePrintBox}
+        className={`hidden print:block ${fixedHeight != null ? 'corner-summary-figure-fixed' : ''}`}
+      >
+        <ShapeFigureSvg
+          row={row}
+          metrics={printMetrics}
+          targetHeight={fixedHeight ?? undefined}
+        />
       </div>
     </>
   )
@@ -594,51 +782,143 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
 function ShapeFigureSvg({
   row,
   metrics,
+  targetHeight,
 }: {
   row: AdditionalRebarSpecRow
   metrics: FigureMetrics
+  /** 図を丸ごとこの高さに拡大・縮小して描く（行の高さを決めたとき）。幅は最大 480 */
+  targetHeight?: number
 }) {
-  const shape = getCornerBarShape(row.shapeType)
+  // くの字は行ごとの角度で描く
+  const shape = resolveCornerBarShape(
+    row.shapeType,
+    row.bendAnglesDeg != null ? [{ bendAnglesDeg: row.bendAnglesDeg }] : undefined,
+  )
   if (!shape) return null
 
   const rotation = pickSummaryFigureRotation(shape, metrics.pad)
-  const points = cornerBarThumbPoints(
-    shape,
-    metrics.width,
-    metrics.height,
-    metrics.pad,
-    rotation,
-    false,
+  // 同じ寸法の辺の組（四角の 4 辺）は先頭の辺にだけ寸法を書く
+  // フックの寸法は半円の頂点から、ふくらむ向きへ離す（弦の中点からだと半円に重なる）
+  const anchorsFor = (points: Array<{ x: number; y: number }>) =>
+    cornerBarSegmentLabelAnchors(points, 1)
+      .filter((anchor) => linkedSegmentLeader(shape, anchor.index) === anchor.index)
+      .map((anchor) => {
+        const hook = cornerBarHookApex(shape, points, anchor.index)
+        if (!hook) return anchor
+        return {
+          ...anchor,
+          mx: hook.apex.x,
+          my: hook.apex.y,
+          x: hook.apex.x + hook.direction.x,
+          y: hook.apex.y + hook.direction.y,
+        }
+      })
+  // ラベルの並び（辺の順）は図の大きさによらないので、先に文字だけ決めておく
+  const baseAnchors = anchorsFor(
+    cornerBarThumbPoints(shape, metrics.width, metrics.height, metrics.pad, rotation, false),
   )
-  if (points.length < 2) return null
-
-  const path = points
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
-    .join(' ')
-
-  // 外向きの向きだけ受け取り、中点からの距離は layoutLabels がラベルの大きさで決める
-  const anchors = cornerBarSegmentLabelAnchors(points, 1)
-  const dimTexts = anchors.map((anchor) => segmentLabelFor(row, anchor.index))
-  const measurementTexts = anchors.map((anchor) =>
+  const dimTexts = baseAnchors.map((anchor) => segmentLabelFor(row, anchor.index))
+  const measurementTexts = baseAnchors.map((anchor) =>
     segmentMeasurementLabelFor(row, anchor.index),
   )
   const labelLines = dimTexts.map((dimension, index) =>
     measurementTexts[index] ? [dimension, measurementTexts[index]!] : [dimension],
   )
-  const { anchors: drawnAnchors, scale } = layoutLabels(
-    anchors,
-    labelLines,
-    points,
-    metrics,
-  )
-  const lineDy = metrics.lineDy * scale
+
+  /** 与えた大きさ（viewBox）で形と寸法の置き場所を決める */
+  const layoutWith = (m: FigureMetrics) => {
+    const points = cornerBarThumbPoints(shape, m.width, m.height, m.pad, rotation, false)
+    // 外向きの向きだけ受け取り、中点からの距離は layoutLabels がラベルの大きさで決める
+    const placed = layoutLabels(anchorsFor(points), labelLines, points, m)
+    // 印刷は図とラベルが入る範囲まで上下を詰める（横は変えない）
+    let viewTop = 0
+    let viewHeight = m.height
+    if (m.cropHeight) {
+      const { halfHeight } = labelHalfSizes(labelLines, m, placed.scale)
+      const ys = [
+        ...points.map((p) => p.y),
+        ...placed.anchors.flatMap((a, i) => [
+          a.y - (halfHeight[i] ?? 0),
+          a.y + (halfHeight[i] ?? 0),
+        ]),
+      ]
+      const margin = 4
+      viewTop = Math.min(...ys) - margin
+      viewHeight = Math.max(...ys) + margin - viewTop
+    }
+    let viewLeft = 0
+    let viewWidth = m.width
+    if (m.cropWidth) {
+      const { halfWidth } = labelHalfSizes(labelLines, m, placed.scale)
+      // 高さの寸法（形の右に書く）も入るようにする
+      const heightRight =
+        row.heightMm != null
+          ? Math.max(...points.map((p) => p.x)) +
+            (14 + String(row.heightMm).length * m.dimFont * DIGIT_WIDTH_EM) * placed.scale
+          : -Infinity
+      const xs = [
+        ...points.map((p) => p.x),
+        ...placed.anchors.flatMap((a, i) => [
+          a.x - (halfWidth[i] ?? 0),
+          a.x + (halfWidth[i] ?? 0),
+        ]),
+        heightRight,
+      ]
+      const margin = 4
+      viewLeft = Math.min(...xs) - margin
+      viewWidth = Math.max(...xs) + margin - viewLeft
+    }
+    return { m, points, ...placed, viewTop, viewHeight, viewLeft, viewWidth }
+  }
+
+  // 列が狭くて文字を小さくしても重なるときは、標準の大きさ（280 幅）で置き場所を決め、
+  // 図ごと列の幅まで縮める。文字は小さくなるが、重ねて書くことはしない
+  let layout = layoutWith(metrics)
+  if (!layout.fits && metrics.fallbackToStandard && metrics.width < PRINT_FIGURE_METRICS.width) {
+    // 縦横比はそのままで、幅だけ標準（280）に広げた大きさ
+    const k = PRINT_FIGURE_METRICS.width / metrics.width
+    layout = layoutWith({
+      ...metrics,
+      width: PRINT_FIGURE_METRICS.width,
+      height: metrics.height * k,
+    })
+  }
+  const { m, points, anchors: drawnAnchors, scale, viewTop, viewHeight, viewLeft, viewWidth } =
+    layout
+  if (points.length < 2) return null
+  // 左右を詰めたときは詰めた幅そのもの（viewBox と 1:1）で描く
+  const baseWidth = m.cropWidth ? viewWidth : metrics.width
+  const baseHeight = (viewHeight * baseWidth) / viewWidth
+  // 行の高さを決めたときは、図・数字・線をまとめて同じ比率で拡大・縮小する
+  const zoom =
+    targetHeight != null && baseHeight > 0
+      ? Math.min(targetHeight / baseHeight, PRINT_FIGURE_FIXED_ROW_MAX_WIDTH / baseWidth)
+      : 1
+  const displayWidth = baseWidth * zoom
+  const displayHeight = baseHeight * zoom
+
+  const path = cornerBarStrokePathD(shape, points, 4)
+  const lineDy = m.lineDy * scale
+
+  // 高さ（段違い・斜め）は資料と同じく、形の右に「I 320」のように縦の寸法で書く
+  const heightMark = (() => {
+    if (row.heightMm == null) return null
+    const xs = points.map((p) => p.x)
+    const ys = points.map((p) => p.y)
+    const top = Math.min(...ys)
+    const bottom = Math.max(...ys)
+    if (bottom - top < 1) return null
+    const x = Math.max(...xs) + 10 * scale
+    const tick = 3 * scale
+    return { x, top, bottom, tick, labelX: x + 4 * scale, labelY: (top + bottom) / 2 }
+  })()
 
   return (
     <div className="corner-summary-figure flex flex-col items-start">
       <svg
-        width={metrics.width}
-        height={metrics.height}
-        viewBox={`0 0 ${metrics.width} ${metrics.height}`}
+        width={displayWidth}
+        height={displayHeight}
+        viewBox={`${viewLeft} ${viewTop} ${viewWidth} ${viewHeight}`}
         // 余白を詰めているので、端の寸法ラベルが切れないように外へはみ出させる
         overflow="visible"
         role="img"
@@ -651,11 +931,33 @@ function ShapeFigureSvg({
           strokeWidth={FIGURE_STROKE_WIDTH}
           strokeLinecap="round"
           strokeLinejoin="round"
+          // 図を列の幅まで縮めても線の太さは変えない（形状によって太さが違って見えないように）
+          vectorEffect="non-scaling-stroke"
         />
-        {/* 曲げの位置が分かるように節点に小さな印を打つ */}
-        {points.slice(1, -1).map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r={2.5} fill="#0f172a" />
-        ))}
+        {heightMark ? (
+          <g aria-label={`高さ ${row.heightMm}`}>
+            <path
+              d={`M${heightMark.x} ${heightMark.top} L${heightMark.x} ${heightMark.bottom} M${
+                heightMark.x - heightMark.tick
+              } ${heightMark.top} L${heightMark.x + heightMark.tick} ${heightMark.top} M${
+                heightMark.x - heightMark.tick
+              } ${heightMark.bottom} L${heightMark.x + heightMark.tick} ${heightMark.bottom}`}
+              fill="none"
+              stroke="#0f172a"
+              strokeWidth={1.2}
+              vectorEffect="non-scaling-stroke"
+            />
+            <text
+              x={heightMark.labelX}
+              y={heightMark.labelY}
+              dominantBaseline="central"
+              fontSize={m.dimFont * scale}
+              fill="#0f172a"
+            >
+              {row.heightMm}
+            </text>
+          </g>
+        ) : null}
         {drawnAnchors.map((anchor, i) => (
           <text
             key={anchor.index}
@@ -664,7 +966,7 @@ function ShapeFigureSvg({
             textAnchor="middle"
             // middle だと数字が上に寄るので、数字も漢字も字面の中心が揃う central にする
             dominantBaseline="central"
-            fontSize={metrics.dimFont * scale}
+            fontSize={m.dimFont * scale}
             fill="#0f172a"
           >
             <tspan x={anchor.x}>{dimTexts[i]}</tspan>
@@ -672,7 +974,7 @@ function ShapeFigureSvg({
               <tspan
                 x={anchor.x}
                 dy={lineDy}
-                fontSize={metrics.measurementFont * scale}
+                fontSize={m.measurementFont * scale}
                 fontWeight={400}
                 fill="#0f172a"
               >
@@ -715,51 +1017,134 @@ const shrinkCell = { width: '1%' }
  * 筋種類名は 〃 に省略せず、行ごとに毎回そのまま出す。グループの最初の行だけ
  * 上の余白を広くして、見た目の区切りをつける。
  */
-function SheetTable({ rows }: { rows: SheetRow[] }) {
+function SheetTable({
+  rows,
+  rowHeights,
+  onRowHeightChange,
+}: {
+  rows: SheetRow[]
+  /** 行 key → 手で決めた行の高さ(px)。印刷レイアウト画面だけ */
+  rowHeights?: Readonly<Record<string, number>>
+  /** 渡したときだけ、行の下の境目をドラッグして高さを変えられる（null で元に戻す） */
+  onRowHeightChange?: (rowKey: string, height: number | null) => void
+}) {
   const hasAnyFigure = rows.some((r) => typeof r.figure === 'object')
+  const [liveHeight, setLiveHeight] = useState<{ key: string; height: number } | null>(null)
+  const dragRef = useRef<{
+    key: string
+    startY: number
+    startHeight: number
+    /** 画面上の 1px が表の中の何 px か（用紙の縮小・カードの拡大率を打ち消す） */
+    ratio: number
+    row: HTMLTableRowElement
+  } | null>(null)
+
+  const handlePointerDown = (key: string) => (e: ReactPointerEvent<HTMLTableCellElement>) => {
+    const row = e.currentTarget.parentElement
+    if (e.button !== 0 || !(row instanceof HTMLTableRowElement)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const visual = row.getBoundingClientRect().height
+    dragRef.current = {
+      key,
+      startY: e.clientY,
+      startHeight: row.offsetHeight,
+      ratio: visual > 0 ? row.offsetHeight / visual : 1,
+      row,
+    }
+    setLiveHeight({ key, height: row.offsetHeight })
+  }
+
+  const handlePointerMove = (e: ReactPointerEvent<HTMLTableCellElement>) => {
+    const d = dragRef.current
+    if (!d) return
+    const height = Math.max(1, d.startHeight + (e.clientY - d.startY) * d.ratio)
+    setLiveHeight({ key: d.key, height })
+  }
+
+  const handlePointerUp = () => {
+    const d = dragRef.current
+    if (!d) return
+    dragRef.current = null
+    setLiveHeight(null)
+    // 中身より低くはならないので、実際に描かれた高さで保存する
+    onRowHeightChange?.(d.key, Math.round(d.row.offsetHeight))
+  }
+
+  // ドラッグ中の高さも図に渡して、離す前から図の大きさが変わるのを見せる
+  const figureHeights = useMemo(
+    () =>
+      liveHeight
+        ? { ...(rowHeights ?? {}), [liveHeight.key]: liveHeight.height }
+        : (rowHeights ?? {}),
+    [liveHeight, rowHeights],
+  )
 
   return (
-    <table className="w-auto max-w-full border-collapse text-lg">
-      <tbody className="divide-y divide-border">
-        {rows.map((row) => {
-          const pad = row.isGroupStart ? 'pt-4' : 'pt-2'
-          return (
-            <tr key={row.key}>
-              <td style={shrinkCell} className={`${labelCell} ${pad}`}>
-                {row.label}
-              </td>
-              {row.layout === 'stacked' ? (
-                // 寸法を 1 行で出しきるため、本数の列まで使って縦に積む
-                <td colSpan={2} className={`${dataCell} font-mono ${pad}`}>
-                  <div className="corner-summary-dims">{row.spec}</div>
-                  <div>{row.result}</div>
+    <RowHeightContext.Provider value={figureHeights}>
+      <table className="w-auto max-w-full border-collapse text-lg">
+        <tbody className="divide-y divide-border">
+          {rows.map((row) => {
+            const pad = row.isGroupStart ? 'pt-4' : 'pt-2'
+            const height =
+              liveHeight?.key === row.key ? liveHeight.height : rowHeights?.[row.key]
+            return (
+              <tr
+                key={row.key}
+                className={onRowHeightChange ? 'relative' : undefined}
+                style={height != null ? { height } : undefined}
+              >
+                <td style={shrinkCell} className={`${labelCell} ${pad}`}>
+                  {row.label}
                 </td>
-              ) : (
-                <>
-                  <td style={shrinkCell} className={`${specCell} ${pad}`}>
-                    {row.spec}
+                {row.layout === 'stacked' ? (
+                  // 寸法を 1 行で出しきるため、本数の列まで使って縦に積む
+                  <td colSpan={2} className={`${dataCell} font-mono ${pad}`}>
+                    <div className="corner-summary-dims">{row.spec}</div>
+                    <div>{row.result}</div>
                   </td>
-                  <td style={shrinkCell} className={`${qtyCell} ${pad}`}>
-                    {row.result}
+                ) : (
+                  <>
+                    <td style={shrinkCell} className={`${specCell} ${pad}`}>
+                      {row.spec}
+                    </td>
+                    <td style={shrinkCell} className={`${qtyCell} ${pad}`}>
+                      {row.result}
+                    </td>
+                  </>
+                )}
+                {hasAnyFigure && typeof row.figure === 'object' && (
+                  <td
+                    rowSpan={row.figure.rowSpan}
+                    className="py-2 pl-4 align-top"
+                  >
+                    {row.figure.node}
                   </td>
-                </>
-              )}
-              {hasAnyFigure && typeof row.figure === 'object' && (
-                <td
-                  rowSpan={row.figure.rowSpan}
-                  className="py-2 pl-4 align-top"
-                >
-                  {row.figure.node}
-                </td>
-              )}
-              {hasAnyFigure && row.figure === 'empty' && (
-                <td className={`${pad} py-2`} aria-hidden />
-              )}
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+                )}
+                {hasAnyFigure && row.figure === 'empty' && (
+                  <td className={`${pad} py-2`} aria-hidden />
+                )}
+                {onRowHeightChange ? (
+                  // 行の下の境目。絶対配置なので表の列には数えない。印刷には出さない
+                  <td
+                    aria-label="行の高さを変える"
+                    title="ドラッグで行の高さを変える（ダブルクリックで元に戻す）"
+                    data-no-card-drag
+                    onPointerDown={handlePointerDown(row.key)}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerUp}
+                    onDoubleClick={() => onRowHeightChange(row.key, null)}
+                    className="print-sheet-ui absolute inset-x-0 -bottom-1 z-10 h-2 cursor-ns-resize touch-none border-0 p-0 hover:bg-primary/30"
+                  />
+                ) : null}
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </RowHeightContext.Provider>
   )
 }
 
@@ -775,6 +1160,10 @@ export function CornerBarSummarySections({
   onKakouchouOverrideChange,
   labelOverrides = EMPTY_LABEL_OVERRIDES,
   onLabelOverrideChange,
+  quantityOverrides = EMPTY_OVERRIDES,
+  onQuantityOverrideChange,
+  rowHeights,
+  onRowHeightChange,
 }: {
   placements: AdditionalRebarPlacementLike[]
   /** 集計行 key → 手入力した加工長(mm)。無い行は自動計算の値 */
@@ -783,6 +1172,13 @@ export function CornerBarSummarySections({
   /** 集計行 key → 手入力した筋種類名。無い行は「コーナー筋」などの元の名前 */
   labelOverrides?: Readonly<Record<string, string>>
   onLabelOverrideChange?: (rowKey: string, value: string | null) => void
+  /** 集計行 key → 手入力した本数。無い行は集計した本数 */
+  quantityOverrides?: Readonly<Record<string, number>>
+  onQuantityOverrideChange?: (rowKey: string, value: number | null) => void
+  /** 印刷レイアウト画面で、行ごとに決めた高さ(px) */
+  rowHeights?: Readonly<Record<string, number>>
+  /** 渡したときだけ行の高さを変えられる（印刷レイアウト画面のカード） */
+  onRowHeightChange?: (rowKey: string, height: number | null) => void
 }) {
   const summary = useMemo(() => aggregateAdditionalRebars(placements), [placements])
   const rows = useMemo(
@@ -793,6 +1189,8 @@ export function CornerBarSummarySections({
         onKakouchouOverrideChange,
         labelOverrides,
         onLabelOverrideChange,
+        quantityOverrides,
+        onQuantityOverrideChange,
       ),
     [
       summary,
@@ -800,6 +1198,8 @@ export function CornerBarSummarySections({
       onKakouchouOverrideChange,
       labelOverrides,
       onLabelOverrideChange,
+      quantityOverrides,
+      onQuantityOverrideChange,
     ],
   )
 
@@ -810,7 +1210,7 @@ export function CornerBarSummarySections({
   return (
     <div className="corner-summary-print-root">
       <div className="corner-summary-section overflow-x-auto rounded-lg border-2 border-primary bg-white p-5">
-        <SheetTable rows={rows} />
+        <SheetTable rows={rows} rowHeights={rowHeights} onRowHeightChange={onRowHeightChange} />
       </div>
     </div>
   )

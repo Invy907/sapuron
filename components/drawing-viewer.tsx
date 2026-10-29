@@ -49,25 +49,34 @@ import {
   clampCornerBarSizePx,
   cornerBarCanvasGeometry,
   cornerBarCategoryLabel,
+  cornerBarLayerMark,
+  cornerBarSupportsLayer,
+  cornerBarCalloutOffset,
+  setCornerBarCalloutOffset,
+  CORNER_BAR_CATEGORIES,
   cornerBarRotationLabel,
   cornerBarSegmentLines,
   cornerBarShapeLabel,
   cornerBarRotationFromDrag,
   DEFAULT_CORNER_BAR_SIZE_PX,
   getDefaultCornerBarSizePxForPlacement,
-  getCornerBarShape,
+  resolveCornerBarShape,
   getCornerBarShapeOptionsForCategory,
   buildCornerBarPrintSummary,
   cornerBarLegacyFieldsFromBars,
   makeCornerBarDraft,
   cornerBarThumbPath,
+  cornerBarStrokePathD,
+  isFreeShapeCategory,
   normalizeCornerBarBars,
   normalizeCornerBarFlip,
   cornerBarOriginKeepingVertex,
   cornerBarDraggableEnds,
   resizeCornerBarEdgeToPoint,
   normalizeCornerBarRotation,
+  nextCornerBarRotation,
   isPerEdgeVisualDrawCategory,
+  DEFAULT_CORNER_BAR_COLORS,
   type CornerBarBarItem,
   type CornerBarCategory,
   type CornerBarGeometry,
@@ -219,11 +228,81 @@ function buildCornerBarPrintSummaryHtml(
   const rows = summary.detailRows
     .map((row) => {
       const color = getSegmentStrokeHex(normalizeSegmentColor(row.color), false)
-      const label = `${cornerBarCategoryLabel(row.category)} ${row.diameter}`
+      const label = `${cornerBarCategoryLabel(row.category)} ${cornerBarLayerMark(row.layer)}${row.diameter}`
       return `<div class="corner-summary-row"><span class="corner-summary-label-wrap"><span class="corner-summary-chip" style="background:${color};"></span><span class="corner-summary-label">${escapeHtml(label)}</span></span><span class="corner-summary-qty">${row.qty} 本</span></div>`
     })
     .join('')
   return `<div class="summary corner-summary" style="left:${left}px;top:${top}px;--sum-scale:${scale};"><div class="corner-summary-rows">${rows}</div></div>`
+}
+
+/** 図面に書く寸法（引き出し線つき）の配置。座標は全て図面座標 */
+type CornerBarCallout = {
+  /** 引き出し線の根元（いちばん長い辺の中点） */
+  anchor: Point
+  /** 引き出し線の先（文字の脇） */
+  labelAt: Point
+  alignRight: boolean
+  lines: string[]
+  fontPx: number
+  lineHeight: number
+  textX: number
+  firstY: number
+  /** 文字の範囲。ドラッグで掴む判定に使う */
+  box: { x0: number; y0: number; x1: number; y1: number }
+}
+
+let calloutMeasureCtx: CanvasRenderingContext2D | null = null
+
+function measureCalloutTextWidth(text: string, font: string): number {
+  if (!calloutMeasureCtx) calloutMeasureCtx = document.createElement('canvas').getContext('2d')
+  if (!calloutMeasureCtx) return text.length * 8
+  calloutMeasureCtx.font = font
+  return calloutMeasureCtx.measureText(text).width
+}
+
+/**
+ * 図面上の寸法の書き込み（引き出し線）の位置。いちばん長い辺の中点から、
+ * 形の外側（ストレートは縦なら右、横なら上）へ distance だけ離した所に文字を置く。
+ */
+function cornerBarCalloutPlacement(
+  points: Array<{ x: number; y: number }>,
+  distance: number,
+): { anchor: Point; labelAt: Point; alignRight: boolean } | null {
+  let best = -1
+  let bestLen = 0
+  for (let i = 0; i < points.length - 1; i++) {
+    const len = Math.hypot(points[i + 1]!.x - points[i]!.x, points[i + 1]!.y - points[i]!.y)
+    if (len > bestLen) {
+      bestLen = len
+      best = i
+    }
+  }
+  if (best < 0 || bestLen === 0) return null
+  const a = points[best]!
+  const b = points[best + 1]!
+  const anchor = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  // 辺に垂直な向き。形の中心と反対側（外側）を選ぶ
+  let nx = -(b.y - a.y) / bestLen
+  let ny = (b.x - a.x) / bestLen
+  const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length
+  const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length
+  const toCenter = (cx - anchor.x) * nx + (cy - anchor.y) * ny
+  if (toCenter > 1e-6 || (Math.abs(toCenter) <= 1e-6 && (nx < 0 || (nx === 0 && ny > 0)))) {
+    nx = -nx
+    ny = -ny
+  }
+  // 斜め上に引き出して、文字が線と重ならないようにする
+  const labelAt = {
+    x: anchor.x + nx * distance + (nx === 0 ? distance * 0.6 : 0),
+    y: anchor.y + ny * distance - (ny === 0 ? distance * 0.6 : 0),
+  }
+  return { anchor, labelAt, alignRight: labelAt.x < anchor.x }
+}
+
+/** 印刷の表示選択の並び（筋種類の順） */
+function cornerBarCategoryRank(category: string): number {
+  const index = CORNER_BAR_CATEGORIES.findIndex((c) => c.id === category)
+  return index < 0 ? CORNER_BAR_CATEGORIES.length : index
 }
 
 function buildDrawingPrintSummaryGroups(
@@ -387,6 +466,8 @@ type DrawingPaintOptions = {
   /** ユニット描画中・分割ホバー（ユニットタブの操作フィードバック） */
   showUnitInteractionOverlay?: boolean
   showDoma?: boolean
+  /** 描く付加筋を絞る（印刷で形状ごとに出す・出さないを選んだとき） */
+  cornerBarFilter?: (cb: DrawingCornerBar) => boolean
 }
 
 /**
@@ -663,6 +744,13 @@ export function DrawingViewer({
   const [activePlacementCategory, setActivePlacementCategory] =
     useState<CornerBarCategory>('CORNER')
   const [cornerBarDrag, setCornerBarDrag] = useState<CornerBarDragState | null>(null)
+  /** 図面に書いた寸法の文字のドラッグ。start は引き出し線の根元から文字までのずれ */
+  const [calloutDrag, setCalloutDrag] = useState<{
+    id: string
+    origin: Point
+    start: Point
+  } | null>(null)
+  const calloutDragOffsetRef = useRef<Point | null>(null)
   const [cornerBarEdgeDrag, setCornerBarEdgeDrag] = useState<CornerBarEdgeDragState | null>(
     null,
   )
@@ -744,14 +832,31 @@ export function DrawingViewer({
       return merged
     })
   }
-  /** これから配置する付加筋の色（配置設定で選ぶ） */
-  const [cornerPlacementColor, setCornerPlacementColor] = useState<SegmentColor>('red')
+  /**
+   * これから配置する付加筋の色（配置設定で選ぶ）。筋種類ごとに覚え、
+   * まだ選んでいない筋種類は既定の色（コーナー筋＝黄・添え筋＝灰・特殊コーナー筋＝マゼンタ）
+   */
+  const [cornerPlacementColorByCategory, setCornerPlacementColorByCategory] = useState<
+    Partial<Record<CornerBarCategory, SegmentColor>>
+  >({})
   /** 選択モードで空白をドラッグしたときのトースト */
   const [selectModeEmptyDrag, setSelectModeEmptyDrag] = useState<{ origin: Point } | null>(null)
   const [selectModeCannotDrawToastOpen, setSelectModeCannotDrawToastOpen] = useState(false)
 
   const cornerBarPlacementCategory = (placementDraft?.category ??
     activePlacementCategory) as CornerBarCategory
+  const cornerPlacementColor =
+    cornerPlacementColorByCategory[cornerBarPlacementCategory] ??
+    DEFAULT_CORNER_BAR_COLORS[cornerBarPlacementCategory] ??
+    'red'
+  const setCornerPlacementColor = useCallback(
+    (color: SegmentColor) =>
+      setCornerPlacementColorByCategory((prev) => ({
+        ...prev,
+        [cornerBarPlacementCategory]: color,
+      })),
+    [cornerBarPlacementCategory],
+  )
   const cornerBarShapeModalOptions = useMemo(
     () => getCornerBarShapeOptionsForCategory(cornerBarPlacementCategory),
     [cornerBarPlacementCategory],
@@ -831,7 +936,16 @@ export function DrawingViewer({
   const [printSummaryScale, setPrintSummaryScale] = useState(1)
   const [cornerPrintSummaryPos, setCornerPrintSummaryPos] = useState<Point>({ x: 24, y: 24 })
   const [cornerPrintSummaryScale, setCornerPrintSummaryScale] = useState(1)
+  /** 付加筋タブでユニットも出すときの、ユニットの入力データの箱の位置（特殊コーナー筋の箱とは別） */
+  const [cornerPrintUnitSummaryPos, setCornerPrintUnitSummaryPos] = useState<Point>({
+    x: 24,
+    y: 260,
+  })
   const [printPreviewLayer, setPrintPreviewLayer] = useState<DrawingLayer>('unit')
+  /** 付加筋タブの印刷で、ユニットも一緒に出すか */
+  const [cornerPrintShowUnits, setCornerPrintShowUnits] = useState(false)
+  /** 付加筋タブの印刷で出さない筋種類（category） */
+  const [cornerPrintHiddenCategories, setCornerPrintHiddenCategories] = useState<string[]>([])
   const [printModalImageUrl, setPrintModalImageUrl] = useState<string | null>(null)
   /** 印刷用画像の実サイズ（図面部分だけを切り出すため canvas とは異なる） */
   const [printImageSize, setPrintImageSize] = useState<{ w: number; h: number } | null>(
@@ -840,8 +954,10 @@ export function DrawingViewer({
   /** 図面印刷の用紙（既定は A3 横） */
   const [printPaper, setPrintPaper] = useState<PrintPaper>('a3-landscape')
   const [summaryDragging, setSummaryDragging] = useState(false)
-  const summaryDragRef = useRef<Point | null>(null)
+  /** どの箱をどこで掴んだか。main = 付加筋（ユニットタブではユニット）、unit = 付加筋タブのユニット */
+  const summaryDragRef = useRef<(Point & { target: 'main' | 'unit' }) | null>(null)
   const summaryBoxRef = useRef<HTMLDivElement>(null)
+  const unitSummaryBoxRef = useRef<HTMLDivElement>(null)
   const printPreviewRef = useRef<HTMLDivElement>(null)
 
   const supabase = createClient()
@@ -1122,14 +1238,69 @@ export function DrawingViewer({
     () => buildDrawingPrintSummaryGroups(segments, effectiveUnits),
     [segments, effectiveUnits],
   )
-  const cornerBarPrintSummary = useMemo(
-    () => buildCornerBarPrintSummary(cornerBars, normalizeSegmentColor),
-    [cornerBars],
+  /** 付加筋タブの印刷に出す付加筋（筋種類ごとの表示選択を反映） */
+  const printCornerBars = useMemo(
+    () => cornerBars.filter((cb) => !cornerPrintHiddenCategories.includes(cb.category)),
+    [cornerBars, cornerPrintHiddenCategories],
   )
-  const printPreviewHasSummary =
+  /** 付加筋タブの入力データの箱は特殊コーナー筋・開口補強筋だけ（コーナー筋・添え筋は図面で分かるので出さない） */
+  const cornerBarPrintSummary = useMemo(
+    () =>
+      buildCornerBarPrintSummary(
+        printCornerBars.filter((cb) => isFreeShapeCategory(cb.category)),
+        normalizeSegmentColor,
+      ),
+    [printCornerBars],
+  )
+  /** 付加筋タブの印刷の表示選択に並べる筋種類（この図面にあるものだけ） */
+  const cornerPrintCategoryOptions = useMemo(() => {
+    const categories = [...new Set(cornerBars.map((cb) => cb.category))]
+    categories.sort((a, b) => cornerBarCategoryRank(a) - cornerBarCategoryRank(b))
+    return categories.map((category) => ({
+      key: category,
+      label: cornerBarCategoryLabel(category),
+    }))
+  }, [cornerBars])
+  const cornerPrintShowsUnitSummary =
+    cornerPrintShowUnits && drawingPrintSummaryGroups.length > 0
+  /** 1 つ目の箱（付加筋タブは特殊コーナー筋、ユニットタブはユニット） */
+  const printPreviewHasMainSummary =
     printPreviewLayer === 'corner'
-      ? cornerBars.length > 0
+      ? cornerBarPrintSummary.detailRows.length > 0
       : drawingPrintSummaryGroups.length > 0
+  /** 付加筋タブでユニットも出すときの、別の箱 */
+  const printPreviewHasUnitSummary = printPreviewLayer === 'corner' && cornerPrintShowsUnitSummary
+  const printPreviewHasSummary = printPreviewHasMainSummary || printPreviewHasUnitSummary
+  /** 印刷プレビューのユニットの入力データ（ユニットタブ、付加筋タブでユニットも出すとき） */
+  const unitPrintSummaryNode = (
+    <div className="space-y-4">
+      {drawingPrintSummaryGroups.map((group) => {
+        const color = getSegmentStrokeHex(group.color, false)
+        return (
+          <section key={group.key}>
+            <div className="text-sm font-bold leading-none text-slate-500">{group.name}</div>
+            <div className="space-y-0.5 font-mono font-bold leading-tight">
+              {group.rows.map((row) => {
+                const mark = circledSummaryNumber(row.no)
+                return (
+                  <div
+                    key={`${group.key}-${row.no ?? 'none'}-${row.len}`}
+                    className="flex items-baseline gap-1"
+                    style={{ color }}
+                  >
+                    {mark ? (
+                      <span className="shrink-0 text-[15px] leading-none">{mark}</span>
+                    ) : null}
+                    <span className="text-[13px]">{drawingPrintSummaryDetailText(row)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
   const activePrintSummaryPos =
     printPreviewLayer === 'corner' ? cornerPrintSummaryPos : printSummaryPos
   const activePrintSummaryScale =
@@ -1149,10 +1320,12 @@ export function DrawingViewer({
       const rect = container.getBoundingClientRect()
       const nextX = ev.clientX - rect.left - drag.x
       const nextY = ev.clientY - rect.top - drag.y
-      const boxEl = summaryBoxRef.current
+      const boxEl = drag.target === 'unit' ? unitSummaryBoxRef.current : summaryBoxRef.current
       const boxW = (boxEl?.offsetWidth ?? 120) * activePrintSummaryScale
       const boxH = (boxEl?.offsetHeight ?? 80) * activePrintSummaryScale
-      setActivePrintSummaryPos({
+      const setPos =
+        drag.target === 'unit' ? setCornerPrintUnitSummaryPos : setActivePrintSummaryPos
+      setPos({
         x: Math.max(0, Math.min(nextX, Math.max(0, rect.width - boxW))),
         y: Math.max(0, Math.min(nextY, Math.max(0, rect.height - boxH))),
       })
@@ -1455,7 +1628,8 @@ export function DrawingViewer({
    * コーナー/特殊コーナーは defaultLengths × drawScale、mm は使わない。
    */
   const cornerBarGeometryOf = useCallback((cb: DrawingCornerBar): CornerBarGeometry | null => {
-    const shape = getCornerBarShape(cb.shape_type)
+    // くの字は配置ごとの角度で辺の向きが変わる
+    const shape = resolveCornerBarShape(cb.shape_type, cb.bars)
     if (!shape) return null
     const drawSegments = isPerEdgeVisualDrawCategory(cb.category)
       ? (normalizeCornerBarBars(shape, cb)[0]?.segments ?? [])
@@ -1470,6 +1644,73 @@ export function DrawingViewer({
       normalizeCornerBarFlip(cb.flipped),
     )
   }, [])
+
+  /**
+   * 特殊コーナー筋の L 形・ストレートに書く寸法「㊤D16(700×2170)×1」の配置。
+   * 文字の位置はドラッグで動かした値（calloutOffset）、無ければ形の外側に自動で置く
+   */
+  const cornerBarCalloutOf = useCallback(
+    (cb: DrawingCornerBar): CornerBarCallout | null => {
+      if (!cornerBarSupportsLayer(cb.category, cb.shape_type)) return null
+      const geometry = cornerBarGeometryOf(cb)
+      const shapeDef = resolveCornerBarShape(cb.shape_type, cb.bars)
+      if (!geometry || !shapeDef) return null
+      const lines = normalizeCornerBarBars(shapeDef, cb)
+        .filter((bar) => bar.quantity > 0)
+        .map((bar) => {
+          const dims = bar.segments.map((seg) => seg.lengthMm ?? '—').join('×')
+          return `${cornerBarLayerMark(bar.layer)}${bar.barType}(${dims})×${bar.quantity}`
+        })
+      const placement = cornerBarCalloutPlacement(geometry.points, 36 / scale)
+      if (lines.length === 0 || !placement) return null
+      const saved = cornerBarCalloutOffset(cb.bars)
+      const { anchor } = placement
+      const labelAt = saved ? { x: anchor.x + saved.x, y: anchor.y + saved.y } : placement.labelAt
+      const alignRight = labelAt.x < anchor.x
+      const fontPx = 13 / scale
+      const lineHeight = fontPx * 1.3
+      const textX = labelAt.x + (alignRight ? -4 : 4) / scale
+      const firstY = labelAt.y - ((lines.length - 1) * lineHeight) / 2
+      const font = `${fontPx}px sans-serif`
+      const width = Math.max(...lines.map((line) => measureCalloutTextWidth(line, font)))
+      const x0 = alignRight ? textX - width : textX
+      return {
+        anchor,
+        labelAt,
+        alignRight,
+        lines,
+        fontPx,
+        lineHeight,
+        textX,
+        firstY,
+        box: {
+          x0,
+          y0: firstY - lineHeight / 2,
+          x1: x0 + width,
+          y1: firstY + (lines.length - 0.5) * lineHeight,
+        },
+      }
+    },
+    [cornerBarGeometryOf, scale],
+  )
+
+  /** 寸法の文字の上か（上に描かれているものから順に探す） */
+  const findCornerBarCalloutAtPoint = useCallback(
+    (pt: Point): { cornerBar: DrawingCornerBar; callout: CornerBarCallout } | null => {
+      const pad = 3 / scale
+      for (let i = cornerBars.length - 1; i >= 0; i -= 1) {
+        const cb = cornerBars[i]!
+        const callout = cornerBarCalloutOf(cb)
+        if (!callout) continue
+        const { x0, y0, x1, y1 } = callout.box
+        if (pt.x >= x0 - pad && pt.x <= x1 + pad && pt.y >= y0 - pad && pt.y <= y1 + pad) {
+          return { cornerBar: cb, callout }
+        }
+      }
+      return null
+    },
+    [cornerBars, cornerBarCalloutOf, scale],
+  )
 
   const findCornerBarAtPoint = useCallback(
     (pt: Point, clickRadius: number): DrawingCornerBar | null => {
@@ -1492,28 +1733,44 @@ export function DrawingViewer({
    * 選択中の付加筋の端点（ドラッグで辺を伸び縮みできる所）を探す。
    * 辺ごとに図面上の長さを持つコーナー筋・特殊コーナー筋だけが対象。
    */
+  /**
+   * 付加筋の端点（ドラッグで辺を伸び縮みできる所）を探す。
+   * 選択モードは選択中の 1 本だけ。位置モードは選択していなくても掴めるよう、
+   * 全ての付加筋を上に描かれているものから順に探す。
+   */
   const findCornerBarEndAtPoint = useCallback(
     (
       pt: Point,
       radius: number,
+      anyCornerBar = false,
     ): { cornerBar: DrawingCornerBar; edgeIndex: number; cursor: string } | null => {
-      const cb = cornerBars.find((c) => c.id === selectedCornerBarId)
-      if (!cb || !isPerEdgeVisualDrawCategory(cb.category)) return null
-      const shape = getCornerBarShape(cb.shape_type)
-      const geometry = cornerBarGeometryOf(cb)
-      if (!shape || !geometry) return null
-      for (const end of cornerBarDraggableEnds(shape)) {
-        const p = geometry.points[end.vertexIndex]
-        const neighbor = geometry.points[end.edgeIndex === 0 ? 1 : end.edgeIndex]
-        if (!p || !neighbor || Math.hypot(pt.x - p.x, pt.y - p.y) > radius) continue
-        // 図面の表示回転が 90°/270° なら画面上では縦横が入れ替わる
-        const horizontalOnCanvas = Math.abs(p.x - neighbor.x) >= Math.abs(p.y - neighbor.y)
-        const horizontalOnScreen =
-          rotationSteps % 2 === 0 ? horizontalOnCanvas : !horizontalOnCanvas
-        return {
-          cornerBar: cb,
-          edgeIndex: end.edgeIndex,
-          cursor: horizontalOnScreen ? 'ew-resize' : 'ns-resize',
+      const selected = cornerBars.find((c) => c.id === selectedCornerBarId)
+      const candidates = anyCornerBar
+        ? [
+            ...(selected ? [selected] : []),
+            ...[...cornerBars].reverse().filter((c) => c.id !== selectedCornerBarId),
+          ]
+        : selected
+          ? [selected]
+          : []
+      for (const cb of candidates) {
+        if (!isPerEdgeVisualDrawCategory(cb.category)) continue
+        const shape = resolveCornerBarShape(cb.shape_type, cb.bars)
+        const geometry = cornerBarGeometryOf(cb)
+        if (!shape || !geometry) continue
+        for (const end of cornerBarDraggableEnds(shape)) {
+          const p = geometry.points[end.vertexIndex]
+          const neighbor = geometry.points[end.edgeIndex === 0 ? 1 : end.edgeIndex]
+          if (!p || !neighbor || Math.hypot(pt.x - p.x, pt.y - p.y) > radius) continue
+          // 図面の表示回転が 90°/270° なら画面上では縦横が入れ替わる
+          const horizontalOnCanvas = Math.abs(p.x - neighbor.x) >= Math.abs(p.y - neighbor.y)
+          const horizontalOnScreen =
+            rotationSteps % 2 === 0 ? horizontalOnCanvas : !horizontalOnCanvas
+          return {
+            cornerBar: cb,
+            edgeIndex: end.edgeIndex,
+            cursor: horizontalOnScreen ? 'ew-resize' : 'ns-resize',
+          }
         }
       }
       return null
@@ -1858,7 +2115,7 @@ export function DrawingViewer({
     sizePx: number,
     drag?: { dx: number; dy: number },
   ) {
-    const shape = getCornerBarShape(draft.shapeType)
+    const shape = resolveCornerBarShape(draft.shapeType, draft.bars)
     if (!shape) return
     const rotation = drag
       ? cornerBarRotationFromDrag(
@@ -1882,11 +2139,11 @@ export function DrawingViewer({
       y: pt.y,
       size_px: clampCornerBarSizePx(sizePx),
       rotation,
-      flipped:
-        draft.category === 'SPECIAL_CORNER'
-          ? normalizeCornerBarFlip(draft.flipped)
-          : false,
-      color: cornerPlacementColor,
+      flipped: isFreeShapeCategory(draft.category) ? normalizeCornerBarFlip(draft.flipped) : false,
+      color:
+        cornerPlacementColorByCategory[draft.category] ??
+        DEFAULT_CORNER_BAR_COLORS[draft.category] ??
+        cornerPlacementColor,
       label: null as string | null,
     }
     const { data, error } = await supabase
@@ -2002,7 +2259,7 @@ export function DrawingViewer({
     options?: { keepVertexIndex?: number },
   ) {
     void enqueueCornerBarUpdate(id, (latest) => {
-      const shape = getCornerBarShape(latest.shape_type)
+      const shape = resolveCornerBarShape(latest.shape_type, latest.bars)
       if (!shape) return null
       const currentBars = normalizeCornerBarBars(shape, latest)
       const bars = patch(currentBars)
@@ -2106,6 +2363,58 @@ export function DrawingViewer({
     return () => window.clearTimeout(id)
   }, [selectModeCannotDrawToastOpen])
 
+  // 寸法の文字のドラッグ。動かしている間は画面だけ更新し、離したときに保存する
+  useEffect(() => {
+    if (!calloutDrag) return
+    const drag = calloutDrag
+
+    function pointFromClient(clientX: number, clientY: number): Point {
+      const canvas = canvasRef.current
+      if (!canvas) return { x: 0, y: 0 }
+      const rect = canvas.getBoundingClientRect()
+      const xr = (clientX - rect.left - offset.x) / scale
+      const yr = (clientY - rect.top - offset.y) / scale
+      const img = imgRef.current
+      if (!img) return { x: xr, y: yr }
+      const w = img.width
+      const h = img.height
+      const steps = ((rotationSteps % 4) + 4) % 4
+      if (steps === 0) return { x: xr, y: yr }
+      if (steps === 1) return { x: yr, y: h - xr }
+      if (steps === 2) return { x: w - xr, y: h - yr }
+      return { x: w - yr, y: xr }
+    }
+
+    function handleMove(ev: MouseEvent) {
+      const pt = pointFromClient(ev.clientX, ev.clientY)
+      const next = {
+        x: drag.start.x + pt.x - drag.origin.x,
+        y: drag.start.y + pt.y - drag.origin.y,
+      }
+      calloutDragOffsetRef.current = next
+      setCornerBars((prev) =>
+        prev.map((cb) =>
+          cb.id === drag.id ? { ...cb, bars: setCornerBarCalloutOffset(cb.bars ?? [], next) } : cb,
+        ),
+      )
+    }
+
+    function handleUp() {
+      const moved = calloutDragOffsetRef.current
+      calloutDragOffsetRef.current = null
+      setCalloutDrag(null)
+      if (moved) patchCornerBarBars(drag.id, (bars) => setCornerBarCalloutOffset(bars, moved))
+    }
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calloutDrag, offset.x, offset.y, scale, rotationSteps])
+
   useEffect(() => {
     if (!cornerBarDrag) return
 
@@ -2168,7 +2477,7 @@ export function DrawingViewer({
     if (!cornerBarEdgeDrag) return
 
     const drag = cornerBarEdgeDrag
-    const shape = getCornerBarShape(drag.snapshot.shape_type)
+    const shape = resolveCornerBarShape(drag.snapshot.shape_type, drag.snapshot.bars)
     if (!shape) return
     const snapshotBars = normalizeCornerBarBars(shape, drag.snapshot)
     let latest: Partial<DrawingCornerBar> | null = null
@@ -2395,6 +2704,7 @@ export function DrawingViewer({
         ctx.save()
         if (cornerAlpha < 1) ctx.globalAlpha = cornerAlpha
       cornerBars.forEach((cb) => {
+        if (options.cornerBarFilter && !options.cornerBarFilter(cb)) return
         const geometry = cornerBarGeometryOf(cb)
         if (!geometry) return
         const isSelected =
@@ -2403,31 +2713,39 @@ export function DrawingViewer({
           cb.id === selectedCornerBarId
         const strokeHex = getSegmentStrokeHex(cb.color, isSelected)
 
-        const tracePath = () => {
+        // フックは半円、四角の継手は内側へずらして描く（形状定義に無ければ折れ線のまま）
+        const strokeShape = resolveCornerBarShape(cb.shape_type, cb.bars)
+        const strokePath = strokeShape
+          ? new Path2D(cornerBarStrokePathD(strokeShape, geometry.points, 4 / scale))
+          : null
+        const strokeTrace = (lineWidth: number) => {
+          if (strokePath) {
+            ctx.lineWidth = lineWidth
+            ctx.stroke(strokePath)
+            return
+          }
           ctx.beginPath()
           geometry.points.forEach((p, i) => {
             if (i === 0) ctx.moveTo(p.x, p.y)
             else ctx.lineTo(p.x, p.y)
           })
+          ctx.lineWidth = lineWidth
+          ctx.stroke()
         }
 
         if (isSelected) {
           ctx.save()
-          tracePath()
           ctx.strokeStyle = 'rgba(250, 204, 21, 0.34)'
-          ctx.lineWidth = 10 / scale
           ctx.lineCap = 'round'
-          ctx.stroke()
+          strokeTrace(10 / scale)
           ctx.restore()
         }
 
         ctx.save()
-        tracePath()
         ctx.strokeStyle = strokeHex
-        ctx.lineWidth = (isSelected ? 3 : 2) / scale
         ctx.lineCap = 'round'
         ctx.lineJoin = 'round'
-        ctx.stroke()
+        strokeTrace((isSelected ? 3 : 2) / scale)
         ctx.restore()
 
         const xs = geometry.points.map((p) => p.x)
@@ -2448,7 +2766,7 @@ export function DrawingViewer({
 
         // 選択中のコーナー筋・特殊コーナー筋は、両端に辺を伸び縮みさせる掴み所を出す
         const shape = isSelected && isPerEdgeVisualDrawCategory(cb.category)
-          ? getCornerBarShape(cb.shape_type)
+          ? resolveCornerBarShape(cb.shape_type, cb.bars)
           : null
         if (shape) {
           ctx.save()
@@ -2463,6 +2781,50 @@ export function DrawingViewer({
             ctx.fill()
             ctx.stroke()
           }
+          ctx.restore()
+        }
+
+        // 特殊コーナー筋の L 形・ストレートだけは、手書きの拾い出しと同じく
+        // 「㊤D16(700×2170)×1」を径ごとに 1 行ずつ、曲線の引き出し線でつないで図面に書く
+        const callout = cornerBarCalloutOf(cb)
+        if (callout) {
+          const { anchor, labelAt, lines, fontPx, lineHeight, textX, firstY } = callout
+          // 根元と文字を結ぶ線を少し膨らませ、寸法線ではなく引き出し線だと分かるようにする
+          const dx = labelAt.x - anchor.x
+          const dy = labelAt.y - anchor.y
+          const len = Math.hypot(dx, dy) || 1
+          let px = -dy / len
+          let py = dx / len
+          if (py > 0) {
+            px = -px
+            py = -py
+          }
+          const bulge = len * 0.3
+          const ctrl = {
+            x: (anchor.x + labelAt.x) / 2 + px * bulge,
+            y: (anchor.y + labelAt.y) / 2 + py * bulge,
+          }
+          ctx.save()
+          ctx.strokeStyle = strokeHex
+          ctx.fillStyle = strokeHex
+          ctx.lineWidth = 1.2 / scale
+          ctx.beginPath()
+          ctx.moveTo(anchor.x, anchor.y)
+          ctx.quadraticCurveTo(ctrl.x, ctrl.y, labelAt.x, labelAt.y)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(anchor.x, anchor.y, 2 / scale, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.font = `${fontPx}px sans-serif`
+          ctx.textAlign = callout.alignRight ? 'right' : 'left'
+          ctx.textBaseline = 'middle'
+          lines.forEach((line, i) => {
+            const y = firstY + i * lineHeight
+            ctx.lineWidth = 3 / scale
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+            ctx.strokeText(line, textX, y)
+            ctx.fillText(line, textX, y)
+          })
           ctx.restore()
         }
 
@@ -2641,6 +3003,7 @@ export function DrawingViewer({
       domaInputModal,
       domaSettingsByDirection,
       domaBarDirection,
+      cornerBarCalloutOf,
     ],
   )
 
@@ -2683,7 +3046,10 @@ export function DrawingViewer({
   }, [imgLoaded, layer, cornerBarsOnlyView, paintDrawing])
 
   const captureDrawingForPrint = useCallback(
-    (targetLayer: DrawingLayer): string | null => {
+    (
+      targetLayer: DrawingLayer,
+      cornerOptions?: { showUnits: boolean; hiddenCategories: string[] },
+    ): string | null => {
       const canvas = canvasRef.current
       if (!canvas || !imgLoaded) return null
       const off = document.createElement('canvas')
@@ -2703,12 +3069,15 @@ export function DrawingViewer({
               showUnitInteractionOverlay: false,
             }
           : {
-              showSegments: false,
+              showSegments: cornerOptions?.showUnits ?? false,
               showCornerBars: true,
-              segmentEmphasis: 'hidden',
+              segmentEmphasis: cornerOptions?.showUnits ? 'full' : 'hidden',
               cornerEmphasis: 'full',
               interactiveHighlight: false,
               showUnitInteractionOverlay: false,
+              cornerBarFilter: cornerOptions?.hiddenCategories.length
+                ? (cb) => !cornerOptions.hiddenCategories.includes(cb.category)
+                : undefined,
             }
 
       paintDrawing(ctx, off.width, off.height, printOptions)
@@ -3251,6 +3620,34 @@ export function DrawingViewer({
     return { x: w - yr, y: xr } // 270deg clockwise
   }
 
+  /**
+   * 付加筋タブで右クリックすると 90° 回す（右パネルの「向き」ボタンと同じ）。
+   * 付加筋の上ならその付加筋、外なら選択中の付加筋。位置モードで何も選んでいなければ
+   * これから配置する向きを回す。
+   */
+  function handleCanvasContextMenu(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (layer !== 'corner') return
+    const pt = screenToCanvas(e)
+    const hit = findCornerBarAtPoint(pt, 10 / scale)
+    const target = hit ?? cornerBars.find((c) => c.id === selectedCornerBarId) ?? null
+    if (target) {
+      e.preventDefault()
+      if (hit && hit.id !== selectedCornerBarId) selectCornerBar(hit.id)
+      // 連続で右クリックしても取りこぼさないよう、最新の向きから回す
+      void enqueueCornerBarUpdate(target.id, (latest) => ({
+        rotation: nextCornerBarRotation(latest.rotation),
+      }))
+      return
+    }
+    if (cornerTool === 'place' && placementDraft) {
+      e.preventDefault()
+      changePlacementDraft({
+        ...placementDraft,
+        rotation: nextCornerBarRotation(placementDraft.rotation),
+      })
+    }
+  }
+
   function screenToCanvas(e: React.MouseEvent): Point {
     return clientPointToCanvas(e.clientX, e.clientY)
   }
@@ -3281,8 +3678,9 @@ export function DrawingViewer({
     if (layer === 'corner') {
       if (e.button !== 0) return
       const pt = screenToCanvas(e)
-      // 選択中の付加筋の端点は、移動より先に「辺を伸ばす」ドラッグとして掴む
-      const end = cornerTool === 'select' ? findCornerBarEndAtPoint(pt, 8 / scale) : null
+      // 付加筋の端点は、移動・配置より先に「辺を伸ばす」ドラッグとして掴む。
+      // 位置モードでも、置いた付加筋の端をそのまま伸び縮みできるようにする
+      const end = findCornerBarEndAtPoint(pt, 8 / scale, cornerTool === 'place')
       if (end) {
         setCornerBarEdgeDrag({
           id: end.cornerBar.id,
@@ -3290,6 +3688,23 @@ export function DrawingViewer({
           snapshot: end.cornerBar,
         })
         setCornerBarEndHoverCursor(end.cursor)
+        return
+      }
+      // 図面に書いた寸法の文字は、付加筋本体より先に掴んでドラッグで動かせる
+      const calloutHit = findCornerBarCalloutAtPoint(pt)
+      if (calloutHit) {
+        const { cornerBar, callout } = calloutHit
+        if (cornerTool === 'select') selectCornerBar(cornerBar.id)
+        calloutDragOffsetRef.current = null
+        setCalloutDrag({
+          id: cornerBar.id,
+          origin: pt,
+          start: {
+            x: callout.labelAt.x - callout.anchor.x,
+            y: callout.labelAt.y - callout.anchor.y,
+          },
+        })
+        setCornerBarEndHoverCursor('move')
         return
       }
       const hit = findCornerBarAtPoint(pt, 10 / scale)
@@ -3431,7 +3846,7 @@ export function DrawingViewer({
       setOffset({ x: e.clientX - panStart.x, y: e.clientY - panStart.y })
       return
     }
-    if (segmentDrag || segmentLabelDrag || cornerBarDrag || cornerBarEdgeDrag) {
+    if (segmentDrag || segmentLabelDrag || cornerBarDrag || cornerBarEdgeDrag || calloutDrag) {
       return
     }
     if (layer === 'doma') {
@@ -3443,8 +3858,9 @@ export function DrawingViewer({
     }
     if (layer === 'corner') {
       const pt = screenToCanvas(e)
-      const end = cornerTool === 'select' ? findCornerBarEndAtPoint(pt, 8 / scale) : null
-      setCornerBarEndHoverCursor(end?.cursor ?? null)
+      const end = findCornerBarEndAtPoint(pt, 8 / scale, cornerTool === 'place')
+      const overCallout = !end && findCornerBarCalloutAtPoint(pt) != null
+      setCornerBarEndHoverCursor(end?.cursor ?? (overCallout ? 'move' : null))
       setCornerBarHovering(!!findCornerBarAtPoint(pt, 10 / scale))
       return
     }
@@ -5071,7 +5487,10 @@ export function DrawingViewer({
 
     setPrintPreviewLayer(layer)
 
-    const captured = captureDrawingForPrint(layer)
+    const captured = captureDrawingForPrint(layer, {
+      showUnits: cornerPrintShowUnits,
+      hiddenCategories: cornerPrintHiddenCategories,
+    })
     if (captured) {
       setPrintImageSize({ w: canvas.width, h: canvas.height })
       setPrintModalImageUrl(captured)
@@ -5107,6 +5526,14 @@ export function DrawingViewer({
     setPrintModalImageUrl(canvas.toDataURL('image/png'))
   }
 
+  /** 付加筋タブの印刷の表示選択を変えたら、プレビュー画像を描き直す */
+  function updateCornerPrintOptions(showUnits: boolean, hiddenCategories: string[]) {
+    setCornerPrintShowUnits(showUnits)
+    setCornerPrintHiddenCategories(hiddenCategories)
+    const captured = captureDrawingForPrint('corner', { showUnits, hiddenCategories })
+    if (captured) setPrintModalImageUrl(captured)
+  }
+
   function handlePrintDrawing() {
     const canvas = canvasRef.current
     const preview = printPreviewRef.current
@@ -5127,25 +5554,35 @@ export function DrawingViewer({
     const summaryLeft = Math.round(summaryPos.x * scaleX)
     const summaryTop = Math.round(summaryPos.y * scaleY)
     const summaryScale = Math.max(0.7, Math.min(1.8, summaryScaleRaw))
-    const summaryHtml =
-      printPreviewLayer === 'corner' && cornerBars.length > 0
+    const unitSectionsHtml = drawingPrintSummaryGroups
+      .map((group) => {
+        const color = getSegmentStrokeHex(group.color, false)
+        const rows = group.rows
+          .map((row) => buildDrawingPrintSummaryRowHtml(row, color))
+          .join('')
+        return `<section class="summary-group"><h2>${escapeHtml(group.name)}</h2>${rows}</section>`
+      })
+      .join('')
+    const unitBoxHtml = (left: number, top: number) =>
+      `<div class="summary" style="left:${left}px;top:${top}px;--sum-scale:${summaryScale};">${unitSectionsHtml}</div>`
+    const mainSummaryHtml = !printPreviewHasMainSummary
+      ? ''
+      : printPreviewLayer === 'corner'
         ? buildCornerBarPrintSummaryHtml(
             cornerBarPrintSummary,
             summaryLeft,
             summaryTop,
             summaryScale,
           )
-        : drawingPrintSummaryGroups.length > 0
-          ? `<div class="summary" style="left:${summaryLeft}px;top:${summaryTop}px;--sum-scale:${summaryScale};">${drawingPrintSummaryGroups
-              .map((group) => {
-                const color = getSegmentStrokeHex(group.color, false)
-                const rows = group.rows
-                  .map((row) => buildDrawingPrintSummaryRowHtml(row, color))
-                  .join('')
-                return `<section class="summary-group"><h2>${escapeHtml(group.name)}</h2>${rows}</section>`
-              })
-              .join('')}</div>`
-          : ''
+        : unitBoxHtml(summaryLeft, summaryTop)
+    // 付加筋タブでユニットも出すときは、ユニットを別の箱にして別の位置に置く
+    const unitSummaryHtml = printPreviewHasUnitSummary
+      ? unitBoxHtml(
+          Math.round(cornerPrintUnitSummaryPos.x * scaleX),
+          Math.round(cornerPrintUnitSummaryPos.y * scaleY),
+        )
+      : ''
+    const summaryHtml = mainSummaryHtml + unitSummaryHtml
 
     // 選択した用紙に「用紙に合わせる」相当でぴったり収める。
     // ブラウザの印刷ダイアログの倍率は JS から変更できないため、
@@ -5460,8 +5897,9 @@ export function DrawingViewer({
                 role="tab"
                 aria-selected={layer === t.id}
                 onClick={() => switchLayer(t.id)}
-                className={`rounded px-3 py-1 font-medium transition-colors ${
-                  isFullscreen ? 'w-full text-[11px]' : 'text-xs'
+                className={`rounded py-1 font-medium whitespace-nowrap transition-colors ${
+                  // 全画面の細いツールバーでは左右の余白を詰めて 1 行に収める
+                  isFullscreen ? 'w-full px-1 text-[11px]' : 'px-3 text-xs'
                 } ${
                   layer === t.id
                     ? 'bg-primary text-white'
@@ -5585,9 +6023,9 @@ export function DrawingViewer({
                 type="button"
                 onClick={() => setCornerTool('select')}
                 className={toolButtonClass(cornerTool === 'select')}
-                title="配置した部材を修正し、ドラッグで移動します (S)"
+                title="配置した部材を選択し、ドラッグで移動します (S)"
               >
-                修正
+                選択
               </button>
               <button
                 type="button"
@@ -5693,7 +6131,7 @@ export function DrawingViewer({
             }`}
           >
             {layer === 'corner'
-              ? 'Sキー: 修正／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
+              ? 'Sキー: 選択／Dキー: 位置／Escキー: 位置をやめる／Zキー: 選択した部材を削除／Fキー: 全画面'
               : layer === 'doma'
               ? 'Mキー: 寸法線／Dキー: 土間筋を描く／Sキー: 選択・移動／Zキー: 削除／Escキー: 描画をやめる／Fキー: 全画面'
               : splitArmedSegmentId
@@ -5729,10 +6167,10 @@ export function DrawingViewer({
               : layer === 'corner'
                 ? cornerBarDrag
                   ? 'move'
-                  : cornerTool === 'place'
-                    ? 'crosshair'
-                    : cornerBarEndHoverCursor
-                      ? cornerBarEndHoverCursor
+                  : cornerBarEndHoverCursor
+                    ? cornerBarEndHoverCursor
+                    : cornerTool === 'place'
+                      ? 'crosshair'
                       : cornerBarHovering
                         ? 'pointer'
                         : 'default'
@@ -5763,6 +6201,7 @@ export function DrawingViewer({
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
+            onContextMenu={handleCanvasContextMenu}
             onMouseLeave={() => {
               setCornerBarHovering(false)
               if (!cornerBarEdgeDrag) setCornerBarEndHoverCursor(null)
@@ -5917,6 +6356,39 @@ export function DrawingViewer({
                       : '印刷ダイアログで用紙・向き・倍率を選べます'}
                   </span>
                 </div>
+                {printPreviewLayer === 'corner' ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border bg-slate-50 px-2 py-1 text-xs">
+                    <span className="text-muted">表示</span>
+                    <label className="inline-flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        checked={cornerPrintShowUnits}
+                        onChange={(e) =>
+                          updateCornerPrintOptions(e.target.checked, cornerPrintHiddenCategories)
+                        }
+                      />
+                      ユニット
+                    </label>
+                    <span className="h-3 w-px bg-border" aria-hidden />
+                    {cornerPrintCategoryOptions.map((opt) => (
+                      <label key={opt.key} className="inline-flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={!cornerPrintHiddenCategories.includes(opt.key)}
+                          onChange={(e) =>
+                            updateCornerPrintOptions(
+                              cornerPrintShowUnits,
+                              e.target.checked
+                                ? cornerPrintHiddenCategories.filter((k) => k !== opt.key)
+                                : [...cornerPrintHiddenCategories, opt.key],
+                            )
+                          }
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
                 {printPreviewHasSummary && (
                   <div className="mt-2 inline-flex items-center gap-2 rounded border border-border bg-slate-50 px-2 py-1 text-xs">
                     <span className="text-muted">サイズ</span>
@@ -5994,7 +6466,7 @@ export function DrawingViewer({
                   className="block max-h-[72vh] max-w-full select-none"
                   draggable={false}
                 />
-                {printPreviewHasSummary && (
+                {printPreviewHasMainSummary && (
                   <div
                     ref={summaryBoxRef}
                     className="absolute z-20 min-w-[150px] cursor-move select-none rounded-md border border-slate-300/70 bg-white/85 px-3 py-2 shadow-sm backdrop-blur-[1px]"
@@ -6010,6 +6482,7 @@ export function DrawingViewer({
                       summaryDragRef.current = {
                         x: ev.clientX - ev.currentTarget.getBoundingClientRect().left,
                         y: ev.clientY - ev.currentTarget.getBoundingClientRect().top,
+                        target: 'main',
                       }
                       setSummaryDragging(true)
                     }}
@@ -6019,7 +6492,7 @@ export function DrawingViewer({
                       <div className="space-y-0.5">
                         {cornerBarPrintSummary.detailRows.map((row) => (
                           <div
-                            key={`${row.category}/${row.diameter}/${row.color}`}
+                            key={`${row.category}/${row.diameter}/${row.layer ?? ''}/${row.color}`}
                             className="flex items-center justify-between gap-2 text-[10px] text-muted"
                           >
                             <span className="flex min-w-0 items-center gap-1.5">
@@ -6033,7 +6506,9 @@ export function DrawingViewer({
                                 }}
                               />
                               <span className="truncate">
-                                {cornerBarCategoryLabel(row.category)} {row.diameter}
+                                {cornerBarCategoryLabel(row.category)}{' '}
+                                {cornerBarLayerMark(row.layer)}
+                                {row.diameter}
                               </span>
                             </span>
                             <span className="shrink-0 text-foreground">{row.qty} 本</span>
@@ -6041,40 +6516,34 @@ export function DrawingViewer({
                         ))}
                       </div>
                     ) : (
-                      <div className="space-y-4">
-                        {drawingPrintSummaryGroups.map((group) => {
-                          const color = getSegmentStrokeHex(group.color, false)
-                          return (
-                            <section key={group.key}>
-                              <div className="text-sm font-bold leading-none text-slate-500">
-                                {group.name}
-                              </div>
-                              <div className="space-y-0.5 font-mono font-bold leading-tight">
-                                {group.rows.map((row) => {
-                                  const mark = circledSummaryNumber(row.no)
-                                  return (
-                                    <div
-                                      key={`${group.key}-${row.no ?? 'none'}-${row.len}`}
-                                      className="flex items-baseline gap-1"
-                                      style={{ color }}
-                                    >
-                                      {mark ? (
-                                        <span className="shrink-0 text-[15px] leading-none">
-                                          {mark}
-                                        </span>
-                                      ) : null}
-                                      <span className="text-[13px]">
-                                        {drawingPrintSummaryDetailText(row)}
-                                      </span>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            </section>
-                          )
-                        })}
-                      </div>
+                      unitPrintSummaryNode
                     )}
+                  </div>
+                )}
+                {/* 付加筋タブでユニットも出すときは、ユニットを別の箱にして別々に動かせるようにする */}
+                {printPreviewHasUnitSummary && (
+                  <div
+                    ref={unitSummaryBoxRef}
+                    className="absolute z-20 min-w-[150px] cursor-move select-none rounded-md border border-slate-300/70 bg-white/85 px-3 py-2 shadow-sm backdrop-blur-[1px]"
+                    style={{
+                      left: cornerPrintUnitSummaryPos.x,
+                      top: cornerPrintUnitSummaryPos.y,
+                      transform: `scale(${activePrintSummaryScale})`,
+                      transformOrigin: 'top left',
+                    }}
+                    onMouseDown={(ev) => {
+                      ev.preventDefault()
+                      ev.stopPropagation()
+                      summaryDragRef.current = {
+                        x: ev.clientX - ev.currentTarget.getBoundingClientRect().left,
+                        y: ev.clientY - ev.currentTarget.getBoundingClientRect().top,
+                        target: 'unit',
+                      }
+                      setSummaryDragging(true)
+                    }}
+                    title="Drag to set print position"
+                  >
+                    {unitPrintSummaryNode}
                   </div>
                 )}
               </div>

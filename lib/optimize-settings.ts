@@ -19,6 +19,31 @@ export function cornerBarLabelOverrideStorageKey(projectId: string) {
   return `optimize-corner-bar-label-overrides:${projectId}`
 }
 
+/** 付加筋集計の本数手入力（集計行 key → 本数） */
+export function cornerBarQuantityOverrideStorageKey(projectId: string) {
+  return `optimize-corner-bar-quantity-overrides:${projectId}`
+}
+
+/** 印刷 2 ページ目のカードを 1 ページ目へ移した位置（カード → 表の左上からの px） */
+export function printCardPlacementStorageKey(projectId: string) {
+  return `optimize-print-card-placements:${projectId}`
+}
+
+/** 印刷レイアウト画面のカードの拡大率（カード → 倍率） */
+export function printCardZoomStorageKey(projectId: string) {
+  return `optimize-print-card-zooms:${projectId}`
+}
+
+/** 印刷レイアウト画面の 2 ページ目のカードの位置・大きさ（カード → 用紙の左上からの px） */
+export function printCardPage2PlacementStorageKey(projectId: string) {
+  return `optimize-print-card-page2-placements:${projectId}`
+}
+
+/** 印刷レイアウト画面の付加筋カードで、行ごとに決めた高さ（集計行 key → px） */
+export function printCornerRowHeightStorageKey(projectId: string) {
+  return `optimize-print-corner-row-heights:${projectId}`
+}
+
 export function parsePieceLengthAdjustment(
   value: string | undefined | null,
 ): number {

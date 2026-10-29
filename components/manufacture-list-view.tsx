@@ -8,10 +8,8 @@
 
 'use client'
 
-import { useMemo, type CSSProperties } from 'react'
+import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { DrawingSegment, Unit } from '@/lib/types/database'
-import { CustomerDatePicker } from '@/components/customer-date-picker'
-import { CustomerDateTimePicker } from '@/components/customer-datetime-picker'
 import {
   UnitShapeThumbnail,
   type UnitShapeLegendPosition,
@@ -44,7 +42,9 @@ const RIGHT_COL_WIDTH = 140
 const HEADER_TABLE_GAP_MM = 5
 /** 自由記入メモを置く、ヘッダー上端からのオフセット(px)。
  *  絶対配置なので、日付ブロックの高さを変えたらここも合わせる */
-const MEMO_BOX_TOP = 96
+export const MEMO_BOX_TOP = 96
+/** 印刷メモの左端を表の右端から離す距離(px)。表にくっついて見えないようにする */
+export const MEMO_TABLE_GAP_PX = 32
 /** 自由記入メモの文字サイズ(px)。利用者が −/＋ で調整する */
 export const MEMO_FONT_PX_MIN = 9
 export const MEMO_FONT_PX_MAX = 24
@@ -136,46 +136,6 @@ export type ManufactureLegendPositions = Record<string, UnitShapeLegendPositions
 
 function isPersistedUnitId(id: string): boolean {
   return !id.startsWith('mock-') && !id.startsWith('local-')
-}
-
-/** 曜日（日〜土） */
-const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'] as const
-
-/** "YYYY-MM-DD" / "YYYY-MM-DDTHH:mm" を分解する */
-function parseYmdHm(value: string) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec((value ?? '').trim())
-  if (!m) return null
-  const year = Number(m[1])
-  const month = Number(m[2])
-  const day = Number(m[3])
-  const date = new Date(year, month - 1, day)
-  if (Number.isNaN(date.getTime())) return null
-  return {
-    year,
-    month,
-    day,
-    hour: m[4] != null ? Number(m[4]) : null,
-    minute: m[5] != null ? Number(m[5]) : null,
-    weekday: WEEKDAY_JA[date.getDay()] ?? '',
-  }
-}
-
-/** 積み込み日 → 令和表記「R8.8.5.(水)」（令和1年 = 2019年） */
-function formatReiwaDate(value: string): string {
-  const p = parseYmdHm(value)
-  if (!p) return ''
-  const reiwa = p.year - 2018
-  if (reiwa < 1) return ''
-  return `R${reiwa}.${p.month}.${p.day}.(${p.weekday})`
-}
-
-/** 到着日 → 「6(木)8:00」（同月内の日・曜日・時刻） */
-function formatArrivalDayTime(value: string): string {
-  const p = parseYmdHm(value)
-  if (!p) return ''
-  const time =
-    p.hour != null ? `${p.hour}:${String(p.minute ?? 0).padStart(2, '0')}` : ''
-  return `${p.day}(${p.weekday})${time}`
 }
 
 /**
@@ -346,6 +306,8 @@ export function ManufactureListView({
   onLegendPositionChange,
   tateCountOverrides = {},
   onTateCountOverrideChange,
+  tableOverlay,
+  hidePrintMemo = false,
 }: {
   segments: DrawingSegment[]
   units: Unit[]
@@ -373,6 +335,10 @@ export function ManufactureListView({
     diameter: string,
     position: UnitShapeLegendPosition,
   ) => void
+  /** 表の左上に重ねて描くもの（印刷 1 ページ目へ移したカードの層） */
+  tableOverlay?: ReactNode
+  /** 印刷レイアウト画面ではメモを自由に動かせるカードとして別に描くので、ここでは出さない */
+  hidePrintMemo?: boolean
 }) {
   const groups = useMemo(
     () =>
@@ -382,6 +348,15 @@ export function ManufactureListView({
       ),
     [segments, units, adjustmentMm, tateCountOverrides],
   )
+
+  // 印刷メモを「表の右端〜用紙の右端」の余白の中央に置くため、表の幅を測る
+  const [tableWidthPx, setTableWidthPx] = useState<number | null>(null)
+  const observeTableWidth = useCallback((el: HTMLTableElement | null) => {
+    if (!el) return
+    const observer = new ResizeObserver(() => setTableWidthPx(el.offsetWidth))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   // 文字サイズは行全体に inline style で当てる（Tailwind の text-* だと画面と印刷で
   // 別々の値になってしまい、1 行に収まる保証ができない）
@@ -448,33 +423,40 @@ export function ManufactureListView({
             </label>
           </div>
         </div>
-        {/* 画面では日付ピッカーで編集し、印刷時は手書き伝票と同じ書式で出す */}
+        {/* 画面では自由入力し、印刷時は入力したとおりに出す */}
         <div className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden">
-          <CustomerDatePicker
-            plain
-            labelPrefix="積み込み日:"
-            value={customerDate}
-            onChange={onCustomerDateChange}
-          />
-          <CustomerDateTimePicker
-            plain
-            labelPrefix="到着日:"
-            value={customerArrival}
-            onChange={onCustomerArrivalChange}
-          />
+          <label className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">積み込み日:</span>
+            <input
+              type="text"
+              value={customerDate}
+              onChange={(e) => onCustomerDateChange(e.target.value)}
+              aria-label="積み込み日"
+              className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+            />
+          </label>
+          <label className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">到着日:</span>
+            <input
+              type="text"
+              value={customerArrival}
+              onChange={(e) => onCustomerArrivalChange(e.target.value)}
+              aria-label="到着日"
+              className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+            />
+          </label>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
           <div className="flex flex-col items-end">
-            {formatReiwaDate(customerDate) ? (
-              <div className="text-xl font-bold">{formatReiwaDate(customerDate)}</div>
+            {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する */}
+            {customerDate.trim() ? (
+              <div className="text-xl font-bold">{customerDate.trim()}</div>
             ) : null}
-            {formatArrivalDayTime(customerArrival) ? (
+            {customerArrival.trim() ? (
               <>
                 {/* 手書きメモの指示どおり「つみこみ」も日付と同じ大きさに揃える */}
                 <div className="mt-0.5 text-xl leading-none">つみこみ</div>
-                <div className="text-xl font-bold">
-                  {formatArrivalDayTime(customerArrival)}
-                </div>
+                <div className="text-xl font-bold">{customerArrival.trim()}</div>
               </>
             ) : null}
           </div>
@@ -524,10 +506,14 @@ export function ManufactureListView({
       </div>
 
       {/* 印刷では画面と同じ位置・同じ文字サイズでメモ本文だけを出す */}
-      {customerMemo.trim() ? (
+      {customerMemo.trim() && !hidePrintMemo ? (
         <div
-          className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words leading-snug print:block"
-          style={{ width: RIGHT_COL_WIDTH, top: MEMO_BOX_TOP, fontSize: memoFontPx }}
+          className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words text-center leading-snug print:block"
+          style={{
+            ...(tableWidthPx != null ? { left: tableWidthPx + MEMO_TABLE_GAP_PX } : { width: RIGHT_COL_WIDTH }),
+            top: MEMO_BOX_TOP,
+            fontSize: memoFontPx,
+          }}
         >
           {customerMemo}
         </div>
@@ -539,8 +525,13 @@ export function ManufactureListView({
         className="manufacture-list-table-wrap relative w-fit max-w-full"
         style={{ paddingTop: `${HEADER_TABLE_GAP_MM}mm` }}
       >
+        {tableOverlay}
         <div className="overflow-x-auto">
-        <table className="border-collapse text-sm" style={{ tableLayout: 'fixed' }}>
+        <table
+          ref={observeTableWidth}
+          className="border-collapse text-sm"
+          style={{ tableLayout: 'fixed' }}
+        >
           <colgroup>
             <col style={{ width: COL_SHAPE }} />
             <col style={{ width: COL_LEN }} />

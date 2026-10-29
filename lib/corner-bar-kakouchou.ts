@@ -1,7 +1,8 @@
-import type {
-  CornerBarSegment,
-  MeasurementDeductionsMm,
-  MeasurementType,
+import {
+  roundCornerBarMm,
+  type CornerBarSegment,
+  type MeasurementDeductionsMm,
+  type MeasurementType,
 } from '@/lib/corner-bar-presets'
 
 /**
@@ -25,11 +26,15 @@ const DEDUCTED_MEASUREMENT_TYPES: ReadonlySet<MeasurementType> = new Set([
  * 渡さないときは外々・芯々の辺 1 本につき SEGMENT_DEDUCTION_MM を引く。
  * 寸法基準が未設定の辺はどちらの場合も減らさない。
  *
+ * totalDeductionMm を渡したとき（特殊コーナー筋で全体の減りを入れた配置）は、
+ * 辺ごとの減りは使わず、辺の合計からその値だけを引く。
+ *
  * 寸法が 1 つでも未入力の場合は計算できないので null を返す（画面では「—」）。
  */
 export function cornerBarKakouchouMm(
   segments: CornerBarSegment[],
   deductions?: MeasurementDeductionsMm,
+  totalDeductionMm?: number,
 ): number | null {
   if (segments.length === 0) return null
 
@@ -38,7 +43,7 @@ export function cornerBarKakouchouMm(
   for (const seg of segments) {
     if (seg.lengthMm == null || !Number.isFinite(seg.lengthMm) || seg.lengthMm <= 0) return null
     sum += seg.lengthMm
-    if (!seg.measurementType) continue
+    if (totalDeductionMm != null || !seg.measurementType) continue
     if (deductions) {
       deducted += deductions[seg.measurementType] ?? 0
     } else if (DEDUCTED_MEASUREMENT_TYPES.has(seg.measurementType)) {
@@ -46,6 +51,6 @@ export function cornerBarKakouchouMm(
     }
   }
 
-  const kakouchou = sum - deducted
+  const kakouchou = roundCornerBarMm(sum - (totalDeductionMm ?? deducted))
   return kakouchou > 0 ? kakouchou : null
 }
