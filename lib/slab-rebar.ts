@@ -37,7 +37,7 @@ export type DomaBarSettings = {
 }
 
 /** 土間筋の径選択肢（付加筋と同じ） */
-export const DOMA_BAR_DIAMETERS = ['D10', 'D13', 'D16', 'D19', 'D22', 'D25'] as const
+export const DOMA_BAR_DIAMETERS = ['D10', 'D13', 'D16', 'D19'] as const
 
 /**
  * 径ごとの標準「重ね」長さ(mm)。コーナー筋 L の片辺寸法と同じ比準（D13=600）。
@@ -358,35 +358,44 @@ function bendCountOf(bends: DomaBends): number {
   return bends === 'both' ? 2 : bends === 'none' ? 0 : 1
 }
 
+/** 自動分割で使用する定尺。保存済みの stockMm は旧設定との互換用。 */
+export const DOMA_STOCK_CANDIDATES_MM = [6000, 5500, 5000, 4500, 4000, 3000, 2750, 2250] as const
+export const DOMA_MIN_PIECE_DIFFERENCE_MM = 1000
+
 /**
- * 設置区間 L を加工本の長さに分ける（自動）。
- *
- * まず 1 本で作れるか（L + 端部曲げ × 曲げ数 ≤ 定尺）を見て、作れるなら分けない。
- * 作れないときだけ重ねを入れて分け、定尺を先に使って残りを最後の本にする。
- *   必要総長 = L + 端部曲げ × 曲げ数 + 重ね × (n − 1)、n は 必要総長 ≤ n × 定尺 の最小値
- * 両端曲げの 1 本は両端に曲げが付く。分けたときは始点側の曲げが 1 本目、終点側が最後の本。
- *
- * 残りの本の直線部が重ねより短いと継手の重ねが取れない（例 5750 → 6000 + 650 は直線部 500）。
- * 自動で分けた結果がそうならないよう、足りない分だけ 1 つ前の本から最後の本へ移す
- * （5750 → 5900 + 750、直線部 750 − 150 = 600）。合計は変わらない。
- *
- * 資料 A のメモ「5460 → 6000 + 360」は 1 本（5760）で作れる区間を分けている。
- * 理由が確認できるまでは自動では分けず、必要なら加工本の手入力で対応する。
+ * 両端曲げは候補定尺 + 残りの 2 本を優先する。
+ * 各本の直線部に重ねが入り、長さの差が 1000 mm 以上の組合せのうち最も差が小さいものを選ぶ。
+ * 2 本に収まらない長い区間は、従来どおり最大定尺で 3 本以上に分ける。
  */
 function autoDomaPieceLengths(
   lengthMm: number,
   bends: DomaBends,
   settings: Pick<DomaBarSettings, 'bendMm' | 'stockMm' | 'lapMm'>,
 ): number[] {
-  const { bendMm, stockMm, lapMm } = settings
-  if (!(lengthMm > 0) || !(stockMm > lapMm)) return []
-  const required = (n: number) => lengthMm + bendCountOf(bends) * bendMm + lapMm * (n - 1)
-  let n = 1
-  while (required(n) > n * stockMm + EPS) n++
-  if (n === 1) return [Math.round(required(1))]
-  const lengths = Array.from({ length: n - 1 }, () => stockMm)
-  lengths.push(Math.round(required(n) - (n - 1) * stockMm))
+  const { bendMm, lapMm } = settings
+  const stockMm: number = DOMA_STOCK_CANDIDATES_MM[0]
+  if (!Number.isFinite(lengthMm) || !Number.isFinite(bendMm) || !Number.isFinite(lapMm) ||
+      lengthMm <= 0 || bendMm < 0 || lapMm < 0 || lapMm >= stockMm) return []
+  const required = (n: number) => Math.round(lengthMm + bendCountOf(bends) * bendMm + lapMm * (n - 1))
+  if (bends !== 'both' && required(1) <= stockMm) return [required(1)]
+
+  const firstBend = bends === 'both' || bends === 'start' ? bendMm : 0
   const lastBend = bends === 'both' || bends === 'end' ? bendMm : 0
+  const total = required(2)
+  const pairs = DOMA_STOCK_CANDIDATES_MM.map((first) => [first, total - first])
+    .filter(([first, last]) =>
+      first - last >= DOMA_MIN_PIECE_DIFFERENCE_MM &&
+      first - firstBend >= lapMm && last - lastBend >= lapMm &&
+      first > firstBend && last > lastBend && last <= stockMm)
+    .sort((a, b) => (a[0] - a[1]) - (b[0] - b[1]))
+  if (pairs.length) return pairs[0]!
+  // 短い区間など、条件に合う継手が作れず 1 本で収まる場合は分割しない。
+  if (required(1) <= stockMm) return [required(1)]
+
+  let n = 3
+  while (required(n) > n * stockMm + EPS) n++
+  const lengths = Array.from({ length: n - 1 }, () => stockMm)
+  lengths.push(required(n) - (n - 1) * stockMm)
   const shortfall = lapMm - (lengths[n - 1]! - lastBend)
   if (shortfall > 0) {
     lengths[n - 2]! -= shortfall
@@ -458,6 +467,28 @@ export function layoutDomaRun(
     source: manual ? 'manual' : 'auto',
     warnings,
   }
+}
+
+/** 1本の変更量を他の本へ移し、加工総長・重ね・最大定尺を維持する。 */
+export function rebalanceDomaPieces(
+  layout: DomaRunLayout, index: number, lengthMm: number, bendMm: number, lapMm: number,
+): number[] | null {
+  if (!Number.isSafeInteger(lengthMm) || !layout.pieces[index]) return null
+  const lengths = layout.pieces.map((p) => p.lengthMm)
+  const minimum = layout.pieces.map((p, i) =>
+    bendMm * (Number(p.bendStart) + Number(p.bendEnd)) +
+    Math.max(1, lapMm * (Number(i > 0) + Number(i < lengths.length - 1))))
+  if (lengthMm < minimum[index] || lengthMm > 6000) return null
+  lengths[index] = lengthMm
+  let delta = layout.requiredTotalMm - lengths.reduce((a, b) => a + b, 0)
+  for (let i = lengths.length - 1; i >= 0; i--) {
+    if (i === index) continue
+    const move = Math.max(minimum[i] - lengths[i], Math.min(6000 - lengths[i], delta))
+    lengths[i] += move
+    delta -= move
+  }
+  if (delta !== 0 || (lengths.length === 2 && Math.abs(lengths[0] - lengths[1]) < 1000)) return null
+  return lengths
 }
 
 export function aggregateSchedule(

@@ -7,10 +7,12 @@ import {
   aggregateSchedule,
   countBars,
   DOMA_BAR_DIAMETERS,
+  DOMA_STOCK_CANDIDATES_MM,
   DOMA_BENDS_OPTIONS,
   domaDiameterOptionLabel,
   domaSettingsWithDiameter,
   layoutDomaRun,
+  rebalanceDomaPieces,
   type DomaBarSettings,
   type DomaBends,
   type DomaRunLayout,
@@ -76,7 +78,7 @@ function SettingsFields({
   settings: DomaBarSettings
   onChange: (next: DomaBarSettings) => void
 }) {
-  type Key = 'pitchMm' | 'bendMm' | 'stockMm' | 'lapMm'
+  type Key = 'pitchMm' | 'bendMm'
   // 入力中の文字列だけを持つ。入力していない欄は常に保存済みの値を出すので、
   // 径を変えて重ねが変わったときなども欄に反映される
   const [draft, setDraft] = useState<Partial<Record<Key, string>>>({})
@@ -97,13 +99,13 @@ function SettingsFields({
     })
 
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <label className="flex flex-col gap-0.5 text-[11px] text-muted">
-        径
+    <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+      <label className="col-span-2 flex flex-col gap-1 text-[11px] text-muted">
+        鉄筋種類（重ね mm）
         <select
           value={settings.diameter}
           onChange={(e) => onChange(domaSettingsWithDiameter(e.target.value, settings))}
-          className="rounded border border-border px-2 py-1 text-xs text-foreground"
+          className="h-8 w-full rounded border border-border bg-white px-2 text-xs text-foreground"
         >
           {DOMA_BAR_DIAMETERS.map((d) => (
             <option key={d} value={d}>
@@ -124,18 +126,7 @@ function SettingsFields({
         onChange={(v) => commit('bendMm', v)}
         onBlur={() => endEdit('bendMm')}
       />
-      <NumField
-        label="重ね (mm)"
-        value={text('lapMm')}
-        onChange={(v) => commit('lapMm', v)}
-        onBlur={() => endEdit('lapMm')}
-      />
-      <NumField
-        label="定尺 (mm)"
-        value={text('stockMm')}
-        onChange={(v) => commit('stockMm', v)}
-        onBlur={() => endEdit('stockMm')}
-      />
+
     </div>
   )
 }
@@ -358,9 +349,11 @@ function RunFields({
   lengthInputRef,
   onEnter,
   showHints = false,
+  showDimensionChoices = true,
 }: {
   /** 入力窓だけで、欄の下に L と配筋範囲の違いを短く出す */
   showHints?: boolean
+  showDimensionChoices?: boolean
   length: string
   span: string
   bends: DomaBends
@@ -392,12 +385,12 @@ function RunFields({
         onEnter={onEnter}
         onBlur={onLengthBlur}
       />
-      <DimensionChips
+      {showDimensionChoices ? <DimensionChips
         choices={dimensionChoices}
         candidates={lengthCandidates}
         source={lengthSource}
         onPick={(c) => onLength(String(c.mm), c.id)}
-      />
+      /> : null}
       <NumField
         label="配筋範囲（鉄筋と直角の幅, mm）"
         hint={showHints ? 'この鉄筋を何本並べるかを決める幅' : undefined}
@@ -406,25 +399,27 @@ function RunFields({
         onEnter={onEnter}
         onBlur={onSpanBlur}
       />
-      <DimensionChips
+      {showDimensionChoices ? <DimensionChips
         choices={dimensionChoices}
         candidates={spanCandidates}
         source={spanSource}
         onPick={(c) => onSpan(String(c.mm), c.id)}
-      />
+      /> : null}
       {count != null ? (
         <p className="text-[11px] tabular-nums text-muted">
           本数 {count}本（{spanMm.toLocaleString()} ÷ {pitchMm} = {(spanMm / pitchMm).toFixed(2)} → 切り上げ）
         </p>
       ) : null}
-      <BendsToggle value={bends} onChange={onBends} />
+      <details className="text-[11px] text-muted">
+        <summary className="cursor-pointer">端部曲げの変更（{DOMA_BENDS_OPTIONS.find((o) => o.id === bends)?.label}）</summary>
+        <div className="mt-2"><BendsToggle value={bends} onChange={onBends} /></div>
+      </details>
     </>
   )
 }
 
 /**
- * 加工本の長さ。自動の結果を出し、書き換えると手入力（pieces_override）になる。
- * 合計の検算を下に出し、合わなければ警告（自動では直さない）。
+ * 加工本の長さ。1本を確定すると残りを調整し、総加工長を維持する。
  */
 function PiecesEditor({
   run,
@@ -438,31 +433,35 @@ function PiecesEditor({
   const [drafts, setDrafts] = useState<Record<number, string>>({})
   const lengths = layout.pieces.map((p) => p.lengthMm)
   const sum = lengths.reduce((a, b) => a + b, 0)
-  const bendCount = run.bends === 'both' ? 2 : run.bends === 'none' ? 0 : 1
-
-  const change = (index: number, raw: string) => {
-    setDrafts((prev) => ({ ...prev, [index]: raw }))
-    const mm = parseMm(raw)
-    if (!(mm > 0)) return
-    onOverride(lengths.map((v, i) => (i === index ? mm : v)))
+  const [editError, setEditError] = useState<string | null>(null)
+  const apply = (index: number, raw: string) => {
+    const next = rebalanceDomaPieces(layout, index, parseMm(raw), run.settings.bendMm, run.settings.lapMm)
+    if (next) {
+      setEditError(null)
+      onOverride(next)
+    } else {
+      setEditError('重ね・定尺6,000mm・2本の長さの差1,000mm以上を満たす長さを選んでください。')
+    }
   }
-  const endEdit = (index: number) =>
+  const endEdit = (index: number) => {
+    if (drafts[index] != null) apply(index, drafts[index])
     setDrafts((prev) => {
       const next = { ...prev }
       delete next[index]
       return next
     })
+  }
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium text-foreground">加工本</span>
+        <span className="text-[11px] font-medium text-foreground">加工長さ (mm)</span>
         <span
           className={`rounded px-1.5 py-0.5 text-[10px] ${
             layout.source === 'manual' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
           }`}
         >
-          {layout.source === 'manual' ? '手入力' : '自動'}
+          {layout.source === 'manual' ? '調整済み' : '自動選択'}
         </span>
       </div>
       <table className="w-full text-xs">
@@ -478,13 +477,23 @@ function PiecesEditor({
                 {p.kind === 'BENT' ? '曲' : '直'}
                 {p.lapShort ? <span className="ml-0.5 text-amber-700">⚠</span> : null}
               </td>
-              <td className="py-0.5">
+              <td className="py-1.5">
+                <select
+                  aria-label={`${p.index + 1} 本目の定尺候補`}
+                  value=""
+                  onChange={(e) => apply(p.index, e.target.value)}
+                  className="mb-1 w-full rounded border border-border bg-white px-2 py-1 text-xs"
+                >
+                  <option value="">定尺を選択</option>
+                  {DOMA_STOCK_CANDIDATES_MM.map((mm) => <option key={mm} value={mm}>{mm.toLocaleString()} mm</option>)}
+                </select>
                 <input
                   type="text"
                   inputMode="numeric"
                   aria-label={`${p.index + 1} 本目の長さ`}
                   value={drafts[p.index] ?? String(p.lengthMm)}
-                  onChange={(e) => change(p.index, e.target.value)}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [p.index]: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
                   onBlur={() => endEdit(p.index)}
                   className="w-full rounded border border-border px-2 py-0.5 text-right text-xs tabular-nums"
                 />
@@ -508,7 +517,7 @@ function PiecesEditor({
       <div className="flex items-center justify-between text-[11px]">
         <button
           type="button"
-          onClick={() => onOverride([...lengths, run.settings.stockMm])}
+          onClick={() => onOverride([...lengths, DOMA_STOCK_CANDIDATES_MM[0]])}
           className="text-primary hover:underline"
         >
           ＋ 本を追加
@@ -519,12 +528,12 @@ function PiecesEditor({
           </button>
         ) : null}
       </div>
-      <p className="text-[11px] tabular-nums text-muted">
-        検算 {lengths.join(' + ')} = {sum.toLocaleString()}
-        {' / '}L {run.length_mm.toLocaleString()} + 曲げ {run.settings.bendMm}×{bendCount} + 重ね{' '}
-        {run.settings.lapMm}×{Math.max(lengths.length - 1, 0)} = {layout.requiredTotalMm.toLocaleString()}{' '}
-        {sum === layout.requiredTotalMm ? '✓' : '⚠'}
-      </p>
+      <p className="text-[11px] text-muted">長さを変更すると、他の本の長さを自動調整します。</p>
+      {editError ? <p role="alert" className="text-[11px] text-amber-700">{editError}</p> : null}
+      <details className="text-[11px] tabular-nums text-muted">
+        <summary className="cursor-pointer">加工合計 {sum.toLocaleString()} mm {sum === layout.requiredTotalMm ? '✓' : '⚠'}</summary>
+        <p className="mt-1">{lengths.join(' + ')} / 必要長さ {layout.requiredTotalMm.toLocaleString()} mm</p>
+      </details>
     </div>
   )
 }
@@ -547,7 +556,6 @@ function RunEditor({
     dimId != null && dimensions.find((d) => d.id === dimId)?.length_mm === mm ? 'dimension' : 'manual'
   const [lengthDraft, setLengthDraft] = useState<string | null>(null)
   const [spanDraft, setSpanDraft] = useState<string | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const layout = layoutOf(run)
 
   const commit = (patch: Partial<RunPatch>) =>
@@ -564,7 +572,23 @@ function RunEditor({
 
   return (
     <div className="flex flex-col gap-2">
+      <section className="rounded-md border border-border bg-white p-3">
+        <p className="mb-2 text-xs font-medium text-foreground">配筋条件</p>
+        <SettingsFields
+          settings={run.settings}
+          onChange={(settings) => {
+            const geometryChanged = settings.bendMm !== run.settings.bendMm || settings.lapMm !== run.settings.lapMm
+            let pieces = run.pieces_override
+            if (geometryChanged && pieces?.length) {
+              const nextLayout = layoutDomaRun(run.length_mm, run.span_mm, run.bends, settings, pieces)
+              pieces = rebalanceDomaPieces(nextLayout, 0, pieces[0], settings.bendMm, settings.lapMm)
+            }
+            commit({ settings, pieces_override: pieces })
+          }}
+        />
+      </section>
       <RunFields
+        showDimensionChoices={false}
         length={lengthDraft ?? String(run.length_mm)}
         span={spanDraft ?? String(run.span_mm)}
         bends={run.bends}
@@ -596,22 +620,7 @@ function RunEditor({
           .join(' ＋ ')}
       </p>
       <Warnings warnings={layout.warnings} />
-      <div>
-        <button
-          type="button"
-          onClick={() => setSettingsOpen((v) => !v)}
-          className="text-[11px] text-muted hover:text-foreground"
-          aria-expanded={settingsOpen}
-        >
-          {settingsOpen ? '▾' : '▸'} 条件（{run.settings.diameter} / ピッチ {run.settings.pitchMm} / 曲げ{' '}
-          {run.settings.bendMm} / 重ね {run.settings.lapMm} / 定尺 {run.settings.stockMm}）
-        </button>
-        {settingsOpen ? (
-          <div className="mt-2">
-            <SettingsFields settings={run.settings} onChange={(settings) => commit({ settings })} />
-          </div>
-        ) : null}
-      </div>
+
     </div>
   )
 }
@@ -748,7 +757,7 @@ export function DomaInputModal({
               {/* 径・ピッチなどは右パネルの「条件」で決める。ここでは何で計算するかだけ見せる */}
               <p className="text-[11px] tabular-nums text-muted">
                 条件 {settings.diameter} / ピッチ {settings.pitchMm} / 曲げ {settings.bendMm} / 重ね{' '}
-                {settings.lapMm} / 定尺 {settings.stockMm}（右パネルの「条件」で変更）
+                {settings.lapMm} / 定尺 自動（右パネルの「条件」で変更）
               </p>
               {preview ? (
                 <div className="rounded-md bg-gray-50 px-2 py-1.5 text-[11px]">
@@ -912,12 +921,15 @@ export function DomaPanel({
           </section>
         ) : (
           <>
-            {/* 描く条件は、付加筋の配置設定と同じく描くツールを選んでいるときだけ出す */}
+            {/* 土間筋を描くときだけ、新規作成用の条件を表示する。 */}
             {tool === 'bar' ? (
               <section className="space-y-2 border-b border-border p-3">
-                <span className="text-[10px] font-medium text-foreground">{dirLabel}筋の条件</span>
+                <span className="text-[10px] font-medium text-foreground">これから描く{dirLabel}筋の条件</span>
                 <SettingsFields key={direction} settings={settings} onChange={onSettingsChange} />
-                <BendsToggle value={bends} onChange={onBendsChange} />
+                <details className="text-[11px] text-muted">
+                  <summary className="cursor-pointer">端部曲げの変更</summary>
+                  <div className="mt-2"><BendsToggle value={bends} onChange={onBendsChange} /></div>
+                </details>
               </section>
             ) : null}
 
