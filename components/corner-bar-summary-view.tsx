@@ -792,7 +792,7 @@ function ShapeFigureSvg({
   // くの字は行ごとの角度で描く
   const shape = resolveCornerBarShape(
     row.shapeType,
-    row.bendAngleDeg != null ? [{ bendAngleDeg: row.bendAngleDeg }] : undefined,
+    row.bendAnglesDeg != null ? [{ bendAnglesDeg: row.bendAnglesDeg }] : undefined,
   )
   if (!shape) return null
 

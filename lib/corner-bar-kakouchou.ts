@@ -1,7 +1,8 @@
-import type {
-  CornerBarSegment,
-  MeasurementDeductionsMm,
-  MeasurementType,
+import {
+  roundCornerBarMm,
+  type CornerBarSegment,
+  type MeasurementDeductionsMm,
+  type MeasurementType,
 } from '@/lib/corner-bar-presets'
 
 /**
@@ -50,6 +51,6 @@ export function cornerBarKakouchouMm(
     }
   }
 
-  const kakouchou = sum - (totalDeductionMm ?? deducted)
+  const kakouchou = roundCornerBarMm(sum - (totalDeductionMm ?? deducted))
   return kakouchou > 0 ? kakouchou : null
 }

@@ -4,6 +4,7 @@ import {
   buildCornerBarGeometry,
   cornerBarGeometryEdgeLength,
   cornerBarThumbPoints,
+  cornerBarSegmentSumMm,
   DEFAULT_CORNER_BAR_PLACEMENT_SIZE_PX,
   DEFAULT_SOE_PLACEMENT_SIZE_PX,
   DEFAULT_SPECIAL_CORNER_PLACEMENT_SIZE_PX,
@@ -15,6 +16,10 @@ import {
   makeCornerBarSegments,
   makeCornerBarBar,
   changeCornerBarBarDiameter,
+  cornerBarBendAngles,
+  cornerBarDefaultBendAngles,
+  resolveCornerBarShape,
+  setCornerBarBendAngle,
   normalizeCornerBarSegments,
   patchCornerBarSegment,
   cornerBarStrokePieces,
@@ -303,4 +308,54 @@ test('OPENING_RING laps are drawn inside the square', () => {
   // 上の辺は外の角まで行き、b は右の辺の外側を下りる
   assert.deepEqual(pieces[4]!.p2, { x: 100, y: 0 })
   assert.deepEqual(pieces[5]!.p2, { x: 100, y: 20 })
+})
+
+test('SPECIAL_CORNER shapes can change the angle at every bend', () => {
+  const offset = getCornerBarShape('V_OFFSET')!
+  assert.deepEqual(cornerBarDefaultBendAngles(offset), [90, 90])
+  // 既定の角度なら形はそのまま
+  assert.deepEqual(resolveCornerBarShape('V_OFFSET', [])!.directions, offset.directions)
+
+  const bar = makeCornerBarBar(offset, 'SPECIAL_CORNER', 'D13', { id: 'b1' })
+  assert.deepEqual(bar.bendAnglesDeg, [90, 90])
+  // 下 → 右 の角を 135° にすると、2 本目は右下へ。3 本目は 90° のまま曲がるので左下へ
+  const [changed] = setCornerBarBendAngle(offset, [bar], 0, 135)
+  assert.deepEqual(changed!.bendAnglesDeg, [135, 90])
+  const dirs = resolveCornerBarShape('V_OFFSET', [changed])!.directions
+  assert.ok(Math.abs(dirs[1]!.x - Math.SQRT1_2) < 1e-9 && Math.abs(dirs[1]!.y - Math.SQRT1_2) < 1e-9)
+  assert.ok(Math.abs(dirs[2]!.x + Math.SQRT1_2) < 1e-9 && Math.abs(dirs[2]!.y - Math.SQRT1_2) < 1e-9)
+
+  // 形状を変えたら角度は引き継がない
+  const draft = makeCornerBarDraft('V_NOTCH', {
+    category: 'SPECIAL_CORNER',
+    shapeType: 'V_OFFSET',
+    bars: [changed!],
+  })
+  assert.deepEqual(draft.bars[0]!.bendAnglesDeg, [90, 90, 90, 90])
+})
+
+test('BENT still reads the old single bendAngleDeg', () => {
+  const bent = getCornerBarShape('BENT')!
+  assert.deepEqual(cornerBarBendAngles(bent, [{ bendAngleDeg: 120 }]), [120])
+  assert.deepEqual(cornerBarBendAngles(bent, []), [135])
+  const dirs = resolveCornerBarShape('BENT', [{ bendAngleDeg: 90 }])!.directions
+  assert.deepEqual(dirs[1], { x: 0, y: 1 })
+})
+
+test('segment lengths can have decimals without float noise in the sum', () => {
+  const segments: CornerBarSegment[] = [
+    { id: 's1', lengthMm: 100.1, measurementType: null },
+    { id: 's2', lengthMm: 200.2, measurementType: null },
+  ]
+  assert.equal(cornerBarSegmentSumMm(segments), 300.3)
+  assert.equal(cornerBarKakouchouMm(segments, ZERO_MEASUREMENT_DEDUCTIONS, 0.1), 300.2)
+  const shape = getCornerBarShape('V_OFFSET')!
+  assert.equal(normalizeCornerBarSegments(shape, [{ lengthMm: 12.5 }])[0]!.lengthMm, 12.5)
+})
+
+test('height and total deduction accept decimals', () => {
+  const crank = getCornerBarShape('OPENING_CRANK')!
+  const bar = makeCornerBarBar(crank, 'OPENING', 'D10', { id: 'b1', heightMm: 320.5, deductionTotalMm: 12.5 })
+  assert.equal(bar.heightMm, 320.5)
+  assert.equal(bar.deductionTotalMm, 12.5)
 })

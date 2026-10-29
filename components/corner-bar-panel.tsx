@@ -2,7 +2,7 @@
 
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import type { DrawingCornerBar } from '@/lib/types/database'
 import {
@@ -17,7 +17,7 @@ import {
   cornerBarDiameterOptionLabel,
   cornerBarFixedVertexForEdge,
   cornerBarLegacyFieldsFromBars,
-  cornerBarBendAngle,
+  cornerBarBendAngles,
   cornerBarDeductionTotal,
   ZERO_MEASUREMENT_DEDUCTIONS,
   cornerBarFlipLabel,
@@ -151,10 +151,12 @@ export function CornerBarPanel({
   /** 形状図で強調する辺。辺の入力欄と図を相互に対応づけるためだけの表示状態。
       選択編集と配置設定は同時に出ないので 1 つで足りる */
   const [activeSegIndex, setActiveSegIndex] = useState<number | null>(null)
-
-  useEffect(() => {
+  // 別の配置を選んだら強調を外す。effect で外すと 1 回前の強調で描いてから描き直すので、描く前に外す
+  const [activeSegOwnerId, setActiveSegOwnerId] = useState(selected?.id)
+  if (activeSegOwnerId !== selected?.id) {
+    setActiveSegOwnerId(selected?.id)
     setActiveSegIndex(null)
-  }, [selected?.id])
+  }
 
   const printSummary = useMemo(
     () => buildCornerBarPrintSummary(cornerBars, normalizeSegmentColor),
@@ -336,7 +338,7 @@ export function CornerBarPanel({
         // 減り・角度は配置で 1 組なので、追加した鉄筋にも同じ値を入れる
         measurementDeductionsMm: bars[0]?.measurementDeductionsMm,
         deductionTotalMm: bars[0]?.deductionTotalMm,
-        bendAngleDeg: bars[0]?.bendAngleDeg,
+        bendAnglesDeg: bars[0]?.bendAnglesDeg,
         heightMm: bars[0]?.heightMm,
       }),
     ])
@@ -350,8 +352,10 @@ export function CornerBarPanel({
     commitSelectedBars((bars) => setCornerBarDeductionTotal(bars, totalMm))
   }
 
-  function handleSelectedBendAngleChange(angleDeg: number) {
-    commitSelectedBars((bars) => setCornerBarBendAngle(bars, angleDeg))
+  function handleSelectedBendAngleChange(joint: number, angleDeg: number) {
+    if (!selectedShape) return
+    const shape = selectedShape
+    commitSelectedBars((bars) => setCornerBarBendAngle(shape, bars, joint, angleDeg))
   }
 
   function handleRemoveSelectedBar(index: number) {
@@ -427,7 +431,7 @@ export function CornerBarPanel({
         id: nextCornerBarBarId(placementDraft.bars),
         measurementDeductionsMm: placementDraft.bars[0]?.measurementDeductionsMm,
         deductionTotalMm: placementDraft.bars[0]?.deductionTotalMm,
-        bendAngleDeg: placementDraft.bars[0]?.bendAngleDeg,
+        bendAnglesDeg: placementDraft.bars[0]?.bendAnglesDeg,
         heightMm: placementDraft.bars[0]?.heightMm,
       }),
     ])
@@ -443,9 +447,9 @@ export function CornerBarPanel({
     commitPlacementBars(setCornerBarDeductionTotal(placementDraft.bars, totalMm))
   }
 
-  function handlePlacementBendAngleChange(angleDeg: number) {
-    if (!placementDraft) return
-    commitPlacementBars(setCornerBarBendAngle(placementDraft.bars, angleDeg))
+  function handlePlacementBendAngleChange(joint: number, angleDeg: number) {
+    if (!placementDraft || !placementShape) return
+    commitPlacementBars(setCornerBarBendAngle(placementShape, placementDraft.bars, joint, angleDeg))
   }
 
   function handleRemovePlacementBar(index: number) {
@@ -584,9 +588,10 @@ export function CornerBarPanel({
             />
 
             {selectedShape.adjustableAngle ? (
-              <BendAngleField
+              <BendAnglesField
                 key={selected.id}
-                angleDeg={cornerBarBendAngle(selectedBars)}
+                shape={selectedShape}
+                anglesDeg={cornerBarBendAngles(selectedShape, selectedBars)}
                 onChange={handleSelectedBendAngleChange}
               />
             ) : null}
@@ -770,8 +775,10 @@ export function CornerBarPanel({
             ) : null}
 
             {placementShape?.adjustableAngle && placementDraft ? (
-              <BendAngleField
-                angleDeg={cornerBarBendAngle(placementDraft.bars)}
+              <BendAnglesField
+                key={placementDraft.shapeType}
+                shape={placementShape}
+                anglesDeg={cornerBarBendAngles(placementShape, placementDraft.bars)}
                 onChange={handlePlacementBendAngleChange}
               />
             ) : null}
@@ -1042,7 +1049,8 @@ function CornerBarBarsField({
                   </button>
                   <input
                     type="number"
-                    min={1}
+                    min={0}
+                    step="any"
                     placeholder="mm"
                     value={seg.lengthMm ?? ''}
                     onFocus={() => onActiveSegIndexChange(segIdx)}
@@ -1052,7 +1060,7 @@ function CornerBarBarsField({
                         onChangeSegment(barIdx, segIdx, { lengthMm: null })
                         return
                       }
-                      const n = Number.parseInt(raw, 10)
+                      const n = Number.parseFloat(raw)
                       if (!Number.isFinite(n) || n <= 0) return
                       onChangeSegment(barIdx, segIdx, { lengthMm: n })
                     }}
@@ -1091,14 +1099,56 @@ function CornerBarBarsField({
 /** −/＋ ボタン 1 回で変える角度 */
 const BEND_ANGLE_STEP_DEG = 5
 
+/** 辺のあいだごとの角度。辺のあいだが 1 つ（くの字）なら「角度」、複数なら「①-②」のように辺の番号で示す */
+function BendAnglesField({
+  shape,
+  anglesDeg,
+  onChange,
+}: {
+  shape: CornerBarShapeDef
+  anglesDeg: number[]
+  onChange: (joint: number, angleDeg: number) => void
+}) {
+  if (anglesDeg.length === 0) return null
+  return (
+    <div className="space-y-1">
+      {anglesDeg.length > 1 ? (
+        <div className="text-[10px] font-medium text-foreground">
+          角度
+          <span className="ml-1 font-normal text-muted">
+            （{MIN_CORNER_BAR_BEND_ANGLE_DEG}〜{MAX_CORNER_BAR_BEND_ANGLE_DEG}°）
+          </span>
+        </div>
+      ) : null}
+      {anglesDeg.map((angleDeg, joint) => (
+        <BendAngleField
+          key={joint}
+          label={
+            anglesDeg.length > 1
+              ? `${cornerBarSegmentLabel(shape, joint)}-${cornerBarSegmentLabel(shape, joint + 1)}`
+              : '角度'
+          }
+          showRange={anglesDeg.length === 1}
+          angleDeg={angleDeg}
+          onChange={(deg) => onChange(joint, deg)}
+        />
+      ))}
+    </div>
+  )
+}
+
 /**
- * くの字の辺のあいだの角度。入力中は文字列で持ち、確定（フォーカスを外す / Enter）で反映する。
+ * 辺のあいだの角度 1 つ。入力中は文字列で持ち、確定（フォーカスを外す / Enter）で反映する。
  * 1 文字ごとに反映すると、10 未満を打った途中で下限に丸められてしまうため。
  */
 function BendAngleField({
+  label,
+  showRange,
   angleDeg,
   onChange,
 }: {
+  label: string
+  showRange: boolean
   angleDeg: number
   onChange: (angleDeg: number) => void
 }) {
@@ -1113,7 +1163,7 @@ function BendAngleField({
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-[10px] font-medium text-foreground">角度</span>
+      <span className="min-w-8 text-[10px] font-medium text-foreground">{label}</span>
       <button
         type="button"
         onClick={() => onChange(clampCornerBarBendAngle(angleDeg - BEND_ANGLE_STEP_DEG))}
@@ -1136,7 +1186,7 @@ function BendAngleField({
             e.currentTarget.blur()
           }
         }}
-        aria-label="辺のあいだの角度（度）"
+        aria-label={`${label} の角度（度）`}
         className="w-14 rounded border border-border bg-white px-1 py-0.5 text-right text-xs outline-none focus:border-primary"
       />
       <span className="text-xs text-muted">°</span>
@@ -1149,9 +1199,11 @@ function BendAngleField({
       >
         ＋
       </button>
-      <span className="text-[10px] text-muted">
-        （{MIN_CORNER_BAR_BEND_ANGLE_DEG}〜{MAX_CORNER_BAR_BEND_ANGLE_DEG}°）
-      </span>
+      {showRange ? (
+        <span className="text-[10px] text-muted">
+          （{MIN_CORNER_BAR_BEND_ANGLE_DEG}〜{MAX_CORNER_BAR_BEND_ANGLE_DEG}°）
+        </span>
+      ) : null}
     </div>
   )
 }
@@ -1172,11 +1224,12 @@ function HeightField({
       <input
         id={id}
         type="number"
-        min={1}
+        min={0}
+        step="any"
         placeholder="mm"
         value={heightMm ?? ''}
         onChange={(e) => {
-          const n = Number.parseInt(e.target.value, 10)
+          const n = Number.parseFloat(e.target.value)
           onChange(Number.isFinite(n) && n > 0 ? n : null)
         }}
         aria-label="高さ(mm)"
@@ -1208,9 +1261,10 @@ function MeasurementDeductionsField({
         <input
           type="number"
           min={0}
+          step="any"
           value={totalMm}
           onChange={(e) => {
-            const n = Number.parseInt(e.target.value, 10)
+            const n = Number.parseFloat(e.target.value)
             onChange(Number.isFinite(n) && n >= 0 ? n : 0)
           }}
           aria-label="辺の合計から引く長さ(mm)"
