@@ -758,7 +758,6 @@ export function CornerBarPanel({
                   </button>
                 </div>
               ) : null}
-              <span className="text-[10px] text-muted">これから配置するもの</span>
             </div>
 
             {/* 配置前でも「辺1」がどの辺かを図で確かめられるようにする */}
