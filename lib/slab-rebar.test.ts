@@ -137,13 +137,33 @@ test('layoutDomaRun: 定尺候補から差1000以上の最も近い2本を自動
 
 test('layoutDomaRun: 短い区間・片側曲げ・曲げなし', () => {
   const s = DEFAULT_DOMA_BAR_SETTINGS
-  assert.deepStrictEqual(layoutDomaRun(1000, 1000, 'both', s).pieces.map((p) => p.lengthMm), [1300])
+  // 短い区間も差の条件なしで 2 本に分ける（総加工長 1900 → 1000 + 900。直線部 850・750 ≥ 重ね 600 + 150）
+  assert.deepStrictEqual(layoutDomaRun(1000, 1000, 'both', s).pieces.map((p) => p.lengthMm), [1000, 900])
   assert.deepStrictEqual(layoutDomaRun(5000, 1000, 'start', s).pieces.map((p) => p.lengthMm), [5150])
   assert.deepStrictEqual(layoutDomaRun(6000, 1000, 'none', s).pieces.map((p) => p.lengthMm), [6000])
   const r = layoutDomaRun(8000, 1000, 'end', s)
   assert.deepStrictEqual(r.pieces.map((p) => p.lengthMm), [5000, 3750])
   assert.strictEqual(r.pieces[1]!.bendEnd, true)
   assert.strictEqual(r.pieces[1]!.toMm, 8000)
+})
+
+test('layoutDomaRun: 短い区間は短い長さの候補で 2 本に分け、重ねが取れないときだけ一本両曲げ', () => {
+  const d13 = DEFAULT_DOMA_BAR_SETTINGS
+  const lengths = (length: number, s = d13) =>
+    layoutDomaRun(length, 1000, 'both', s).pieces.map((p) => p.lengthMm)
+  // 総加工長 2800: 2000 + 800 は 800 の直線部 650 < 重ね 600 + 150 で不可 → 1800 + 1000
+  assert.deepStrictEqual(lengths(1900), [1800, 1000])
+  // 総加工長 2720: 1970 + 750 は 750 の直線部 600 がまるごと重ねになるので使わない → 1800 + 920
+  assert.deepStrictEqual(lengths(1820), [1800, 920])
+  // 総加工長 2400: 差 1000 以上は作れない → 差の条件なしで、差のいちばん大きい 1500 + 900
+  assert.deepStrictEqual(lengths(1500), [1500, 900])
+  // 総加工長 1500: 750 + 750 は直線部 600 ＝ 重ねで、重ねより長く出ない → 一本両曲げ
+  assert.deepStrictEqual(lengths(600), [900])
+  // D10（重ね 450）: 総加工長 2570 → 1800 + 770（直線部 620）
+  const d10 = domaSettingsWithDiameter('D10', d13)
+  assert.deepStrictEqual(lengths(1820, d10), [1800, 770])
+  // 455 は曲げのない端で D10 の重ね 450 が取れるときだけ使える
+  assert.ok(layoutDomaRun(1820, 1000, 'both', d13).pieces.every((p) => p.lengthMm !== 455))
 })
 
 test('layoutDomaRun: 長い区間の3本分割と重ね不足の補正を維持', () => {
@@ -209,3 +229,20 @@ test('rebalanceDomaPieces: 定尺変更で残りを調整し重ねを維持', ()
 })
 
 console.log('\nAll slab-rebar tests passed.')
+
+test('rebalanceDomaPieces: 差 1000 mm 以上が作れない短い区間では差の条件なし', () => {
+  const s = DEFAULT_DOMA_BAR_SETTINGS
+  // 総加工長 2400 は 750 + 750 + 1000 = 2500 に届かない → 1400 + 1000 も選べる
+  const short = layoutDomaRun(1500, 1000, 'both', s)
+  assert.deepStrictEqual(rebalanceDomaPieces(short, 0, 1400, 150, 600), [1400, 1000])
+  // 長い区間は従来どおり差 1000 mm 以上（7270 を 4000 + 3270 にはできない）
+  const long = layoutDomaRun(6370, 1000, 'both', s)
+  assert.strictEqual(rebalanceDomaPieces(long, 0, 4000, 150, 600), null)
+})
+
+test('rebalanceDomaPieces: 手入力では直線部 = 重ね の本も選べる（自動では選ばない）', () => {
+  const layout = layoutDomaRun(1820, 1000, 'both', DEFAULT_DOMA_BAR_SETTINGS)
+  assert.deepStrictEqual(layout.pieces.map((p) => p.lengthMm), [1800, 920])
+  assert.deepStrictEqual(rebalanceDomaPieces(layout, 0, 1970, 150, 600), [1970, 750])
+  assert.deepStrictEqual(rebalanceDomaPieces(layout, 1, 750, 150, 600), [1970, 750])
+})

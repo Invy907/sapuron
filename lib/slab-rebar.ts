@@ -360,11 +360,25 @@ function bendCountOf(bends: DomaBends): number {
 
 /** 自動分割で使用する定尺。保存済みの stockMm は旧設定との互換用。 */
 export const DOMA_STOCK_CANDIDATES_MM = [6000, 5500, 5000, 4500, 4000, 3000, 2750, 2250] as const
+/**
+ * 短い区間を 2 本に分けるときの片側の長さ。自動分割（描いたとき）だけで使い、定尺のプルダウンには出さない。
+ * 曲げを引いた直線部に重ねが取れないものは使わない（D13 の重ね 600 では 455・500 は使えない）
+ */
+export const DOMA_SHORT_PIECE_CANDIDATES_MM = [2000, 1800, 1500, 1365, 1000, 750, 500, 455] as const
 export const DOMA_MIN_PIECE_DIFFERENCE_MM = 1000
+/**
+ * 自動分割で、各本の直線部が重ねより最低これだけ長いこと。
+ * 直線部 = 重ねだと、その本はまるごと重なって曲げだけを継ぎ足した形になるため。手入力では求めない
+ */
+export const DOMA_MIN_LAP_PROTRUSION_MM = 150
 
 /**
  * 両端曲げは候補定尺 + 残りの 2 本を優先する。
  * 各本の直線部に重ねが入り、長さの差が 1000 mm 以上の組合せのうち最も差が小さいものを選ぶ。
+ * 定尺（と短い区間用の 2000・1800）を長い方に使って作れないときは、短い区間用の長さを短い方に使う。
+ * 短くて差 1000 mm 以上が作れないときは、差の条件なしで（できるだけ差が大きい組合せで）2 本に分ける。
+ * どの本も直線部が「重ね + DOMA_MIN_LAP_PROTRUSION_MM」以上になるように分ける。
+ * 1 本（両端曲げなら一本両曲げ）は、そう分けられないときだけ。
  * 2 本に収まらない長い区間は、従来どおり最大定尺で 3 本以上に分ける。
  */
 function autoDomaPieceLengths(
@@ -382,13 +396,28 @@ function autoDomaPieceLengths(
   const firstBend = bends === 'both' || bends === 'start' ? bendMm : 0
   const lastBend = bends === 'both' || bends === 'end' ? bendMm : 0
   const total = required(2)
-  const pairs = DOMA_STOCK_CANDIDATES_MM.map((first) => [first, total - first])
-    .filter(([first, last]) =>
-      first - last >= DOMA_MIN_PIECE_DIFFERENCE_MM &&
-      first - firstBend >= lapMm && last - lastBend >= lapMm &&
-      first > firstBend && last > lastBend && last <= stockMm)
-    .sort((a, b) => (a[0] - a[1]) - (b[0] - b[1]))
-  if (pairs.length) return pairs[0]!
+  const minStraight = lapMm + DOMA_MIN_LAP_PROTRUSION_MM
+  const lapFits = ([first, last]: number[]) =>
+    first! - firstBend >= minStraight && last! - lastBend >= minStraight &&
+    first! > firstBend && last! > lastBend && first! <= stockMm && last! <= stockMm
+  const validPair = (pair: number[]) =>
+    pair[0]! - pair[1]! >= DOMA_MIN_PIECE_DIFFERENCE_MM && lapFits(pair)
+  const byDifference = (a: number[], b: number[]) => (a[0]! - a[1]!) - (b[0]! - b[1]!)
+  const longSide = [...DOMA_STOCK_CANDIDATES_MM, ...DOMA_SHORT_PIECE_CANDIDATES_MM]
+    .map((first) => [first, total - first])
+    .filter(validPair)
+    .sort(byDifference)
+  if (longSide.length) return longSide[0]!
+  const shortSide = DOMA_SHORT_PIECE_CANDIDATES_MM.map((last) => [total - last, last])
+    .filter(validPair)
+    .sort(byDifference)
+  if (shortSide.length) return shortSide[0]!
+  // 差 1000 mm 以上が作れない短い区間。1 本を避けるため差の条件を外し、長い方を先にして差の大きい順
+  const anyDifference = [...DOMA_STOCK_CANDIDATES_MM, ...DOMA_SHORT_PIECE_CANDIDATES_MM]
+    .flatMap((c) => [[c, total - c], [total - c, c]])
+    .filter((pair) => pair[0]! >= pair[1]! && lapFits(pair))
+    .sort((a, b) => byDifference(b, a))
+  if (anyDifference.length) return anyDifference[0]!
   // 短い区間など、条件に合う継手が作れず 1 本で収まる場合は分割しない。
   if (required(1) <= stockMm) return [required(1)]
 
@@ -487,7 +516,15 @@ export function rebalanceDomaPieces(
     lengths[i] += move
     delta -= move
   }
-  if (delta !== 0 || (lengths.length === 2 && Math.abs(lengths[0] - lengths[1]) < 1000)) return null
+  // 差 1000 mm 以上は、その長さで作れるときだけ求める（短い区間は自動分割と同じく差の条件なし）
+  const differenceReachable =
+    layout.requiredTotalMm >= minimum[0]! + minimum[1]! + DOMA_MIN_PIECE_DIFFERENCE_MM
+  if (
+    delta !== 0 ||
+    (lengths.length === 2 &&
+      differenceReachable &&
+      Math.abs(lengths[0]! - lengths[1]!) < DOMA_MIN_PIECE_DIFFERENCE_MM)
+  ) return null
   return lengths
 }
 

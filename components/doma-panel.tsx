@@ -138,8 +138,28 @@ function layoutOf(run: DrawingDomaRun): DomaRunLayout {
 }
 
 /**
+ * 集計の数値。方向ごとの加工本数と、径・形・長さごとの行（別の土間筋から同じ長さが出たら 1 行に合算）。
+ * 右パネルの集計と図面の印刷で同じ数値を使う
+ */
+export function domaSummaryOf(bars: DrawingDomaRun[]) {
+  const layouts = bars.map((b) => ({ bar: b, layout: layoutOf(b) }))
+  const schedule = aggregateSchedule(
+    layouts.map(({ bar, layout }) => ({ diameter: bar.settings.diameter, runs: [layout] })),
+  )
+  const piecesByDirection = (direction: SlabBarDirection) =>
+    layouts
+      .filter(({ bar }) => bar.direction === direction)
+      .reduce((sum, { layout }) => sum + layout.pieces.length * layout.count, 0)
+  return {
+    counts: { tate: piecesByDirection('tate'), yoko: piecesByDirection('yoko') },
+    schedule,
+  }
+}
+
+export const DOMA_DIRECTION_LABEL = DIRECTION_LABEL
+
+/**
  * 集計。付加筋タブの要約と同じ形（方向ごとの本数の札 + 径・形・長さごとの行）。
- * 別の土間筋から同じ長さが出たら 1 行に合算する。
  */
 function DomaSummary({
   bars,
@@ -149,15 +169,7 @@ function DomaSummary({
   /** 結果ページへ（付加筋の「結果ページを見る」と同じ） */
   onGoToSummary?: () => void
 }) {
-  const layouts = useMemo(() => bars.map((b) => ({ bar: b, layout: layoutOf(b) })), [bars])
-  const schedule = useMemo(
-    () => aggregateSchedule(layouts.map(({ bar, layout }) => ({ diameter: bar.settings.diameter, runs: [layout] }))),
-    [layouts],
-  )
-  const piecesByDirection = (direction: SlabBarDirection) =>
-    layouts
-      .filter(({ bar }) => bar.direction === direction)
-      .reduce((sum, { layout }) => sum + layout.pieces.length * layout.count, 0)
+  const { counts, schedule } = useMemo(() => domaSummaryOf(bars), [bars])
 
   return (
     <div className="space-y-2 border-t border-border px-4 py-3">
@@ -172,7 +184,7 @@ function DomaSummary({
       ) : null}
       <div className="flex flex-wrap gap-1">
         {(['tate', 'yoko'] as const).map((d) => {
-          const count = piecesByDirection(d)
+          const count = counts[d]
           return (
             <span
               key={d}

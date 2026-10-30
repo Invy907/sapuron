@@ -91,6 +91,8 @@ const PAGE1_BOUNDS: CardBounds = {
 /** 2 ページ目（原点は用紙の左上） */
 const PAGE2_BOUNDS: CardBounds = { minX: 0, maxRight: SHEET_WIDTH_PX, minY: 0 }
 const SHEET_GAP_PX = 32
+/** 次のページへ送ったカードと、そのページにもとからあるカードの間 */
+const CARD_STACK_GAP_PX = 16
 const MIN_CARD_WIDTH_PX = 80
 const MIN_CARD_HEIGHT_PX = 40
 const MIN_CARD_ZOOM = 0.5
@@ -187,6 +189,11 @@ export function PrintLayoutModal({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const sheet1Ref = useRef<HTMLDivElement | null>(null)
   const sheet2Ref = useRef<HTMLDivElement | null>(null)
+  /**
+   * 2 ページ目以降の用紙（[0] が 2 ページ目）。2 ページ目以降の配置は縦に続いた 1 つの座標で持ち、
+   * y が SHEET_HEIGHT_PX ごとに次の用紙になる（y = 1100 なら 3 ページ目の上から 23px）
+   */
+  const freeSheetRefs = useRef<Array<HTMLDivElement | null>>([])
   const layerRef = useRef<HTMLDivElement | null>(null)
   const [scale, setScale] = useState(1)
   const [sheetHeights, setSheetHeights] = useState<[number, number]>([
@@ -281,12 +288,59 @@ export function PrintLayoutModal({
     }
   }, [measuringPage2, onPage2PlacementChange, page2CardIdsKey, page2Placements])
 
+  // 2 ページ目以降は、カードがあるいちばん後ろのページまで用紙を出す
+  const freePageCount = measuringPage2
+    ? 1
+    : Math.max(
+        1,
+        ...page2Cards.map((c) => pageIndexOf(page2Placements[c.id]?.y ?? 0) + 1),
+      )
+
+  // 用紙の下からはみ出したカードは、次のページ（なければ作る）の上へ送る。
+  // 次のページにカードがあれば、横が重なるカードの下に置く。ページより高いカードは動かさない
+  useEffect(() => {
+    if (measuringPage2) return
+    const heights = new Map<PrintCardId, number>()
+    for (const sheet of freeSheetRefs.current.slice(0, freePageCount)) {
+      if (!sheet) continue
+      for (const el of Array.from(sheet.querySelectorAll<HTMLElement>('[data-print-card]'))) {
+        heights.set(el.dataset.printCard as PrintCardId, el.offsetHeight)
+      }
+    }
+    for (const card of page2Cards) {
+      const p = page2Placements[card.id]
+      const h = heights.get(card.id)
+      if (!p || h == null) continue
+      const page = pageIndexOf(p.y)
+      const localY = p.y - page * SHEET_HEIGHT_PX
+      if (localY <= 0 || localY + h <= SHEET_HEIGHT_PX + 1) continue
+      const w = p.w ?? 0
+      for (let next = page + 1; next < page + 50; next++) {
+        let top = 0
+        for (const other of page2Cards) {
+          const q = page2Placements[other.id]
+          const qh = heights.get(other.id)
+          if (other.id === card.id || !q || qh == null || pageIndexOf(q.y) !== next) continue
+          const overlapsX = q.x < p.x + w && p.x < q.x + (q.w ?? 0)
+          if (overlapsX) top = Math.max(top, q.y - next * SHEET_HEIGHT_PX + qh + CARD_STACK_GAP_PX)
+        }
+        if (top === 0 || top + h <= SHEET_HEIGHT_PX) {
+          onPage2PlacementChange(card.id, { ...p, y: next * SHEET_HEIGHT_PX + top })
+          return
+        }
+      }
+    }
+  }, [cards, freePageCount, measuringPage2, onPage2PlacementChange, page2Cards, page2Placements, zooms])
+
   const handleDrop = useCallback(
     ({ id, cardRect, clientX, clientY }: DropInfo) => {
       const page1Only = cardsRef.current.some((c) => c.id === id && c.page1Only)
       const current = placements[id] ?? (page1Only ? defaultPlacements[id] : undefined)
       const s1 = sheet1Ref.current?.getBoundingClientRect()
       const s2 = sheet2Ref.current?.getBoundingClientRect()
+      const freeRects = freeSheetRefs.current
+        .slice(0, freePageCount)
+        .map((el) => el?.getBoundingClientRect())
       const layer = layerRef.current?.getBoundingClientRect()
       const inside = (r: DOMRect | undefined) =>
         r != null && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom
@@ -308,22 +362,33 @@ export function PrintLayoutModal({
         })
         return
       }
-      if (inside(s2) && s2 && !page1Only) {
+      const page = freeRects.findIndex((r) => inside(r))
+      const sheet = freeRects[page]
+      if (page >= 0 && sheet && !page1Only) {
         const prev = page2Placements[id]
         const w = prev?.w ?? Math.round(cardRect.width / k)
         const fixedH = current?.h ?? prev?.h
-        const x = (cardRect.left - s2.left) / k
-        const y = (cardRect.top - s2.top) / k
+        const x = (cardRect.left - sheet.left) / k
+        const y = (cardRect.top - sheet.top) / k
+        // 置いた用紙の中に収める（下にはみ出す位置には置かない）
+        const localY = Math.min(Math.max(0, y), Math.max(0, SHEET_HEIGHT_PX - h))
         onPage2PlacementChange(id, {
           x: Math.round(clampX(x, w, PAGE2_BOUNDS)),
-          y: Math.round(Math.max(0, y)),
+          y: Math.round(page * SHEET_HEIGHT_PX + localY),
           w,
           ...(fixedH != null ? { h: fixedH } : {}),
         })
         if (placements[id]) onPlacementChange(id, null)
       }
     },
-    [defaultPlacements, onPage2PlacementChange, onPlacementChange, page2Placements, placements],
+    [
+      defaultPlacements,
+      freePageCount,
+      onPage2PlacementChange,
+      onPlacementChange,
+      page2Placements,
+      placements,
+    ],
   )
 
   /** 拡大率を変える。幅・高さを決めてあるカードはそれも同じ比率で変える */
@@ -343,17 +408,25 @@ export function PrintLayoutModal({
     if (p2) onPage2PlacementChange(id, { ...p2, ...box })
   }
 
-  const renderCard = (card: PrintCard, box: PrintCardPlacement | undefined, bounds: CardBounds) => (
+  /** pageTop: 2 ページ目以降の続いた座標で、その用紙の上端の y。カードには用紙の中の位置で渡す */
+  const renderCard = (
+    card: PrintCard,
+    box: PrintCardPlacement | undefined,
+    bounds: CardBounds,
+    pageTop = 0,
+  ) => (
     <SheetCard
       key={card.id}
       card={card}
-      box={box}
+      box={box && pageTop ? { ...box, y: box.y - pageTop } : box}
       bounds={bounds}
       zoom={zooms[card.id] ?? 1}
       scale={scale}
       onDrop={handleDrop}
       onZoom={(z, size) => handleZoom(card.id, z, size)}
-      onBoxChange={(next) => handleBoxChange(card.id, next)}
+      onBoxChange={(next) =>
+        handleBoxChange(card.id, next.y != null && pageTop ? { ...next, y: next.y + pageTop } : next)
+      }
     />
   )
 
@@ -381,7 +454,7 @@ export function PrintLayoutModal({
         <div className="min-w-0">
           <h2 className="text-base font-semibold">印刷レイアウト</h2>
           <p className="text-xs text-muted">
-            カードはドラッグで自由に動かせます（1 ページ目の空いているところにも置けます）。カードに乗せると出る −／＋ か右下の角で拡大・縮小、辺をドラッグすると形を変えられます。ほかのカードは動きません。
+            カードはドラッグで自由に動かせます（1 ページ目の空いているところにも置けます）。カードに乗せると出る −／＋ か右下の角で拡大・縮小、辺をドラッグすると形を変えられます。ほかのカードは動きません。用紙の下にはみ出したカードは次のページへ自動で送ります。
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -417,8 +490,9 @@ export function PrintLayoutModal({
 
       <div ref={scrollRef} className="print-layout-scroll min-h-0 flex-1 overflow-auto">
         <div
-          className="print-layout-pages flex items-start justify-center p-6"
-          style={{ gap: SHEET_GAP_PX }}
+          className="print-layout-pages flex items-start p-6"
+          // 3 ページ以上で横にはみ出したときも左端までスクロールできるように safe center
+          style={{ gap: SHEET_GAP_PX, justifyContent: 'safe center' }}
         >
           <SheetFrame label="1ページ目" scale={scale} height={sheetHeights[0]}>
             <div ref={sheet1Ref} className="print-sheet" style={sheetStyle(scale)}>
@@ -444,7 +518,10 @@ export function PrintLayoutModal({
             className={page2Empty ? 'print-sheet-empty' : ''}
           >
             <div
-              ref={sheet2Ref}
+              ref={(el) => {
+                sheet2Ref.current = el
+                freeSheetRefs.current[0] = el
+              }}
               className={`print-sheet ${!page2Empty && !measuringPage2 ? 'print-sheet-free' : ''}`}
               style={sheetStyle(scale)}
             >
@@ -471,15 +548,41 @@ export function PrintLayoutModal({
                   ) : null}
                 </div>
               ) : (
-                page2Cards.map((card) => renderCard(card, page2Placements[card.id], PAGE2_BOUNDS))
+                page2Cards
+                  .filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === 0)
+                  .map((card) => renderCard(card, page2Placements[card.id], PAGE2_BOUNDS))
               )}
             </div>
           </SheetFrame>
+
+          {/* 2 ページ目に収まらなかったカードのページ（3 ページ目以降） */}
+          {Array.from({ length: freePageCount - 1 }, (_, i) => i + 1).map((page) => (
+            <SheetFrame key={page} label={`${page + 2}ページ目`} scale={scale} height={SHEET_HEIGHT_PX}>
+              <div
+                ref={(el) => {
+                  freeSheetRefs.current[page] = el
+                }}
+                className="print-sheet print-sheet-free"
+                style={sheetStyle(scale)}
+              >
+                {page2Cards
+                  .filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === page)
+                  .map((card) =>
+                    renderCard(card, page2Placements[card.id], PAGE2_BOUNDS, page * SHEET_HEIGHT_PX),
+                  )}
+              </div>
+            </SheetFrame>
+          ))}
         </div>
       </div>
     </div>,
     document.body,
   )
+}
+
+/** 2 ページ目以降の続いた座標の y が、何枚目の用紙か（0 = 2 ページ目） */
+function pageIndexOf(y: number): number {
+  return Math.max(0, Math.floor(y / SHEET_HEIGHT_PX))
 }
 
 function clampX(x: number, w: number, bounds: CardBounds): number {

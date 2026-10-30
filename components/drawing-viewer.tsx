@@ -18,6 +18,7 @@ import { getSegmentLabelMap } from '@/lib/segment-labels'
 import { SegmentPanel } from '@/components/segment-panel'
 import { CornerBarPanel } from '@/components/corner-bar-panel'
 import {
+  DOMA_DIRECTION_LABEL,
   DomaInputModal,
   DomaPanel,
   domaDimensionChoices,
@@ -25,6 +26,7 @@ import {
   type DomaSelection,
   type DomaTool,
 } from '@/components/doma-panel'
+import { buildDomaPrintSummaryInnerHtml, domaPrintGroupsOf } from '@/components/doma-summary-view'
 import {
   DOMA_DIRECTION_COLORS,
   distanceToDomaLine,
@@ -454,6 +456,13 @@ type DrawingLayer = 'unit' | 'corner' | 'doma'
 /** 土間筋の種類。タテ／ヨコは標準のときだけ選ぶ */
 type DomaBarKind = 'standard' | 'special'
 type DomaBarDirection = 'tate' | 'yoko'
+/** 土間筋タブの印刷で図面に出す方向（数値の箱はいつも両方） */
+type DomaPrintView = 'both' | DomaBarDirection
+const DOMA_PRINT_VIEW_OPTIONS: Array<{ value: DomaPrintView; label: string }> = [
+  { value: 'both', label: 'タテ・ヨコ' },
+  { value: 'tate', label: 'タテのみ' },
+  { value: 'yoko', label: 'ヨコのみ' },
+]
 
 /** 画面・印刷キャプチャ共通の描画オプション */
 type DrawingPaintOptions = {
@@ -466,6 +475,8 @@ type DrawingPaintOptions = {
   /** ユニット描画中・分割ホバー（ユニットタブの操作フィードバック） */
   showUnitInteractionOverlay?: boolean
   showDoma?: boolean
+  /** 描く土間筋の方向。未指定なら画面で選んでいる方向だけ */
+  domaDirections?: DomaBarDirection[]
   /** 描く付加筋を絞る（印刷で形状ごとに出す・出さないを選んだとき） */
   cornerBarFilter?: (cb: DrawingCornerBar) => boolean
 }
@@ -936,6 +947,9 @@ export function DrawingViewer({
   const [printSummaryScale, setPrintSummaryScale] = useState(1)
   const [cornerPrintSummaryPos, setCornerPrintSummaryPos] = useState<Point>({ x: 24, y: 24 })
   const [cornerPrintSummaryScale, setCornerPrintSummaryScale] = useState(1)
+  const [domaPrintSummaryPos, setDomaPrintSummaryPos] = useState<Point>({ x: 24, y: 24 })
+  const [domaPrintSummaryScale, setDomaPrintSummaryScale] = useState(1)
+  const [domaPrintView, setDomaPrintView] = useState<DomaPrintView>('both')
   /** 付加筋タブでユニットも出すときの、ユニットの入力データの箱の位置（特殊コーナー筋の箱とは別） */
   const [cornerPrintUnitSummaryPos, setCornerPrintUnitSummaryPos] = useState<Point>({
     x: 24,
@@ -1264,10 +1278,17 @@ export function DrawingViewer({
   const cornerPrintShowsUnitSummary =
     cornerPrintShowUnits && drawingPrintSummaryGroups.length > 0
   /** 1 つ目の箱（付加筋タブは特殊コーナー筋、ユニットタブはユニット） */
+  const domaPrintGroups = useMemo(() => domaPrintGroupsOf(domaBars), [domaBars])
+  const domaPrintSummaryHtml = useMemo(
+    () => buildDomaPrintSummaryInnerHtml(domaPrintGroups),
+    [domaPrintGroups],
+  )
   const printPreviewHasMainSummary =
     printPreviewLayer === 'corner'
       ? cornerBarPrintSummary.detailRows.length > 0
-      : drawingPrintSummaryGroups.length > 0
+      : printPreviewLayer === 'doma'
+        ? domaPrintGroups.length > 0
+        : drawingPrintSummaryGroups.length > 0
   /** 付加筋タブでユニットも出すときの、別の箱 */
   const printPreviewHasUnitSummary = printPreviewLayer === 'corner' && cornerPrintShowsUnitSummary
   const printPreviewHasSummary = printPreviewHasMainSummary || printPreviewHasUnitSummary
@@ -1302,13 +1323,29 @@ export function DrawingViewer({
     </div>
   )
   const activePrintSummaryPos =
-    printPreviewLayer === 'corner' ? cornerPrintSummaryPos : printSummaryPos
+    printPreviewLayer === 'corner'
+      ? cornerPrintSummaryPos
+      : printPreviewLayer === 'doma'
+        ? domaPrintSummaryPos
+        : printSummaryPos
   const activePrintSummaryScale =
-    printPreviewLayer === 'corner' ? cornerPrintSummaryScale : printSummaryScale
+    printPreviewLayer === 'corner'
+      ? cornerPrintSummaryScale
+      : printPreviewLayer === 'doma'
+        ? domaPrintSummaryScale
+        : printSummaryScale
   const setActivePrintSummaryPos =
-    printPreviewLayer === 'corner' ? setCornerPrintSummaryPos : setPrintSummaryPos
+    printPreviewLayer === 'corner'
+      ? setCornerPrintSummaryPos
+      : printPreviewLayer === 'doma'
+        ? setDomaPrintSummaryPos
+        : setPrintSummaryPos
   const setActivePrintSummaryScale =
-    printPreviewLayer === 'corner' ? setCornerPrintSummaryScale : setPrintSummaryScale
+    printPreviewLayer === 'corner'
+      ? setCornerPrintSummaryScale
+      : printPreviewLayer === 'doma'
+        ? setDomaPrintSummaryScale
+        : setPrintSummaryScale
 
   useEffect(() => {
     if (!summaryDragging) return
@@ -2853,7 +2890,8 @@ export function DrawingViewer({
     if (options.showDoma) {
       const isSelected = (type: 'dimension' | 'bar', id: string) =>
         options.interactiveHighlight && domaSelection?.type === type && domaSelection.id === id
-      const visibleBars = domaBars.filter((bar) => bar.direction === domaBarDirection)
+      const directions = options.domaDirections ?? [domaBarDirection]
+      const visibleBars = domaBars.filter((bar) => directions.includes(bar.direction))
       // 寸法の文字が他の線にかかるときは反対側へ逃がす。自分自身の線は判定から外す
       const barLinesById = new Map(
         visibleBars.map((bar) => [bar.id, domaRunLines(bar, scale, rotationSteps)]),
@@ -2892,17 +2930,21 @@ export function DrawingViewer({
           obstacles: obstaclesExcept(dim.id),
         })
       })
-      visibleBars.forEach((bar, i) => {
+      const numberInDirection = { tate: 0, yoko: 0 }
+      domaBars.forEach((bar) => {
+        // 右パネルの一覧（方向ごとの通し番号）と同じ名前。両方向を描くときも方向ごとに数える
+        const no = ++numberInDirection[bar.direction]
+        if (!directions.includes(bar.direction)) return
         paintDomaRun(ctx, bar, {
           viewScale: scale,
           selected: isSelected('bar', bar.id),
           viewRotationSteps: rotationSteps,
           obstacles: obstaclesExcept(bar.id),
-          // 右パネルの一覧（方向ごとの通し番号）と同じ名前
-          name: `${bar.direction === 'tate' ? 'タテ' : 'ヨコ'}${i + 1}`,
+          name: `${DOMA_DIRECTION_LABEL[bar.direction]}${no}`,
         })
       })
-      if (domaDraftLine) {
+      // 描いている途中の線は画面だけ（印刷には出さない）
+      if (domaDraftLine && options.interactiveHighlight) {
         if (domaTool === 'dimension') {
           // 寸法線の長さの自動推定は使わない。描いている間は線だけ見せる
           // const px = Math.hypot(domaDraftLine.x2 - domaDraftLine.x1, domaDraftLine.y2 - domaDraftLine.y1)
@@ -3052,6 +3094,7 @@ export function DrawingViewer({
     (
       targetLayer: DrawingLayer,
       cornerOptions?: { showUnits: boolean; hiddenCategories: string[] },
+      domaView: DomaPrintView = 'both',
     ): string | null => {
       const canvas = canvasRef.current
       if (!canvas || !imgLoaded) return null
@@ -3071,7 +3114,18 @@ export function DrawingViewer({
               interactiveHighlight: false,
               showUnitInteractionOverlay: false,
             }
-          : {
+          : targetLayer === 'doma'
+            ? {
+                showSegments: false,
+                showCornerBars: false,
+                segmentEmphasis: 'hidden',
+                cornerEmphasis: 'hidden',
+                interactiveHighlight: false,
+                showUnitInteractionOverlay: false,
+                showDoma: true,
+                domaDirections: domaView === 'both' ? ['tate', 'yoko'] : [domaView],
+              }
+            : {
               showSegments: cornerOptions?.showUnits ?? false,
               showCornerBars: true,
               segmentEmphasis: cornerOptions?.showUnits ? 'full' : 'hidden',
@@ -5490,10 +5544,11 @@ export function DrawingViewer({
 
     setPrintPreviewLayer(layer)
 
-    const captured = captureDrawingForPrint(layer, {
-      showUnits: cornerPrintShowUnits,
-      hiddenCategories: cornerPrintHiddenCategories,
-    })
+    const captured = captureDrawingForPrint(
+      layer,
+      { showUnits: cornerPrintShowUnits, hiddenCategories: cornerPrintHiddenCategories },
+      domaPrintView,
+    )
     if (captured) {
       setPrintImageSize({ w: canvas.width, h: canvas.height })
       setPrintModalImageUrl(captured)
@@ -5537,6 +5592,13 @@ export function DrawingViewer({
     if (captured) setPrintModalImageUrl(captured)
   }
 
+  /** 土間筋タブの印刷で図面に出す方向を変えたら、プレビュー画像を描き直す */
+  function updateDomaPrintView(view: DomaPrintView) {
+    setDomaPrintView(view)
+    const captured = captureDrawingForPrint('doma', undefined, view)
+    if (captured) setPrintModalImageUrl(captured)
+  }
+
   function handlePrintDrawing() {
     const canvas = canvasRef.current
     const preview = printPreviewRef.current
@@ -5550,10 +5612,8 @@ export function DrawingViewer({
     const rect = preview.getBoundingClientRect()
     const scaleX = rect.width > 0 ? printImgW / rect.width : 1
     const scaleY = rect.height > 0 ? printImgH / rect.height : 1
-    const summaryPos =
-      printPreviewLayer === 'corner' ? cornerPrintSummaryPos : printSummaryPos
-    const summaryScaleRaw =
-      printPreviewLayer === 'corner' ? cornerPrintSummaryScale : printSummaryScale
+    const summaryPos = activePrintSummaryPos
+    const summaryScaleRaw = activePrintSummaryScale
     const summaryLeft = Math.round(summaryPos.x * scaleX)
     const summaryTop = Math.round(summaryPos.y * scaleY)
     const summaryScale = Math.max(0.7, Math.min(1.8, summaryScaleRaw))
@@ -5577,7 +5637,9 @@ export function DrawingViewer({
             summaryTop,
             summaryScale,
           )
-        : unitBoxHtml(summaryLeft, summaryTop)
+        : printPreviewLayer === 'doma'
+          ? `<div class="summary corner-summary" style="left:${summaryLeft}px;top:${summaryTop}px;--sum-scale:${summaryScale};color:#0f172a;font-weight:600;">${domaPrintSummaryHtml}</div>`
+          : unitBoxHtml(summaryLeft, summaryTop)
     // 付加筋タブでユニットも出すときは、ユニットを別の箱にして別の位置に置く
     const unitSummaryHtml = printPreviewHasUnitSummary
       ? unitBoxHtml(
@@ -6108,7 +6170,7 @@ export function DrawingViewer({
           <button
             type="button"
             onClick={openPrintPreview}
-            disabled={!imgLoaded || layer === 'doma'}
+            disabled={!imgLoaded}
             className={`rounded-md bg-gray-100 text-foreground transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 ${
               isFullscreen ? 'w-full px-1 py-1.5 text-[11px]' : 'px-2 py-1.5 text-sm'
             }`}
@@ -6392,6 +6454,23 @@ export function DrawingViewer({
                     ))}
                   </div>
                 ) : null}
+                {printPreviewLayer === 'doma' ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border bg-slate-50 px-2 py-1 text-xs">
+                    <span className="text-muted">図面に出す筋</span>
+                    {DOMA_PRINT_VIEW_OPTIONS.map((opt) => (
+                      <label key={opt.value} className="inline-flex items-center gap-1">
+                        <input
+                          type="radio"
+                          name="doma-print-view"
+                          checked={domaPrintView === opt.value}
+                          onChange={() => updateDomaPrintView(opt.value)}
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                    <span className="text-[10px] text-muted">数値はタテ・ヨコに分けて両方出します</span>
+                  </div>
+                ) : null}
                 {printPreviewHasSummary && (
                   <div className="mt-2 inline-flex items-center gap-2 rounded border border-border bg-slate-50 px-2 py-1 text-xs">
                     <span className="text-muted">サイズ</span>
@@ -6518,6 +6597,11 @@ export function DrawingViewer({
                           </div>
                         ))}
                       </div>
+                    ) : printPreviewLayer === 'doma' ? (
+                      <div
+                        className="font-semibold text-slate-900"
+                        dangerouslySetInnerHTML={{ __html: domaPrintSummaryHtml }}
+                      />
                     ) : (
                       unitPrintSummaryNode
                     )}
