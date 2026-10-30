@@ -27,7 +27,9 @@ export type DomaSelection = { type: 'dimension' | 'bar'; id: string } | null
 const DIRECTION_LABEL: Record<SlabBarDirection, string> = { tate: 'タテ', yoko: 'ヨコ' }
 
 function parseMm(v: string): number {
-  return Math.round(Number(v.replace(/,/g, '')))
+  // 日本語入力がオンだと「４０００」「４，０００」のように全角で入るので、半角に直してから読む
+  const halfWidth = v.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+  return Math.round(Number(halfWidth.replace(/[,，、\s]/g, '')))
 }
 
 function NumField({
@@ -435,7 +437,12 @@ function PiecesEditor({
   const sum = lengths.reduce((a, b) => a + b, 0)
   const [editError, setEditError] = useState<string | null>(null)
   const apply = (index: number, raw: string) => {
-    const next = rebalanceDomaPieces(layout, index, parseMm(raw), run.settings.bendMm, run.settings.lapMm)
+    const mm = parseMm(raw)
+    if (!Number.isFinite(mm)) {
+      setEditError('長さは数字で入力してください。')
+      return
+    }
+    const next = rebalanceDomaPieces(layout, index, mm, run.settings.bendMm, run.settings.lapMm)
     if (next) {
       setEditError(null)
       onOverride(next)
