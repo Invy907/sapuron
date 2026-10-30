@@ -1,9 +1,10 @@
 'use client'
 
 import { useMemo } from 'react'
-import type { DrawingDomaRun } from '@/lib/types/database'
+import type { DrawingDomaDimension, DrawingDomaRun } from '@/lib/types/database'
 import { layoutDomaRun, type SlabBarDirection } from '@/lib/slab-rebar'
 import { DOMA_DIRECTION_COLORS } from '@/lib/doma-paint'
+import { DOMA_ZONE_COLOR, expandDomaRuns } from '@/lib/doma-zone'
 
 const DOMA_DIRECTION_LABEL: Record<SlabBarDirection, string> = { tate: 'タテ', yoko: 'ヨコ' }
 
@@ -18,6 +19,8 @@ function escapeHtml(value: string): string {
 
 /** 図面の印刷用の集計。方向・径・曲げの数（片側・両側・なし）・曲げ長さごとに、長さと本数を並べる */
 export type DomaPrintGroup = {
+  /** 特殊（範囲）の土間筋は標準と分けて出す */
+  kind: DrawingDomaRun['kind']
   direction: SlabBarDirection
   diameter: string
   bends: 0 | 1 | 2
@@ -27,19 +30,22 @@ export type DomaPrintGroup = {
 
 const PRINT_BENDS_ORDER = { 1: 0, 2: 1, 0: 2 } as const
 const PRINT_DIRECTION_ORDER: Record<SlabBarDirection, number> = { tate: 0, yoko: 1 }
+const PRINT_KIND_ORDER: Record<DrawingDomaRun['kind'], number> = { standard: 0, special: 1 }
 
-export function domaPrintGroupsOf(bars: DrawingDomaRun[]): DomaPrintGroup[] {
+/** 特殊の区域はタテ・ヨコに展開し、区域にかかる標準筋は区域で切って数える */
+export function domaPrintGroupsOf(runs: DrawingDomaRun[], dims: DrawingDomaDimension[] = []): DomaPrintGroup[] {
   const groups = new Map<string, DomaPrintGroup & { byLength: Map<number, number> }>()
-  for (const bar of bars) {
+  for (const bar of expandDomaRuns(runs, dims)) {
     const layout = layoutDomaRun(bar.length_mm, bar.span_mm, bar.bends, bar.settings, bar.pieces_override)
     if (layout.count <= 0) continue
     for (const piece of layout.pieces) {
       const bends = (Number(piece.bendStart) + Number(piece.bendEnd)) as 0 | 1 | 2
       const bendMm = bends > 0 ? bar.settings.bendMm : 0
-      const key = `${bar.direction}|${bar.settings.diameter}|${bends}|${bendMm}`
+      const key = `${bar.kind}|${bar.direction}|${bar.settings.diameter}|${bends}|${bendMm}`
       let group = groups.get(key)
       if (!group) {
         group = {
+          kind: bar.kind,
           direction: bar.direction,
           diameter: bar.settings.diameter,
           bends,
@@ -61,6 +67,7 @@ export function domaPrintGroupsOf(bars: DrawingDomaRun[]): DomaPrintGroup[] {
     }))
     .sort(
       (a, b) =>
+        PRINT_KIND_ORDER[a.kind] - PRINT_KIND_ORDER[b.kind] ||
         PRINT_DIRECTION_ORDER[a.direction] - PRINT_DIRECTION_ORDER[b.direction] ||
         PRINT_BENDS_ORDER[a.bends] - PRINT_BENDS_ORDER[b.bends] ||
         a.diameter.localeCompare(b.diameter) ||
@@ -76,7 +83,7 @@ function domaSumPx(px: number): string {
 /**
  * 土間筋の印刷の数値。手書きの発注メモの形（径と形の図 → 「長さ mm ― 本数」）。
  * 形の図は片側曲げ「150┌───」、両側曲げ「150┌───┐150」、曲げなしは「直」を丸で囲む。
- * タテ・ヨコは見出しを付けて分ける。プレビューと印刷で同じ HTML を使う
+ * タテ・ヨコ（特殊は「特殊タテ」「特殊ヨコ」）は見出しを付けて分ける。プレビューと印刷で同じ HTML を使う
  */
 export function buildDomaPrintSummaryInnerHtml(groups: DomaPrintGroup[]): string {
   const ink = '#0f172a'
@@ -100,9 +107,11 @@ export function buildDomaPrintSummaryInnerHtml(groups: DomaPrintGroup[]): string
             `<div style="display:flex;align-items:baseline;gap:${domaSumPx(8)};white-space:nowrap;"><span style="min-width:${domaSumPx(44)};text-align:right;font-variant-numeric:tabular-nums;">${row.lengthMm}</span><span style="font-size:${domaSumPx(11)};color:#475569;">mm</span><span style="color:#94a3b8;">―</span><span style="font-variant-numeric:tabular-nums;">${row.quantity}</span><span style="font-size:${domaSumPx(12)};">本</span></div>`,
         )
         .join('')
-      const newDirection = i === 0 || groups[i - 1]!.direction !== group.direction
+      const prev = groups[i - 1]
+      const newDirection = !prev || prev.direction !== group.direction || prev.kind !== group.kind
+      const special = group.kind === 'special'
       const heading = newDirection
-        ? `<div style="${i > 0 ? `margin-top:${domaSumPx(16)};padding-top:${domaSumPx(10)};border-top:1px solid #cbd5e1;` : ''}margin-bottom:${domaSumPx(6)};font-size:${domaSumPx(15)};font-weight:700;color:${DOMA_DIRECTION_COLORS[group.direction]};">${DOMA_DIRECTION_LABEL[group.direction]}</div>`
+        ? `<div style="${i > 0 ? `margin-top:${domaSumPx(16)};padding-top:${domaSumPx(10)};border-top:1px solid #cbd5e1;` : ''}margin-bottom:${domaSumPx(6)};font-size:${domaSumPx(15)};font-weight:700;color:${special ? DOMA_ZONE_COLOR : DOMA_DIRECTION_COLORS[group.direction]};">${special ? '特殊' : ''}${DOMA_DIRECTION_LABEL[group.direction]}</div>`
         : ''
       return `${heading}<div style="${!newDirection ? `margin-top:${domaSumPx(10)};` : ''}"><div style="display:flex;align-items:center;gap:${domaSumPx(10)};margin-bottom:${domaSumPx(3)};"><span style="font-size:${domaSumPx(16)};font-weight:700;">${escapeHtml(group.diameter)}</span>${figure(group)}</div><div style="padding-left:${domaSumPx(10)};font-size:${domaSumPx(15)};line-height:1.35;">${rows}</div></div>`
     })
@@ -111,12 +120,19 @@ export function buildDomaPrintSummaryInnerHtml(groups: DomaPrintGroup[]): string
 
 /**
  * 土間筋 集計結果。結果ページの材料取り（長さ表・フック付）の下に、同じカードで出す。
- * 図面の印刷と同じ形（タテ筋・ヨコ筋ごとに、径と形の図 → 「長さ mm ― 本数」）。
+ * 図面の印刷と同じ形（タテ・ヨコ・特殊ごとに、径と形の図 → 「長さ mm ― 本数」）。
  */
-export function DomaSummarySections({ runs }: { runs: DrawingDomaRun[] }) {
+export function DomaSummarySections({
+  runs,
+  dimensions = [],
+}: {
+  runs: DrawingDomaRun[]
+  /** 区域で切る標準筋の位置を測るのに使う */
+  dimensions?: DrawingDomaDimension[]
+}) {
   const html = useMemo(
-    () => buildDomaPrintSummaryInnerHtml(domaPrintGroupsOf(runs.filter((r) => r.kind === 'standard'))),
-    [runs],
+    () => buildDomaPrintSummaryInnerHtml(domaPrintGroupsOf(runs, dimensions)),
+    [runs, dimensions],
   )
 
   if (!html) return null

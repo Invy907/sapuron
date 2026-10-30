@@ -4,6 +4,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { DrawingDomaDimension, DrawingDomaRun } from '@/lib/types/database'
 import { DOMA_DIRECTION_COLORS } from '@/lib/doma-paint'
 import {
+  DEFAULT_DOMA_ZONE_WALLS,
+  DOMA_ZONE_COLOR,
+  DOMA_ZONE_SIDE_LABEL,
+  domaZoneEdgeAtScreenSide,
+  domaZoneExtendMm,
+  domaZoneHasDirection,
+  domaZoneRunValues,
+  domaRunZoneCuts,
+  domaZoneRuns,
+  domaZoneSpecOf,
+  expandDomaRuns,
+  splitDomaRunByZones,
+  type DomaZoneEdge,
+  type DomaZoneSpec,
+} from '@/lib/doma-zone'
+import {
   aggregateSchedule,
   countBars,
   DOMA_BAR_DIAMETERS,
@@ -139,10 +155,10 @@ function layoutOf(run: DrawingDomaRun): DomaRunLayout {
 
 /**
  * 集計の数値。方向ごとの加工本数と、径・形・長さごとの行（別の土間筋から同じ長さが出たら 1 行に合算）。
- * 右パネルの集計と図面の印刷で同じ数値を使う
+ * 特殊の範囲はタテ・ヨコに展開して数える。右パネルの集計と図面の印刷で同じ数値を使う
  */
-export function domaSummaryOf(bars: DrawingDomaRun[]) {
-  const layouts = bars.map((b) => ({ bar: b, layout: layoutOf(b) }))
+export function domaSummaryOf(bars: DrawingDomaRun[], dims: DrawingDomaDimension[] = []) {
+  const layouts = expandDomaRuns(bars, dims).map((b) => ({ bar: b, layout: layoutOf(b) }))
   const schedule = aggregateSchedule(
     layouts.map(({ bar, layout }) => ({ diameter: bar.settings.diameter, runs: [layout] })),
   )
@@ -163,13 +179,15 @@ export const DOMA_DIRECTION_LABEL = DIRECTION_LABEL
  */
 function DomaSummary({
   bars,
+  dimensions,
   onGoToSummary,
 }: {
   bars: DrawingDomaRun[]
+  dimensions: DrawingDomaDimension[]
   /** 結果ページへ（付加筋の「結果ページを見る」と同じ） */
   onGoToSummary?: () => void
 }) {
-  const { counts, schedule } = useMemo(() => domaSummaryOf(bars), [bars])
+  const { counts, schedule } = useMemo(() => domaSummaryOf(bars, dimensions), [bars, dimensions])
 
   return (
     <div className="space-y-2 border-t border-border px-4 py-3">
@@ -563,10 +581,13 @@ function PiecesEditor({
  */
 function RunEditor({
   run,
+  runs,
   dimensions,
   onUpdate,
 }: {
   run: DrawingDomaRun
+  /** 図面の土間筋すべて（区域で切る本を出すため） */
+  runs: DrawingDomaRun[]
   dimensions: DrawingDomaDimension[]
   onUpdate: (patch: RunPatch) => void
 }) {
@@ -576,6 +597,9 @@ function RunEditor({
   const [lengthDraft, setLengthDraft] = useState<string | null>(null)
   const [spanDraft, setSpanDraft] = useState<string | null>(null)
   const layout = layoutOf(run)
+  const cuts = domaRunZoneCuts(run, runs, dimensions)
+  const rows = splitDomaRunByZones(run, runs, dimensions)
+  const zones = runs.filter((r) => r.kind === 'special')
 
   const commit = (patch: Partial<RunPatch>) =>
     onUpdate({
@@ -632,14 +656,281 @@ function RunEditor({
       <div className="rounded-md border border-border bg-white p-2">
         <PiecesEditor run={run} layout={layout} onOverride={(lengths) => commit({ pieces_override: lengths })} />
       </div>
+      {cuts.length > 0 ? (
+        <section className="space-y-1 rounded-md border border-green-200 bg-green-50/60 p-2 text-[11px]">
+          <p className="font-medium" style={{ color: DOMA_ZONE_COLOR }}>
+            区域で切る本（区域の中へはみ出しの分だけ入る）
+          </p>
+          {cuts.map((cut) => (
+            <div key={cut.zoneId} className="tabular-nums text-foreground">
+              <p>
+                特殊{zones.findIndex((z) => z.id === cut.zoneId) + 1} にかかる {cut.count}本（区域{' '}
+                {cut.fromMm.toLocaleString()}〜{cut.toMm.toLocaleString()}）
+              </p>
+              {(
+                [
+                  ['手前', cut.before],
+                  ['先', cut.after],
+                ] as const
+              ).map(([label, part]) =>
+                part ? (
+                  <p key={label} className="pl-2">
+                    {label}{' '}
+                    {piecesSummary(
+                      layoutDomaRun(part.lengthMm, cut.count * run.settings.pitchMm, part.bends, run.settings),
+                    )}
+                  </p>
+                ) : null,
+              )}
+            </div>
+          ))}
+        </section>
+      ) : null}
       <p className="text-[11px] tabular-nums text-foreground">
         製作数量{' '}
-        {layout.pieces
-          .map((p) => `${p.lengthMm.toLocaleString()} × ${layout.count}本`)
+        {rows
+          .flatMap((row) => {
+            const rowLayout = layoutOf(row)
+            return rowLayout.pieces.map((p) => `${p.lengthMm.toLocaleString()} × ${rowLayout.count}本`)
+          })
           .join(' ＋ ')}
       </p>
       <Warnings warnings={layout.warnings} />
 
+    </div>
+  )
+}
+
+/** 壁の辺の切り替え。画面で見た上下左右で出し、図面座標の辺に直して返す */
+function WallToggles({
+  walls,
+  viewRotationSteps,
+  onChange,
+  hint,
+}: {
+  walls: Record<DomaZoneEdge, boolean>
+  viewRotationSteps: number
+  onChange: (next: Record<DomaZoneEdge, boolean>) => void
+  hint?: string
+}) {
+  const button = (side: DomaZoneEdge) => {
+    const edge = domaZoneEdgeAtScreenSide(side, viewRotationSteps)
+    const on = walls[edge]
+    return (
+      <button
+        type="button"
+        aria-pressed={on}
+        onClick={() => onChange({ ...walls, [edge]: !on })}
+        title={on ? '壁: 端部曲げで止める' : '壁でない: 区域の外へはみ出す'}
+        className={`min-w-[3.25rem] rounded px-1.5 py-0.5 text-[10px] font-medium ${
+          on ? 'bg-slate-700 text-white' : 'border border-border bg-white text-muted hover:bg-gray-50'
+        }`}
+      >
+        {DOMA_ZONE_SIDE_LABEL[side]}
+        {on ? ' 壁' : ''}
+      </button>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1 text-[11px] text-muted">
+      壁の辺
+      <div className="grid grid-cols-[auto_1fr_auto] grid-rows-[auto_2.25rem_auto] items-center justify-items-center gap-1">
+        <span />
+        {button('top')}
+        <span />
+        {button('left')}
+        <div className="h-full w-full rounded border-2 border-dashed" style={{ borderColor: DOMA_ZONE_COLOR }} />
+        {button('right')}
+        <span />
+        {button('bottom')}
+        <span />
+      </div>
+      {hint ? <span className="text-[10px] leading-snug">{hint}</span> : null}
+    </div>
+  )
+}
+
+/** 入力窓のプレビュー用に、保存前の範囲を行の形にする */
+function draftZone(
+  tateMm: number,
+  yokoMm: number,
+  settings: DomaBarSettings,
+  spec: DomaZoneSpec,
+): DrawingDomaRun {
+  return {
+    id: 'draft',
+    drawing_id: '',
+    page_no: 1,
+    kind: 'special',
+    direction: 'tate',
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 0,
+    length_mm: tateMm,
+    span_mm: yokoMm,
+    bends: 'none',
+    settings: { ...settings, zone: spec },
+    pieces_override: null,
+    length_dim_id: null,
+    span_dim_id: null,
+    created_at: '',
+  }
+}
+
+/** 「L 2,550（範囲 1,950 + はみ出し 600）」 */
+function zoneLengthText(zone: DrawingDomaRun, direction: SlabBarDirection): string {
+  const v = domaZoneRunValues(zone, direction)
+  const extends_ = [v.startExtendMm, v.endExtendMm].filter((mm) => mm > 0)
+  return `L ${v.lengthMm.toLocaleString()}（区域 ${v.sizeMm.toLocaleString()}${extends_
+    .map((mm) => ` + はみ出し ${mm.toLocaleString()}`)
+    .join('')}）`
+}
+
+/**
+ * 選択中の特殊範囲。範囲の大きさ・壁・はみ出しを変えたら、手入力した加工本は自動に戻す
+ * （L が変わると手入力の合計が合わなくなるため）
+ */
+function ZoneEditor({
+  zone,
+  viewRotationSteps,
+  onUpdate,
+}: {
+  zone: DrawingDomaRun
+  viewRotationSteps: number
+  onUpdate: (patch: RunPatch) => void
+}) {
+  const spec = domaZoneSpecOf(zone)
+  const [tateDraft, setTateDraft] = useState<string | null>(null)
+  const [yokoDraft, setYokoDraft] = useState<string | null>(null)
+  const [extendDraft, setExtendDraft] = useState<string | null>(null)
+
+  const commit = (patch: Partial<RunPatch>) =>
+    onUpdate({
+      length_mm: zone.length_mm,
+      span_mm: zone.span_mm,
+      bends: zone.bends,
+      settings: zone.settings,
+      pieces_override: zone.pieces_override,
+      length_dim_id: zone.length_dim_id,
+      span_dim_id: zone.span_dim_id,
+      ...patch,
+    })
+  const specWith = (next: Partial<DomaZoneSpec>, keepOverrides = false): DomaZoneSpec => {
+    const merged = { ...spec, ...next }
+    if (!keepOverrides) delete merged.overrides
+    return merged
+  }
+  const commitSpec = (next: Partial<DomaZoneSpec>, keepOverrides = false) =>
+    commit({ settings: { ...zone.settings, zone: specWith(next, keepOverrides) } })
+
+  const runs = domaZoneRuns(zone)
+  const toggleDirection = (direction: SlabBarDirection) => {
+    const next = { tate: domaZoneHasDirection(zone, 'tate'), yoko: domaZoneHasDirection(zone, 'yoko') }
+    next[direction] = !next[direction]
+    if (!next.tate && !next.yoko) return
+    commitSpec({ directions: next }, true)
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <section className="rounded-md border border-border bg-white p-3">
+        <p className="mb-2 text-xs font-medium text-foreground">配筋条件</p>
+        <SettingsFields
+          settings={zone.settings}
+          onChange={(settings) => {
+            const geometryChanged =
+              settings.bendMm !== zone.settings.bendMm || settings.lapMm !== zone.settings.lapMm
+            commit({ settings: { ...settings, zone: specWith({}, !geometryChanged) } })
+          }}
+        />
+      </section>
+      <div className="grid grid-cols-2 gap-x-3">
+        <NumField
+          label="タテ方向の区域 (mm)"
+          value={tateDraft ?? String(zone.length_mm)}
+          onChange={(v) => {
+            setTateDraft(v)
+            const mm = parseMm(v)
+            if (mm > 0) commit({ length_mm: mm, settings: { ...zone.settings, zone: specWith({}) } })
+          }}
+          onBlur={() => setTateDraft(null)}
+        />
+        <NumField
+          label="ヨコ方向の区域 (mm)"
+          value={yokoDraft ?? String(zone.span_mm)}
+          onChange={(v) => {
+            setYokoDraft(v)
+            const mm = parseMm(v)
+            if (mm > 0) commit({ span_mm: mm, settings: { ...zone.settings, zone: specWith({}) } })
+          }}
+          onBlur={() => setYokoDraft(null)}
+        />
+      </div>
+      <WallToggles
+        walls={spec.walls}
+        viewRotationSteps={viewRotationSteps}
+        onChange={(walls) => commitSpec({ walls })}
+        hint="図面で区域の辺をクリックしても切り替わります。壁の辺は端部曲げで止め、壁でない辺は外へはみ出します。"
+      />
+      <NumField
+        label="はみ出し (mm)"
+        hint={`壁でない辺から区域の外へ伸ばす長さ。標準は重ね（${zone.settings.lapMm}）`}
+        value={extendDraft ?? String(domaZoneExtendMm(zone))}
+        onChange={(v) => {
+          setExtendDraft(v)
+          const mm = parseMm(v)
+          if (Number.isFinite(mm) && mm >= 0) commitSpec({ extendMm: mm })
+        }}
+        onBlur={() => setExtendDraft(null)}
+      />
+      {spec.extendMm != null && spec.extendMm !== zone.settings.lapMm ? (
+        <button
+          type="button"
+          onClick={() => commitSpec({ extendMm: undefined })}
+          className="self-start text-[11px] text-primary hover:underline"
+        >
+          重ねと同じにする
+        </button>
+      ) : null}
+      <details className="text-[11px] text-muted">
+        <summary className="cursor-pointer">入れる向き（タテ・ヨコ）</summary>
+        <div className="mt-2 flex gap-3">
+          {(['tate', 'yoko'] as const).map((d) => (
+            <label key={d} className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={domaZoneHasDirection(zone, d)}
+                onChange={() => toggleDirection(d)}
+              />
+              {DIRECTION_LABEL[d]}
+            </label>
+          ))}
+        </div>
+      </details>
+      {runs.map((run) => {
+        const layout = layoutOf(run)
+        return (
+          <section key={run.id} className="space-y-1.5 rounded-md border border-border bg-white p-2">
+            <p className="text-[11px] font-semibold" style={{ color: DOMA_DIRECTION_COLORS[run.direction] }}>
+              {DIRECTION_LABEL[run.direction]}
+              <span className="ml-1.5 font-normal tabular-nums text-muted">{zoneLengthText(zone, run.direction)}</span>
+            </p>
+            <PiecesEditor
+              run={run}
+              layout={layout}
+              onOverride={(lengths) =>
+                commitSpec({ overrides: { ...spec.overrides, [run.direction]: lengths } }, true)
+              }
+            />
+            <p className="text-[11px] tabular-nums text-foreground">
+              製作数量{' '}
+              {layout.pieces.map((p) => `${p.lengthMm.toLocaleString()} × ${layout.count}本`).join(' ＋ ')}
+            </p>
+            <Warnings warnings={layout.warnings} />
+          </section>
+        )
+      })}
     </div>
   )
 }
@@ -651,6 +942,18 @@ type RunPatch = Pick<
 
 export type DomaInputModalState =
   | { type: 'dimension'; line: { x1: number; y1: number; x2: number; y2: number }; estimateMm: number | null }
+  | {
+      type: 'zone'
+      /** 範囲の対角（図面座標） */
+      line: { x1: number; y1: number; x2: number; y2: number }
+      /** タテ筋が図面座標の y の向きか（描いたときの表示回転） */
+      tateAlongY: boolean
+      /** 範囲の辺に両端がそろう寸法線（タテ方向・ヨコ方向） */
+      tateCandidates: DomaDimensionChoice[]
+      yokoCandidates: DomaDimensionChoice[]
+      defaultTate: DomaDimensionChoice | null
+      defaultYoko: DomaDimensionChoice | null
+    }
   | {
       type: 'bar'
       direction: SlabBarDirection
@@ -672,6 +975,146 @@ export type DomaRunInput = {
   spanDimId: string | null
 }
 
+/** 特殊範囲の入力窓で確定した値 */
+export type DomaZoneInput = {
+  tateMm: number
+  tateDimId: string | null
+  yokoMm: number
+  yokoDimId: string | null
+  walls: Record<DomaZoneEdge, boolean>
+}
+
+/** 特殊範囲を囲んだあとの入力窓。範囲の大きさ（寸法線から選べる）と壁の辺を決める */
+export function DomaZoneInputModal({
+  state,
+  settings,
+  dimensionChoices,
+  viewRotationSteps,
+  onCancel,
+  onConfirm,
+}: {
+  state: Extract<DomaInputModalState, { type: 'zone' }>
+  settings: DomaBarSettings
+  dimensionChoices: DomaDimensionChoice[]
+  viewRotationSteps: number
+  onCancel: () => void
+  onConfirm: (values: DomaZoneInput) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [tate, setTate] = useState(state.defaultTate ? String(state.defaultTate.mm) : '')
+  const [yoko, setYoko] = useState(state.defaultYoko ? String(state.defaultYoko.mm) : '')
+  const [tateChoice, setTateChoice] = useState<DomaDimensionChoice | null>(state.defaultTate)
+  const [yokoChoice, setYokoChoice] = useState<DomaDimensionChoice | null>(state.defaultYoko)
+  const [walls, setWalls] = useState<Record<DomaZoneEdge, boolean>>(DEFAULT_DOMA_ZONE_WALLS)
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  const tateMm = parseMm(tate)
+  const yokoMm = parseMm(yoko)
+  const valid = tateMm > 0 && yokoMm > 0
+  const preview = valid ? draftZone(tateMm, yokoMm, settings, { tateAlongY: state.tateAlongY, walls }) : null
+  const confirm = () => {
+    if (!valid) return
+    onConfirm({
+      tateMm,
+      tateDimId: tateChoice?.mm === tateMm ? tateChoice.id : null,
+      yokoMm,
+      yokoDimId: yokoChoice?.mm === yokoMm ? yokoChoice.id : null,
+      walls,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onMouseDown={onCancel}>
+      <div
+        className="w-80 rounded-lg bg-white p-4 shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+      >
+        <h3 className="mb-3 text-sm font-semibold">区域を入力</h3>
+        <div className="flex flex-col gap-2">
+          <NumField
+            label="タテ方向の区域 (mm)"
+            value={tate}
+            onChange={setTate}
+            inputRef={inputRef}
+            onEnter={confirm}
+          />
+          <DimensionChips
+            choices={dimensionChoices}
+            candidates={state.tateCandidates}
+            onPick={(c) => {
+              setTate(String(c.mm))
+              setTateChoice(c)
+            }}
+          />
+          <NumField label="ヨコ方向の区域 (mm)" value={yoko} onChange={setYoko} onEnter={confirm} />
+          <DimensionChips
+            choices={dimensionChoices}
+            candidates={state.yokoCandidates}
+            onPick={(c) => {
+              setYoko(String(c.mm))
+              setYokoChoice(c)
+            }}
+          />
+          <WallToggles
+            walls={walls}
+            viewRotationSteps={viewRotationSteps}
+            onChange={setWalls}
+            hint="壁の辺は端部曲げで止め、壁でない辺は重ねの分だけ外へはみ出します。"
+          />
+          <p className="text-[11px] tabular-nums text-muted">
+            条件 {settings.diameter} / ピッチ {settings.pitchMm} / 曲げ {settings.bendMm} / 重ね {settings.lapMm}
+            （右パネルの「条件」で変更）
+          </p>
+          {preview ? (
+            <div className="space-y-1 rounded-md bg-gray-50 px-2 py-1.5 text-[11px]">
+              {domaZoneRuns(preview).map((run) => {
+                const layout = layoutOf(run)
+                return (
+                  <div key={run.direction}>
+                    <div className="font-semibold" style={{ color: DOMA_DIRECTION_COLORS[run.direction] }}>
+                      {DIRECTION_LABEL[run.direction]}{' '}
+                      <span className="font-normal tabular-nums text-muted">
+                        {zoneLengthText(preview, run.direction)}
+                      </span>
+                    </div>
+                    <div className="tabular-nums">
+                      加工本 {piecesSummary(layout)} × {layout.count}本
+                    </div>
+                    <Warnings warnings={layout.warnings} />
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-gray-50"
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={!valid}
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function DomaInputModal({
   state,
   settings,
@@ -681,7 +1124,7 @@ export function DomaInputModal({
   onConfirmDimension,
   onConfirmBar,
 }: {
-  state: DomaInputModalState
+  state: Exclude<DomaInputModalState, { type: 'zone' }>
   settings: DomaBarSettings
   /** 右パネルの条件で選んでいる端部曲げ */
   defaultBends: DomaBends
@@ -859,17 +1302,21 @@ export function DomaPanel({
   onDeleteDimension: (id: string) => void
   onDeleteBar: (id: string) => void
 }) {
-  const directionBars = bars.filter((b) => b.direction === direction)
+  const standardBars = bars.filter((b) => b.kind !== 'special')
+  const zones = bars.filter((b) => b.kind === 'special')
+  const directionBars = standardBars.filter((b) => b.direction === direction)
   const selectedDim =
     selection?.type === 'dimension' ? dimensions.find((d) => d.id === selection.id) ?? null : null
   const selectedBar = selection?.type === 'bar' ? bars.find((b) => b.id === selection.id) ?? null : null
   const dirLabel = DIRECTION_LABEL[direction]
-  /** 一覧と同じ「タテ1」「タテ2」…の番号 */
-  const selectedBarTitle = selectedBar
-    ? `${DIRECTION_LABEL[selectedBar.direction]}筋 ${
-        bars.filter((b) => b.direction === selectedBar.direction).indexOf(selectedBar) + 1
-      }`
-    : ''
+  /** 一覧と同じ「タテ1」「タテ2」「特殊1」…の番号 */
+  const selectedBarTitle = !selectedBar
+    ? ''
+    : selectedBar.kind === 'special'
+      ? `特殊 ${zones.indexOf(selectedBar) + 1}`
+      : `${DIRECTION_LABEL[selectedBar.direction]}筋 ${
+          standardBars.filter((b) => b.direction === selectedBar.direction).indexOf(selectedBar) + 1
+        }`
 
   return (
     <div className="w-72 shrink-0 flex flex-col rounded-lg border border-border bg-white overflow-hidden">
@@ -877,7 +1324,11 @@ export function DomaPanel({
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold">
-            {tool === 'dimension' ? `寸法線一覧 (${dimensions.length})` : `土間筋一覧 (${bars.length})`}
+            {tool === 'dimension'
+              ? `寸法線一覧 (${dimensions.length})`
+              : kind === 'special'
+                ? `区域一覧 (${zones.length})`
+                : `土間筋一覧 (${standardBars.length})`}
           </h3>
           {onUndo ? (
             <button
@@ -894,9 +1345,7 @@ export function DomaPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {kind === 'special' ? (
-          <p className="px-4 py-6 text-center text-xs text-muted">特殊は準備中です。</p>
-        ) : selectedDim || selectedBar ? (
+        {selectedDim || selectedBar ? (
           // 選択中は、その寸法線・土間筋の値だけを出す。閉じる・削除の位置はユニット／付加筋と揃える
           <section className="space-y-3 border-b border-border bg-blue-50/50 p-4">
             <div className="flex items-center justify-between">
@@ -929,10 +1378,18 @@ export function DomaPanel({
                 dim={selectedDim}
                 onUpdate={(mm) => onUpdateDimension(selectedDim.id, mm)}
               />
+            ) : selectedBar?.kind === 'special' ? (
+              <ZoneEditor
+                key={selectedBar.id}
+                zone={selectedBar}
+                viewRotationSteps={viewRotationSteps}
+                onUpdate={(patch) => onUpdateBar(selectedBar.id, patch)}
+              />
             ) : selectedBar ? (
               <RunEditor
                 key={selectedBar.id}
                 run={selectedBar}
+                runs={bars}
                 dimensions={dimensions}
                 onUpdate={(patch) => onUpdateBar(selectedBar.id, patch)}
               />
@@ -941,7 +1398,15 @@ export function DomaPanel({
         ) : (
           <>
             {/* 土間筋を描くときだけ、新規作成用の条件を表示する。 */}
-            {tool === 'bar' ? (
+            {tool === 'bar' && kind === 'special' ? (
+              <section className="space-y-2 border-b border-border p-3">
+                <span className="text-[10px] font-medium text-foreground">これから描く区域の条件</span>
+                <SettingsFields key="special" settings={settings} onChange={onSettingsChange} />
+                <p className="text-[10px] leading-snug text-muted">
+                  図面をドラッグして区域を囲みます。区域の中はタテ・ヨコの両方が入り、壁でない辺は重ねの分だけ外へはみ出します。
+                </p>
+              </section>
+            ) : tool === 'bar' ? (
               <section className="space-y-2 border-b border-border p-3">
                 <span className="text-[10px] font-medium text-foreground">これから描く{dirLabel}筋の条件</span>
                 <SettingsFields key={direction} settings={settings} onChange={onSettingsChange} />
@@ -978,12 +1443,57 @@ export function DomaPanel({
                   ))}
                 </ul>
               )
+            ) : kind === 'special' ? (
+              zones.length === 0 ? (
+                <p className="px-4 py-3 text-[11px] leading-relaxed text-muted">まだ区域がありません。</p>
+              ) : (
+                <ul className="space-y-1 px-4 py-3">
+                  {zones.map((z, i) => (
+                    <li key={z.id}>
+                      <button
+                        type="button"
+                        onClick={() => onSelect({ type: 'bar', id: z.id })}
+                        className="w-full rounded px-1 py-0.5 text-left hover:bg-gray-50"
+                      >
+                        <span className="flex items-center justify-between text-[11px] font-semibold text-muted">
+                          <span>
+                            <span style={{ color: DOMA_ZONE_COLOR }}>特殊{i + 1}</span>
+                            <span className="ml-1.5 font-normal tabular-nums">
+                              タテ {z.length_mm.toLocaleString()} × ヨコ {z.span_mm.toLocaleString()}
+                            </span>
+                          </span>
+                          {domaZoneRuns(z).some((r) => layoutOf(r).warnings.length > 0) ? (
+                            <span className="text-amber-700">⚠</span>
+                          ) : null}
+                        </span>
+                        {domaZoneRuns(z).map((r) => {
+                          const layout = layoutOf(r)
+                          return layout.pieces.map((p) => (
+                            <span
+                              key={`${r.direction}-${p.index}`}
+                              className="block font-mono text-[13px] font-semibold"
+                              style={{ color: DOMA_DIRECTION_COLORS[r.direction] }}
+                            >
+                              <span className="mr-1.5 font-sans text-[11px] font-medium">
+                                {DIRECTION_LABEL[r.direction]} {p.kind === 'BENT' ? '曲' : '直'}
+                              </span>
+                              {p.lengthMm.toLocaleString()} × {layout.count}
+                            </span>
+                          ))
+                        })}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
             ) : directionBars.length === 0 ? (
               <p className="px-4 py-3 text-[11px] leading-relaxed text-muted">まだ配置されていません。</p>
             ) : (
               <ul className="space-y-1 px-4 py-3">
                 {directionBars.map((b, i) => {
                   const layout = layoutOf(b)
+                  // 区域で切った本は、区域にかからない本と分けて出す
+                  const rows = splitDomaRunByZones(b, bars, dimensions)
                   return (
                     <li key={b.id}>
                       <button
@@ -1000,18 +1510,23 @@ export function DomaPanel({
                           {layout.warnings.length > 0 ? <span className="text-amber-700">⚠</span> : null}
                         </span>
                         {/* 加工本ごとに 1 行。下の集計と同じく曲／直を前に付ける */}
-                        {layout.pieces.map((p) => (
-                          <span
-                            key={p.index}
-                            className="block font-mono text-[13px] font-semibold"
-                            style={{ color: DOMA_DIRECTION_COLORS[b.direction] }}
-                          >
-                            <span className="mr-1.5 font-sans text-[11px] font-medium">
-                              {p.kind === 'BENT' ? '曲' : '直'}
+                        {rows.map((row) => {
+                          const rowLayout = layoutOf(row)
+                          const cut = row.id !== b.id
+                          return rowLayout.pieces.map((p) => (
+                            <span
+                              key={`${row.id}-${p.index}`}
+                              className="block font-mono text-[13px] font-semibold"
+                              style={{ color: DOMA_DIRECTION_COLORS[b.direction] }}
+                            >
+                              <span className="mr-1.5 font-sans text-[11px] font-medium">
+                                {cut ? <span style={{ color: DOMA_ZONE_COLOR }}>区域 </span> : null}
+                                {p.kind === 'BENT' ? '曲' : '直'}
+                              </span>
+                              {p.lengthMm.toLocaleString()} × {rowLayout.count}
                             </span>
-                            {p.lengthMm.toLocaleString()} × {layout.count}
-                          </span>
-                        ))}
+                          ))
+                        })}
                       </button>
                     </li>
                   )
@@ -1023,8 +1538,8 @@ export function DomaPanel({
         )}
 
         {/* 要約と「結果ページを見る」は、付加筋・ユニットと同じく選択中や寸法線を描いているときも出す */}
-        {kind === 'standard' && bars.length > 0 ? (
-          <DomaSummary bars={bars} onGoToSummary={onGoToSummary} />
+        {bars.length > 0 ? (
+          <DomaSummary bars={bars} dimensions={dimensions} onGoToSummary={onGoToSummary} />
         ) : null}
       </div>
     </div>

@@ -3,6 +3,7 @@ import type { ExtendedShapeType, LocationType, UnitBar } from '@/lib/unit-types'
 import type { UnitDetailGeometry, UnitDetailSpec } from '@/lib/unit-detail-shape'
 import type { CornerBarBarItem, CornerBarSegment } from '@/lib/corner-bar-presets'
 import type { DomaBarSettings, DomaBends, SlabBarDirection } from '@/lib/slab-rebar'
+import type { DomaZoneSpec } from '@/lib/doma-zone'
 
 export interface Project {
   id: string
@@ -99,6 +100,7 @@ export interface DrawingDomaDimension {
 /**
  * 土間筋タブで描いた設置区間 1 つ（土間筋 1 セット）。タテ／ヨコは別々に描く。
  * 加工本・重ね・本数は保存せず lib/slab-rebar.ts の layoutDomaRun で毎回計算する。
+ * kind = 'special' は特殊土間筋の範囲 1 つ（タテ・ヨコの両方。lib/doma-zone.ts で展開する）
  */
 export interface DrawingDomaRun {
   id: string
@@ -115,7 +117,8 @@ export interface DrawingDomaRun {
   /** 配筋範囲（本数 = 配筋範囲 ÷ ピッチ の切り上げ） */
   span_mm: number
   bends: DomaBends
-  settings: DomaBarSettings
+  /** 特殊（kind = 'special'）は範囲の条件を zone に持つ（lib/doma-zone.ts） */
+  settings: DomaBarSettings & { zone?: DomaZoneSpec }
   /** 加工本の長さの手入力。null なら自動 */
   pieces_override: number[] | null
   /** L・配筋範囲に使った寸法線。手入力や寸法線が消えたときは null */

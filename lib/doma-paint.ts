@@ -8,6 +8,16 @@ import {
   type DomaRunLayout,
   type SlabBarDirection,
 } from './slab-rebar'
+import type { DrawingDomaRun } from './types/database'
+import {
+  DOMA_ZONE_COLOR,
+  DOMA_ZONE_EDGES,
+  domaZoneEdgeLine,
+  domaZoneRect,
+  domaZoneRuns,
+  domaZoneSpecOf,
+  type DomaZoneEdge,
+} from './doma-zone'
 
 type Pt = { x: number; y: number }
 
@@ -455,6 +465,144 @@ export function paintDomaDraftLine(
   ctx.moveTo(line.x1, line.y1)
   ctx.lineTo(line.x2, line.y2)
   ctx.stroke()
+  ctx.restore()
+}
+
+const ZONE_EDGE_OUTWARD: Record<DomaZoneEdge, Pt> = {
+  top: { x: 0, y: -1 },
+  bottom: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+}
+
+/**
+ * 特殊土間筋の範囲 1 つ: 範囲の枠（壁の辺は太線と外側の斜線）と、タテ・ヨコの代表線。
+ * 代表線は範囲の中央を通り、壁でない辺は範囲の外へはみ出しの分だけ伸ばして描く（標準の土間筋と同じ描き方）
+ */
+export function paintDomaZone(
+  ctx: CanvasRenderingContext2D,
+  zone: DrawingDomaRun,
+  opts: {
+    viewScale: number
+    selected?: boolean
+    viewRotationSteps?: number
+    /** 描く向き（印刷でタテだけ・ヨコだけを出すとき） */
+    directions?: SlabBarDirection[]
+    obstacles?: DomaLine[]
+    name?: string
+  },
+) {
+  const s = opts.viewScale
+  const viewRotationSteps = opts.viewRotationSteps ?? 0
+  const r = domaZoneRect(zone)
+  const spec = domaZoneSpecOf(zone)
+  ctx.save()
+  ctx.fillStyle = opts.selected ? 'rgba(250, 204, 21, 0.18)' : 'rgba(22, 163, 74, 0.07)'
+  ctx.fillRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY)
+  ctx.strokeStyle = DOMA_ZONE_COLOR
+  ctx.lineWidth = (opts.selected ? 2.5 : 1.5) / s
+  ctx.setLineDash([8 / s, 4 / s])
+  ctx.strokeRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY)
+  ctx.setLineDash([])
+  // 壁: 太線 + 外側に斜線
+  ctx.strokeStyle = '#334155'
+  for (const edge of DOMA_ZONE_EDGES) {
+    if (!spec.walls[edge]) continue
+    const line = domaZoneEdgeLine(zone, edge)
+    const out = ZONE_EDGE_OUTWARD[edge]
+    const len = Math.hypot(line.x2 - line.x1, line.y2 - line.y1)
+    const u = len > 0 ? { x: (line.x2 - line.x1) / len, y: (line.y2 - line.y1) / len } : { x: 1, y: 0 }
+    ctx.lineWidth = 4 / s
+    ctx.beginPath()
+    ctx.moveTo(line.x1, line.y1)
+    ctx.lineTo(line.x2, line.y2)
+    ctx.stroke()
+    ctx.lineWidth = 1.2 / s
+    ctx.beginPath()
+    const gap = 8 / s
+    const tick = 7 / s
+    for (let t = gap / 2; t < len; t += gap) {
+      const p = { x: line.x1 + u.x * t, y: line.y1 + u.y * t }
+      ctx.moveTo(p.x, p.y)
+      ctx.lineTo(p.x + out.x * tick + u.x * tick * 0.6, p.y + out.y * tick + u.y * tick * 0.6)
+    }
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  const directions = opts.directions ?? ['tate', 'yoko']
+  for (const run of domaZoneRuns(zone)) {
+    if (!directions.includes(run.direction)) continue
+    paintDomaRun(ctx, run, { viewScale: s, viewRotationSteps, obstacles: opts.obstacles })
+  }
+
+  if (opts.name) {
+    // 範囲の画面上の左上の角の内側に置く
+    const corners: Pt[] = [
+      { x: r.minX, y: r.minY },
+      { x: r.maxX, y: r.minY },
+      { x: r.maxX, y: r.maxY },
+      { x: r.minX, y: r.maxY },
+    ]
+    const screenOf = (p: Pt) => toScreenDirection(p, viewRotationSteps)
+    const corner = corners.reduce((best, p) => {
+      const a = screenOf(p)
+      const b = screenOf(best)
+      return a.x + a.y < b.x + b.y ? p : best
+    })
+    const fontPx = 13 / s
+    ctx.save()
+    ctx.font = `700 ${fontPx}px sans-serif`
+    const halfWidth = ctx.measureText(opts.name).width / 2
+    ctx.restore()
+    // 画面で右下へ (文字の半幅, 半高) + すき間 ずらし、図面座標へ戻す
+    const offset = toScreenDirection(
+      { x: halfWidth + 5 / s, y: fontPx / 2 + 5 / s },
+      -viewRotationSteps,
+    )
+    drawText(ctx, opts.name, { x: corner.x + offset.x, y: corner.y + offset.y }, {
+      fontPx,
+      color: DOMA_ZONE_COLOR,
+      angle: (-viewRotationSteps * Math.PI) / 2,
+      bold: true,
+    })
+  }
+}
+
+/** 範囲の線（枠と代表線）。文字の重なり判定に使う */
+export function domaZoneLines(zone: DrawingDomaRun, viewScale: number, viewRotationSteps = 0): DomaLine[] {
+  return [
+    ...DOMA_ZONE_EDGES.map((edge) => domaZoneEdgeLine(zone, edge)),
+    ...domaZoneRuns(zone).flatMap((run) => domaRunLines(run, viewScale, viewRotationSteps)),
+  ]
+}
+
+/** 範囲の中か（枠の外 tol まで含む） */
+export function isPointInDomaZone(pt: Pt, zone: DomaLine, tol: number): boolean {
+  const r = domaZoneRect(zone)
+  return pt.x >= r.minX - tol && pt.x <= r.maxX + tol && pt.y >= r.minY - tol && pt.y <= r.maxY + tol
+}
+
+/** 点に近い範囲の辺（tol 以内）。なければ null */
+export function domaZoneEdgeAt(pt: Pt, zone: DomaLine, tol: number): DomaZoneEdge | null {
+  let best: { edge: DomaZoneEdge; d: number } | null = null
+  for (const edge of DOMA_ZONE_EDGES) {
+    const d = distanceToDomaLine(pt, domaZoneEdgeLine(zone, edge))
+    if (d < tol && (!best || d < best.d)) best = { edge, d }
+  }
+  return best?.edge ?? null
+}
+
+/** 範囲を描いている途中の枠 */
+export function paintDomaZoneDraft(ctx: CanvasRenderingContext2D, rect: DomaLine, viewScale: number) {
+  const r = domaZoneRect(rect)
+  ctx.save()
+  ctx.fillStyle = 'rgba(22, 163, 74, 0.08)'
+  ctx.fillRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY)
+  ctx.strokeStyle = DOMA_ZONE_COLOR
+  ctx.lineWidth = 2 / viewScale
+  ctx.setLineDash([6 / viewScale, 4 / viewScale])
+  ctx.strokeRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY)
   ctx.restore()
 }
 

@@ -21,8 +21,10 @@ import {
   DOMA_DIRECTION_LABEL,
   DomaInputModal,
   DomaPanel,
+  DomaZoneInputModal,
   domaDimensionChoices,
   type DomaInputModalState,
+  type DomaZoneInput,
   type DomaSelection,
   type DomaTool,
 } from '@/components/doma-panel'
@@ -39,8 +41,19 @@ import {
   pickDomaDimension,
   paintDomaDraftLine,
   paintDomaDraftInfo,
+  paintDomaZone,
+  paintDomaZoneDraft,
+  domaZoneLines,
+  domaZoneEdgeAt,
+  isPointInDomaZone,
   type DomaLine,
 } from '@/lib/doma-paint'
+import {
+  DEFAULT_DOMA_ZONE_PITCH_MM,
+  domaZoneRect,
+  domaZoneSpecOf,
+  type DomaZoneEdge,
+} from '@/lib/doma-zone'
 import {
   countBars,
   DEFAULT_DOMA_BAR_SETTINGS,
@@ -843,6 +856,26 @@ export function DrawingViewer({
       return merged
     })
   }
+  /** これから描く特殊範囲の設定（localStorage に保存）。ピッチの既定は標準より細かい */
+  const domaZoneSettingsStorageKey = `project:${projectId}:domaZoneSettings:v1`
+  const [domaZoneSettings, setDomaZoneSettings] = useState<DomaBarSettings>(() => {
+    const defaults = { ...DEFAULT_DOMA_BAR_SETTINGS, pitchMm: DEFAULT_DOMA_ZONE_PITCH_MM }
+    if (typeof window === 'undefined') return defaults
+    try {
+      const raw = window.localStorage.getItem(domaZoneSettingsStorageKey)
+      return raw ? { ...defaults, ...(JSON.parse(raw) as Partial<DomaBarSettings>) } : defaults
+    } catch {
+      return defaults
+    }
+  })
+  function changeDomaZoneSettings(next: DomaBarSettings) {
+    setDomaZoneSettings(next)
+    try {
+      window.localStorage.setItem(domaZoneSettingsStorageKey, JSON.stringify(next))
+    } catch {
+      // ignore
+    }
+  }
   /**
    * これから配置する付加筋の色（配置設定で選ぶ）。筋種類ごとに覚え、
    * まだ選んでいない筋種類は既定の色（コーナー筋＝黄・添え筋＝灰・特殊コーナー筋＝マゼンタ）
@@ -1278,7 +1311,10 @@ export function DrawingViewer({
   const cornerPrintShowsUnitSummary =
     cornerPrintShowUnits && drawingPrintSummaryGroups.length > 0
   /** 1 つ目の箱（付加筋タブは特殊コーナー筋、ユニットタブはユニット） */
-  const domaPrintGroups = useMemo(() => domaPrintGroupsOf(domaBars), [domaBars])
+  const domaPrintGroups = useMemo(
+    () => domaPrintGroupsOf(domaBars, domaDimensions),
+    [domaBars, domaDimensions],
+  )
   const domaPrintSummaryHtml = useMemo(
     () => buildDomaPrintSummaryInnerHtml(domaPrintGroups),
     [domaPrintGroups],
@@ -1865,6 +1901,14 @@ export function DrawingViewer({
     }
   }
 
+  /** 標準 ↔ 特殊。選択・描きかけは引き継がない */
+  function changeDomaBarKind(next: DomaBarKind) {
+    setDomaBarKind(next)
+    setDomaSelection(null)
+    setDomaDraftLine(null)
+    setDomaDrag(null)
+  }
+
   function changeDomaTool(next: DomaTool) {
     setDomaTool(next)
     setDomaDraftLine(null)
@@ -1876,6 +1920,8 @@ export function DrawingViewer({
    * 図面を 90° 回転表示しているときは画像座標の縦横が入れ替わる。
    */
   function constrainDomaLine(start: Point, pt: Point): DomaLine {
+    // 特殊範囲は対角の 2 点（矩形）
+    if (domaTool === 'bar' && domaBarKind === 'special') return { x1: start.x, y1: start.y, x2: pt.x, y2: pt.y }
     let horizontal: boolean
     if (domaTool === 'bar') {
       const screenHorizontal = domaBarDirection === 'yoko'
@@ -1890,6 +1936,10 @@ export function DrawingViewer({
 
   /** 線を引き終えたら寸法・長さの入力を開く。短すぎる線は捨てる */
   function finishDomaDraftLine(line: DomaLine) {
+    if (domaTool === 'bar' && domaBarKind === 'special') {
+      finishDomaZoneDraft(line)
+      return
+    }
     const px = Math.hypot(line.x2 - line.x1, line.y2 - line.y1)
     if (px * scale < 8) {
       setDomaDraftLine(null)
@@ -1928,6 +1978,76 @@ export function DrawingViewer({
       defaultLength: match.length ? toChoice(match.length) : null,
       defaultSpan: match.span ? toChoice(match.span) : null,
     })
+  }
+
+  /**
+   * 特殊範囲を囲み終えたら入力窓を開く。範囲の辺に両端がそろう寸法線を、タテ・ヨコの大きさの候補にする。
+   * 壁の辺は図面から分からないので、毎回入力窓で選んでもらう
+   */
+  function finishDomaZoneDraft(line: DomaLine) {
+    const r = domaZoneRect(line)
+    if ((r.maxX - r.minX) * scale < 8 || (r.maxY - r.minY) * scale < 8) {
+      setDomaDraftLine(null)
+      return
+    }
+    setDomaDraftLine(line)
+    // タテ＝画面の縦。図面を 90° 回転表示しているときは図面座標の x の向き
+    const tateAlongY = rotationSteps % 2 === 0
+    const alongY: DomaLine = { x1: r.minX, y1: r.minY, x2: r.minX, y2: r.maxY }
+    const alongX: DomaLine = { x1: r.minX, y1: r.minY, x2: r.maxX, y2: r.minY }
+    const tol = 10 / scale
+    const candidatesOf = (edge: DomaLine) => findDomaRunLengthCandidates(edge, domaDimensions, tol)
+    const tateDims = candidatesOf(tateAlongY ? alongY : alongX)
+    const yokoDims = candidatesOf(tateAlongY ? alongX : alongY)
+    const toChoice = (d: DrawingDomaDimension) => ({ id: d.id, mm: d.length_mm })
+    const tatePick = pickDomaDimension(tateDims)
+    const yokoPick = pickDomaDimension(yokoDims)
+    setDomaInputModal({
+      type: 'zone',
+      line: { x1: r.minX, y1: r.minY, x2: r.maxX, y2: r.maxY },
+      tateAlongY,
+      tateCandidates: tateDims.map(toChoice),
+      yokoCandidates: yokoDims.map(toChoice),
+      defaultTate: tatePick ? toChoice(tatePick) : null,
+      defaultYoko: yokoPick ? toChoice(yokoPick) : null,
+    })
+  }
+
+  async function insertDomaZone(line: DomaLine, tateAlongY: boolean, values: DomaZoneInput) {
+    const { data, error } = await supabase
+      .from('drawing_doma_runs')
+      .insert({
+        drawing_id: drawingId,
+        page_no: 1,
+        kind: 'special',
+        direction: 'tate',
+        ...line,
+        length_mm: values.tateMm,
+        span_mm: values.yokoMm,
+        bends: 'none',
+        settings: { ...domaZoneSettings, zone: { tateAlongY, walls: values.walls } },
+        pieces_override: null,
+        length_dim_id: values.tateDimId,
+        span_dim_id: values.yokoDimId,
+      })
+      .select('*')
+      .single<DrawingDomaRun>()
+    if (error || !data) {
+      alert(`特殊土間筋の保存に失敗しました: ${error?.message ?? ''}`)
+      return
+    }
+    setDomaBars((prev) => [...prev, data])
+    setDomaSelection({ type: 'bar', id: data.id })
+    setDomaTool('select')
+    setLastAction({ type: 'doma-create', run: data })
+  }
+
+  /** 図面で範囲の辺をクリックしたとき: 壁 ↔ 壁でない を切り替える。手入力の加工本は自動に戻す */
+  function toggleDomaZoneWall(zone: DrawingDomaRun, edge: DomaZoneEdge) {
+    const spec = domaZoneSpecOf(zone)
+    const nextSpec = { ...spec, walls: { ...spec.walls, [edge]: !spec.walls[edge] } }
+    delete nextSpec.overrides
+    void updateDomaBar(zone.id, { settings: { ...zone.settings, zone: nextSpec } })
   }
 
   function closeDomaInputModal() {
@@ -2066,11 +2186,20 @@ export function DrawingViewer({
   }
 
   /** 表示中の方向の土間筋を優先し、次に寸法線を探す */
+  /** 特殊のときは寸法線、次に範囲（中をクリック）を探す */
   function findDomaItemAtPoint(pt: Point): { sel: NonNullable<DomaSelection>; line: DomaLine } | null {
     const tol = 8 / scale
+    if (domaBarKind === 'special') {
+      const dim = [...domaDimensions].reverse().find((d) => distanceToDomaLine(pt, d) < tol)
+      if (dim) return { sel: { type: 'dimension', id: dim.id }, line: dim }
+      const zone = [...domaBars]
+        .reverse()
+        .find((b) => b.kind === 'special' && isPointInDomaZone(pt, b, tol))
+      return zone ? { sel: { type: 'bar', id: zone.id }, line: zone } : null
+    }
     const bar = [...domaBars]
       .reverse()
-      .find((b) => b.direction === domaBarDirection && distanceToDomaLine(pt, b) < tol)
+      .find((b) => b.kind !== 'special' && b.direction === domaBarDirection && distanceToDomaLine(pt, b) < tol)
     if (bar) return { sel: { type: 'bar', id: bar.id }, line: bar }
     const dim = [...domaDimensions].reverse().find((d) => distanceToDomaLine(pt, d) < tol)
     if (dim) return { sel: { type: 'dimension', id: dim.id }, line: dim }
@@ -2890,15 +3019,22 @@ export function DrawingViewer({
     if (options.showDoma) {
       const isSelected = (type: 'dimension' | 'bar', id: string) =>
         options.interactiveHighlight && domaSelection?.type === type && domaSelection.id === id
-      const directions = options.domaDirections ?? [domaBarDirection]
-      const visibleBars = domaBars.filter((bar) => directions.includes(bar.direction))
+      const specialMode = options.interactiveHighlight && domaBarKind === 'special'
+      // 特殊を描くときは、標準のタテ・ヨコを両方（薄く）見せて、どこまで来ているか分かるようにする
+      const directions = options.domaDirections ?? (specialMode ? ['tate', 'yoko'] : [domaBarDirection])
+      const zones = domaBars.filter((bar) => bar.kind === 'special')
+      const visibleBars = domaBars.filter((bar) => bar.kind !== 'special' && directions.includes(bar.direction))
+      // 画面では、いま編集していない方（標準／特殊）を薄く描く。印刷は両方そのまま
+      const standardAlpha = specialMode ? REFERENCE_LAYER_ALPHA : 1
+      const zoneAlpha = options.interactiveHighlight && !specialMode ? REFERENCE_LAYER_ALPHA : 1
       // 寸法の文字が他の線にかかるときは反対側へ逃がす。自分自身の線は判定から外す
-      const barLinesById = new Map(
-        visibleBars.map((bar) => [bar.id, domaRunLines(bar, scale, rotationSteps)]),
-      )
+      const barLinesById = new Map([
+        ...visibleBars.map((bar) => [bar.id, domaRunLines(bar, scale, rotationSteps)] as const),
+        ...zones.map((zone) => [zone.id, domaZoneLines(zone, scale, rotationSteps)] as const),
+      ])
       const obstaclesExcept = (id: string) => [
         ...domaDimensions.filter((d) => d.id !== id),
-        ...visibleBars.filter((b) => b.id !== id).flatMap((b) => barLinesById.get(b.id) ?? []),
+        ...[...visibleBars, ...zones].filter((b) => b.id !== id).flatMap((b) => barLinesById.get(b.id) ?? []),
       ]
       // 使う寸法線を図面で確かめられるよう強調する: 描いている途中は決まった（なければ候補の）寸法線、
       // 入力窓では候補、土間筋を選んでいるときはその L・配筋範囲に使った寸法線
@@ -2908,7 +3044,11 @@ export function DrawingViewer({
           for (const c of [...domaInputModal.lengthCandidates, ...domaInputModal.spanCandidates]) {
             linkedDimIds.add(c.id)
           }
-        } else if (domaDraftLine && domaTool === 'bar') {
+        } else if (domaInputModal?.type === 'zone') {
+          for (const c of [...domaInputModal.tateCandidates, ...domaInputModal.yokoCandidates]) {
+            linkedDimIds.add(c.id)
+          }
+        } else if (domaDraftLine && domaTool === 'bar' && domaBarKind === 'standard') {
           const m = matchDomaRunDimensions(domaDraftLine, domaDimensions, scale)
           for (const d of [
             ...(m.length ? [m.length] : m.lengthCandidates),
@@ -2930,8 +3070,23 @@ export function DrawingViewer({
           obstacles: obstaclesExcept(dim.id),
         })
       })
+      ctx.save()
+      ctx.globalAlpha = zoneAlpha
+      zones.forEach((zone, i) => {
+        paintDomaZone(ctx, zone, {
+          viewScale: scale,
+          selected: isSelected('bar', zone.id),
+          viewRotationSteps: rotationSteps,
+          directions,
+          obstacles: obstaclesExcept(zone.id),
+          // 右パネルの一覧と同じ名前
+          name: `特殊${i + 1}`,
+        })
+      })
+      ctx.globalAlpha = standardAlpha
       const numberInDirection = { tate: 0, yoko: 0 }
       domaBars.forEach((bar) => {
+        if (bar.kind === 'special') return
         // 右パネルの一覧（方向ごとの通し番号）と同じ名前。両方向を描くときも方向ごとに数える
         const no = ++numberInDirection[bar.direction]
         if (!directions.includes(bar.direction)) return
@@ -2943,6 +3098,7 @@ export function DrawingViewer({
           name: `${DOMA_DIRECTION_LABEL[bar.direction]}${no}`,
         })
       })
+      ctx.restore()
       // 描いている途中の線は画面だけ（印刷には出さない）
       if (domaDraftLine && options.interactiveHighlight) {
         if (domaTool === 'dimension') {
@@ -2958,6 +3114,8 @@ export function DrawingViewer({
             { ...domaDraftLine, length_mm: null },
             { viewScale: scale, preview: true, viewRotationSteps: rotationSteps },
           )
+        } else if (domaBarKind === 'special') {
+          paintDomaZoneDraft(ctx, domaDraftLine, scale)
         } else {
           paintDomaDraftLine(ctx, domaDraftLine, DOMA_DIRECTION_COLORS[domaBarDirection], scale)
           // 描いている間に、寸法線から読み取れた L・配筋範囲と本数を線の横に出す
@@ -3048,6 +3206,7 @@ export function DrawingViewer({
       domaInputModal,
       domaSettingsByDirection,
       domaBarDirection,
+      domaBarKind,
       cornerBarCalloutOf,
     ],
   )
@@ -3391,7 +3550,7 @@ export function DrawingViewer({
         setIsFullscreen((prev) => !prev)
         return
       }
-      if (layer === 'doma' && domaBarKind === 'standard' && !domaInputModal) {
+      if (layer === 'doma' && !domaInputModal) {
         if (isKey('m')) {
           e.preventDefault()
           changeDomaTool('dimension')
@@ -3717,11 +3876,20 @@ export function DrawingViewer({
     }
 
     if (layer === 'doma') {
-      if (e.button !== 0 || domaBarKind !== 'standard' || domaInputModal) return
+      if (e.button !== 0 || domaInputModal) return
       const pt = screenToCanvas(e)
       if (domaTool !== 'select') {
         setDomaDraftLine({ x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y })
         return
+      }
+      // 選択中の特殊範囲の辺をクリックしたら、壁の辺を切り替える
+      if (domaBarKind === 'special' && domaSelection?.type === 'bar') {
+        const zone = domaBars.find((b) => b.id === domaSelection.id && b.kind === 'special')
+        const edge = zone ? domaZoneEdgeAt(pt, zone, 6 / scale) : null
+        if (zone && edge) {
+          toggleDomaZoneWall(zone, edge)
+          return
+        }
       }
       const hit = findDomaItemAtPoint(pt)
       setDomaSelection(hit?.sel ?? null)
@@ -6001,7 +6169,7 @@ export function DrawingViewer({
             <>
               <button
                 type="button"
-                onClick={() => setDomaBarKind('standard')}
+                onClick={() => changeDomaBarKind('standard')}
                 className={toolButtonClass(domaBarKind === 'standard')}
                 aria-pressed={domaBarKind === 'standard'}
               >
@@ -6009,7 +6177,7 @@ export function DrawingViewer({
               </button>
               <button
                 type="button"
-                onClick={() => setDomaBarKind('special')}
+                onClick={() => changeDomaBarKind('special')}
                 className={toolButtonClass(domaBarKind === 'special')}
                 aria-pressed={domaBarKind === 'special'}
               >
@@ -6053,34 +6221,34 @@ export function DrawingViewer({
                   ))}
                 </div>
               ) : null}
-              {domaBarKind === 'standard' ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => changeDomaTool('select')}
-                    className={toolButtonClass(domaTool === 'select')}
-                    title="選択・ドラッグで移動 (S)"
-                  >
-                    選択
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => changeDomaTool('dimension')}
-                    className={toolButtonClass(domaTool === 'dimension')}
-                    title="各辺の寸法線を描く (M)"
-                  >
-                    寸法線
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => changeDomaTool('bar')}
-                    className={toolButtonClass(domaTool === 'bar')}
-                    title={`${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}筋を描く (D)`}
-                  >
-                    {domaBarDirection === 'tate' ? 'タテ筋' : 'ヨコ筋'}
-                  </button>
-                </>
-              ) : null}
+              <button
+                type="button"
+                onClick={() => changeDomaTool('select')}
+                className={toolButtonClass(domaTool === 'select')}
+                title="選択・ドラッグで移動 (S)"
+              >
+                選択
+              </button>
+              <button
+                type="button"
+                onClick={() => changeDomaTool('dimension')}
+                className={toolButtonClass(domaTool === 'dimension')}
+                title="各辺の寸法線を描く (M)"
+              >
+                寸法線
+              </button>
+              <button
+                type="button"
+                onClick={() => changeDomaTool('bar')}
+                className={toolButtonClass(domaTool === 'bar')}
+                title={
+                  domaBarKind === 'special'
+                    ? 'ドラッグで区域を囲む (D)'
+                    : `${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}筋を描く (D)`
+                }
+              >
+                {domaBarKind === 'special' ? '区域' : domaBarDirection === 'tate' ? 'タテ筋' : 'ヨコ筋'}
+              </button>
             </>
           ) : (
             <>
@@ -6242,7 +6410,7 @@ export function DrawingViewer({
                 : layer === 'doma'
                 ? domaDrag
                   ? 'move'
-                  : domaTool !== 'select' && domaBarKind === 'standard'
+                  : domaTool !== 'select'
                     ? 'crosshair'
                     : 'default'
                 : tool === 'draw'
@@ -6311,7 +6479,20 @@ export function DrawingViewer({
       />
       ) : layer === 'doma' ? (
       <>
-      {domaInputModal ? (
+      {domaInputModal?.type === 'zone' ? (
+        <DomaZoneInputModal
+          state={domaInputModal}
+          settings={domaZoneSettings}
+          dimensionChoices={domaDimensionChoices(domaDimensions)}
+          viewRotationSteps={rotationSteps}
+          onCancel={closeDomaInputModal}
+          onConfirm={(values) => {
+            const { line, tateAlongY } = domaInputModal
+            closeDomaInputModal()
+            void insertDomaZone(line, tateAlongY, values)
+          }}
+        />
+      ) : domaInputModal ? (
         <DomaInputModal
           state={domaInputModal}
           settings={domaSettingsByDirection[domaBarDirection]}
@@ -6335,11 +6516,13 @@ export function DrawingViewer({
         kind={domaBarKind}
         direction={domaBarDirection}
         tool={domaTool}
-        settings={domaSettingsByDirection[domaBarDirection]}
+        settings={domaBarKind === 'special' ? domaZoneSettings : domaSettingsByDirection[domaBarDirection]}
         dimensions={domaDimensions}
         bars={domaBars}
         selection={domaSelection}
-        onSettingsChange={(next) => changeDomaSettings(domaBarDirection, next)}
+        onSettingsChange={(next) =>
+          domaBarKind === 'special' ? changeDomaZoneSettings(next) : changeDomaSettings(domaBarDirection, next)
+        }
         bends={domaBendsByDirection[domaBarDirection]}
         onBendsChange={(next) => changeDomaBends(domaBarDirection, next)}
         canUndo={lastAction?.type === 'doma-create'}

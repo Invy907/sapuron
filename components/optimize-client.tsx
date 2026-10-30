@@ -3,7 +3,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
-import type { DrawingCornerBar, DrawingDomaRun, DrawingSegment, Unit } from '@/lib/types/database'
+import type {
+  DrawingCornerBar,
+  DrawingDomaDimension,
+  DrawingDomaRun,
+  DrawingSegment,
+  Unit,
+} from '@/lib/types/database'
 import { CornerBarSummarySections } from '@/components/corner-bar-summary-view'
 import { DomaSummarySections } from '@/components/doma-summary-view'
 import { createClient } from '@/lib/supabase/client'
@@ -131,6 +137,7 @@ export function OptimizeClient({
   units: initialUnits = [],
   cornerBars = [],
   domaRuns = [],
+  domaDimensions = [],
 }: {
   projectId: string
   segments: DrawingSegment[]
@@ -142,6 +149,8 @@ export function OptimizeClient({
   cornerBars?: DrawingCornerBar[]
   /** 現場内の全図面の土間筋（設置区間）。付加筋と同じく結果の最後に集計して出す */
   domaRuns?: DrawingDomaRun[]
+  /** 区域で切る標準筋の位置を測るのに使う */
+  domaDimensions?: DrawingDomaDimension[]
 }) {
   const [units, setUnits] = useState(initialUnits)
   const segmentLabelById = getSegmentLabelMap(segments)
@@ -958,7 +967,8 @@ export function OptimizeClient({
   )
 
   // 土間筋の集計（phase 3）。画面では付加筋の下、印刷では材料取りの列に置くカード
-  const domaSummaryCard = domaRuns.length > 0 ? <DomaSummarySections runs={domaRuns} /> : null
+  const domaSummaryCard =
+    domaRuns.length > 0 ? <DomaSummarySections runs={domaRuns} dimensions={domaDimensions} /> : null
 
   const printCards: PrintCard[] = []
   if (barSummaryCard) printCards.push({ id: 'bar-summary', label: '材料取り表', node: barSummaryCard })

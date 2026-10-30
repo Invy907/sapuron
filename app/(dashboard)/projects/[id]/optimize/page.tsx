@@ -4,6 +4,7 @@ import Link from 'next/link'
 import type {
   Project,
   DrawingCornerBar,
+  DrawingDomaDimension,
   DrawingDomaRun,
   DrawingSegment,
   Drawing,
@@ -67,6 +68,15 @@ export default async function OptimizePage({
     .order('created_at', { ascending: true })
     .returns<DrawingDomaRun[]>()
 
+  // 区域（特殊土間筋）にかかる標準筋の位置を、配筋範囲に使った寸法線で測る
+  const { data: domaDimensions } = domaRuns?.some((r) => r.kind === 'special')
+    ? await supabase
+        .from('drawing_doma_dimensions')
+        .select('*')
+        .in('drawing_id', drawingIds)
+        .returns<DrawingDomaDimension[]>()
+    : { data: [] as DrawingDomaDimension[] }
+
   const { data: units } = await supabase
     .from('units')
     .select('*')
@@ -98,6 +108,7 @@ export default async function OptimizePage({
         units={units ?? []}
         cornerBars={cornerBars ?? []}
         domaRuns={domaRuns ?? []}
+        domaDimensions={domaDimensions ?? []}
       />
     </div>
   )
