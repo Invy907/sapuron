@@ -2713,10 +2713,13 @@ export function DrawingViewer({
           cb.id === selectedCornerBarId
         const strokeHex = getSegmentStrokeHex(cb.color, isSelected)
 
-        // フックは半円、四角の継手は内側へずらして描く（形状定義に無ければ折れ線のまま）
+        // フックは半円、四角の継手は内側へずらして描く（形状定義に無ければ折れ線のまま）。
+        // 二重線の形状（コの字）も図面の上では一重線で描く
         const strokeShape = resolveCornerBarShape(cb.shape_type, cb.bars)
         const strokePath = strokeShape
-          ? new Path2D(cornerBarStrokePathD(strokeShape, geometry.points, 4 / scale))
+          ? new Path2D(
+              cornerBarStrokePathD({ ...strokeShape, doubleLine: false }, geometry.points, 4 / scale),
+            )
           : null
         const strokeTrace = (lineWidth: number) => {
           if (strokePath) {
