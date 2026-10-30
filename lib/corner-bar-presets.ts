@@ -136,6 +136,8 @@ export interface CornerBarShapeDef {
   doubleLine?: boolean
   /** 高さ(mm)を入れられる形状（段違い・斜め）。高さは図に書くだけで加工長には使わない */
   hasHeight?: boolean
+  /** 図面キャンバスに置いたときの大きさの倍率（既定 1）。パネル図・印刷には使わない */
+  canvasScale?: number
 }
 
 export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
@@ -318,7 +320,7 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
    * 開口補強筋 A: 四角に 1 周させ、右上の角で両端を重ねる。
    * 継手 a（上の辺の内側）→ 右の辺 → 下 → 左 → 上 → 継手 b（右の辺の外側）の順。
    * 手書き図どおり、a と右の辺は内側にずらして描き、右上の角を 2 つに分ける。
-   * 4 辺は同じ寸法で「1」、a が「2」、b が「3」
+   * 横の 2 辺が「1」、縦の 2 辺が「2」（それぞれ同じ寸法）、a が「3」、b が「4」
    */
   {
     id: 'OPENING_RING',
@@ -332,9 +334,9 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
       { x: 0, y: 1 },
     ],
     defaultLengths: [150, 600, 600, 600, 600, 150],
-    linkedSegments: [[1, 2, 3, 4]],
-    segmentLabels: ['2', '1', '1', '1', '1', '3'],
-    inputOrder: [1, 0, 5],
+    linkedSegments: [[2, 4], [1, 3]],
+    segmentLabels: ['3', '2', '1', '2', '1', '4'],
+    inputOrder: [2, 1, 0, 5],
     lapSegments: [0, 1],
   },
   /** 開口補強筋 B: 縦の上端に 180° フックが付いた L 形（フック → 下 → 右） */
@@ -380,7 +382,8 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
       { x: Math.SQRT1_2, y: Math.SQRT1_2 },
       { x: 1, y: 0 },
     ],
-    defaultLengths: [300, 500],
+    // 図の上で 1 と 2 が同じ長さに見えるようにする
+    defaultLengths: [400, 400],
     hasHeight: true,
   },
   /** 開口補強筋 E: 右が開いたコの字（左 → 下 → 右） */
@@ -394,6 +397,7 @@ export const CORNER_BAR_SHAPES: CornerBarShapeDef[] = [
     ],
     defaultLengths: [300, 400, 300],
     doubleLine: true,
+    canvasScale: 0.75,
   },
 ]
 
@@ -725,87 +729,11 @@ export function hasStandardSegmentLengths(category: CornerBarCategory): boolean 
 }
 
 /** 筋種類・径に対応する標準寸法（mm）。未定義の径は null */
-/**
- * 開口補強筋の形状ごとの標準（客先資料「開口補強筋」「スリーブ補強筋」の拾い出しによる）。
- * 形状を選んだときはこの径で置き、径がこれと同じときだけ寸法・寸法基準・減り・高さを入れる
- */
-interface OpeningStandard {
-  diameter: string
-  lengths: number[]
-  measurementTypes?: Array<MeasurementType | null>
-  deductionTotalMm?: number
-  heightMm?: number
-}
-
-/** 形状ごとに径別の標準。先頭が形状を選んだときの径 */
-const OPENING_STANDARDS: Partial<Record<CornerBarShapeType, OpeningStandard[]>> = {
-  // (350 × 4) + 100 + 100 − 80 = 1520。4 辺は外々
-  OPENING_RING: [
-    {
-      diameter: 'D13',
-      lengths: [100, 350, 350, 350, 350, 100],
-      measurementTypes: [null, 'SOTO_SOTO', 'SOTO_SOTO', 'SOTO_SOTO', 'SOTO_SOTO', null],
-      deductionTotalMm: 80,
-    },
-  ],
-  // 外周: 100 + 620 + 100 − 20 = 800（D13 は 620 が 380）。中央の辺は外々
-  OPENING_HOOK_L: [
-    {
-      diameter: 'D10',
-      lengths: [100, 620, 100],
-      measurementTypes: [null, 'SOTO_SOTO', null],
-      deductionTotalMm: 20,
-    },
-    {
-      diameter: 'D13',
-      lengths: [100, 380, 100],
-      measurementTypes: [null, 'SOTO_SOTO', null],
-      deductionTotalMm: 20,
-    },
-  ],
-  // 外周のフックなし（「なしの分」）。径ごとの寸法はフック付と同じ
-  OPENING_L: [
-    {
-      diameter: 'D10',
-      lengths: [620, 100],
-      measurementTypes: ['SOTO_SOTO', null],
-      deductionTotalMm: 20,
-    },
-    {
-      diameter: 'D13',
-      lengths: [380, 100],
-      measurementTypes: ['SOTO_SOTO', null],
-      deductionTotalMm: 20,
-    },
-  ],
-  // 150 + 450 + 650 = 1250、高さ 320
-  OPENING_CRANK: [{ diameter: 'D13', lengths: [150, 450, 650], heightMm: 320 }],
-  // 600 + 650 = 1250、高さ 425
-  OPENING_SLANT: [{ diameter: 'D13', lengths: [600, 650], heightMm: 425 }],
-  // 100 + 380 + 100 − 20 = 560
-  OPENING_BRACKET: [{ diameter: 'D13', lengths: [100, 380, 100], deductionTotalMm: 20 }],
-}
-
-/** 開口補強筋の形状の標準。diameter を渡したときはその径の標準、なければ先頭（形状を選んだときの径） */
-function openingStandardFor(
-  category: string,
-  shapeType: string,
-  diameter?: string,
-): OpeningStandard | null {
-  if (category !== 'OPENING') return null
-  const stds = OPENING_STANDARDS[shapeType as CornerBarShapeType]
-  if (!stds?.length) return null
-  if (diameter == null) return stds[0]
-  return stds.find((std) => std.diameter === diameter) ?? null
-}
-
 export function getStandardSegmentLengthsMm(
   category: CornerBarCategory,
   diameter: string,
   shapeType: CornerBarShapeType,
 ): number[] | null {
-  const opening = openingStandardFor(category, shapeType, diameter)
-  if (opening) return [...opening.lengths]
   if (category === 'SOE' && shapeType === 'STRAIGHT') {
     const len = SOE_STANDARD_LENGTHS_MM[diameter]
     return len != null ? [len] : null
@@ -903,11 +831,8 @@ export function makeCornerBarSegments(shape: CornerBarShapeDef): CornerBarSegmen
 function defaultSegmentMeasurementType(
   shape: CornerBarShapeDef,
   category: CornerBarCategory,
-  diameter: string,
   index: number,
 ): MeasurementType | null {
-  const opening = openingStandardFor(category, shape.id, diameter)
-  if (opening) return opening.measurementTypes?.[index] ?? null
   if (category !== 'SPECIAL_CORNER') return null
   const last = shape.directions.length - 1
   return index > 0 && index < last ? 'SHIN_SHIN' : null
@@ -936,7 +861,7 @@ export function applyStandardSegmentLengths(
       // 既存の辺は未設定（null）も含めて保つ。手で外した芯々を戻さないため
       measurementType: prev
         ? prev.measurementType ?? null
-        : defaultSegmentMeasurementType(shape, category, diameter, i),
+        : defaultSegmentMeasurementType(shape, category, i),
       ...(Number.isFinite(Number(prev?.labelOffsetX))
         ? { labelOffsetX: Number(prev?.labelOffsetX) }
         : {}),
@@ -1270,17 +1195,15 @@ export function makeCornerBarBar(
     >
   >,
 ): CornerBarBarItem {
-  // 開口補強筋は資料の減り・高さを、まだ入っていないときだけ入れる
-  const opening = openingStandardFor(category, shape.id, barType)
   return {
     id: base?.id ?? 'b1',
     barType,
     quantity: normalizeBarQuantity(base?.quantity),
     segments: applyStandardSegmentLengths(shape, category, barType, base?.segments),
     ...withDeductions(base?.measurementDeductionsMm),
-    ...withDeductionTotal(base?.deductionTotalMm ?? opening?.deductionTotalMm),
+    ...withDeductionTotal(base?.deductionTotalMm),
     ...withBendAngles(shape, base),
-    ...withHeight(shape, base?.heightMm ?? opening?.heightMm),
+    ...withHeight(shape, base?.heightMm),
     // 上・下は特殊コーナー筋の L 形・ストレートだけ。ほかの形状・筋種類に変えたら外す
     ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(base?.layer) : {}),
     ...withCalloutOffset(base?.calloutOffset),
@@ -1306,9 +1229,7 @@ export function changeCornerBarBarDiameter(
     barType,
     shape.id as CornerBarShapeType,
   )
-  // 開口補強筋の標準は資料の径だけのもの。ほかの径に変えたら資料の寸法・寸法基準を残さない
-  const openingShape = openingStandardFor(category, shape.id) != null
-  const clearWhenNoStandard = hasStandardSegmentLengths(category) || openingShape
+  const clearWhenNoStandard = hasStandardSegmentLengths(category)
   return {
     id: bar.id,
     barType,
@@ -1318,9 +1239,7 @@ export function changeCornerBarBarDiameter(
       return {
         id: prev?.id ?? `s${i + 1}`,
         lengthMm: standard?.[i] ?? (clearWhenNoStandard ? null : prev?.lengthMm ?? null),
-        measurementType: openingShape
-          ? defaultSegmentMeasurementType(shape, category, barType, i)
-          : prev?.measurementType ?? null,
+        measurementType: prev?.measurementType ?? null,
         ...(Number.isFinite(Number(prev?.labelOffsetX))
           ? { labelOffsetX: Number(prev?.labelOffsetX) }
           : {}),
@@ -1647,10 +1566,11 @@ export function buildCornerBarGeometry(
   const baselineNatural = cornerBarPolylineNaturalSpan(
     cornerBarPointsFromLengths(shape, baselineLengths),
   )
+  const canvasScale = shape.canvasScale ?? 1
   if (baselineNatural <= 0) {
-    return buildCornerBarGeometryFromLengths(shape, drawLengths, sizePx)
+    return buildCornerBarGeometryFromLengths(shape, drawLengths, sizePx * canvasScale)
   }
-  const k = clampCornerBarSizePx(sizePx) / baselineNatural
+  const k = (clampCornerBarSizePx(sizePx) / baselineNatural) * canvasScale
   const scaledLengths = drawLengths.map((len) => len * k)
   return { points: cornerBarPointsFromLengths(shape, scaledLengths) }
 }
@@ -2296,23 +2216,13 @@ export function makeCornerBarDraft(
 ): CornerBarPlacementDraft {
   const category = base?.category ?? 'CORNER'
   const shape = getCornerBarShape(shapeType)
-  // 形状を変えたときは径と本数だけ引き継ぎ、辺の寸法は入れ直す。
-  // 開口補強筋は形状ごとに資料の径・寸法があるので、形状を変えたら標準の 1 件から始める
+  // 形状を変えたときは径と本数だけ引き継ぎ、辺の寸法は入れ直す
   const sameShape = base?.shapeType === shapeType
-  const opening = openingStandardFor(category, shapeType)
-  const fresh = () =>
-    shape
-      ? [
-          makeCornerBarBar(shape, category, opening?.diameter ?? DEFAULT_CORNER_BAR_DIAMETER, {
-            id: 'b1',
-          }),
-        ]
-      : []
   const bars = !shape
     ? base?.bars ?? []
-    : base?.bars?.length && (sameShape || !opening)
+    : base?.bars?.length
       ? remapCornerBarBarsToShape(shape, category, base.bars, sameShape)
-      : fresh()
+      : [makeCornerBarBar(shape, category, DEFAULT_CORNER_BAR_DIAMETER, { id: 'b1' })]
   const flipped = isFreeShapeCategory(category) ? normalizeCornerBarFlip(base?.flipped) : false
   return {
     category,

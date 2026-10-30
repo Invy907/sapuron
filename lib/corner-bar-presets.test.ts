@@ -1,6 +1,8 @@
 import assert from 'node:assert'
 import {
   applyCornerBarOrientation,
+  applyStandardSegmentLengths,
+  DEFAULT_CORNER_BAR_DIAMETER,
   buildCornerBarGeometry,
   cornerBarGeometryEdgeLength,
   cornerBarThumbPoints,
@@ -180,72 +182,50 @@ test('OPENING draft starts with the ring and is flippable', () => {
   assert.equal(makeCornerBarDraft('OPENING_CRANK', { category: 'OPENING', flipped: true }).flipped, true)
 })
 
-test('OPENING shapes start with the values from the customer sheet', () => {
+test('OPENING shapes start empty (no preset dimensions)', () => {
   const hook = makeCornerBarDraft('OPENING_HOOK_L', { category: 'OPENING' })
   const bar = hook.bars[0]!
-  assert.equal(bar.barType, 'D10')
-  assert.deepEqual(bar.segments.map((s) => s.lengthMm), [100, 620, 100])
-  assert.deepEqual(bar.segments.map((s) => s.measurementType), [null, 'SOTO_SOTO', null])
-  assert.equal(bar.deductionTotalMm, 20)
-  const hookShape = getCornerBarShape('OPENING_HOOK_L')!
-  const hookD13 = changeCornerBarBarDiameter(hookShape, 'OPENING', bar, 'D13')
-  assert.deepEqual(hookD13.segments.map((s) => s.lengthMm), [100, 380, 100])
-  assert.deepEqual(hookD13.segments.map((s) => s.measurementType), [null, 'SOTO_SOTO', null])
-  const hookD16 = changeCornerBarBarDiameter(hookShape, 'OPENING', bar, 'D16')
-  assert.ok(hookD16.segments.every((s) => s.lengthMm == null))
-  const lShape = getCornerBarShape('OPENING_L')!
-  const lD13 = makeCornerBarBar(lShape, 'OPENING', 'D13', { id: 'b1' })
-  assert.deepEqual(lD13.segments.map((s) => s.lengthMm), [380, 100])
-  assert.deepEqual(lD13.segments.map((s) => s.measurementType), ['SOTO_SOTO', null])
+  assert.equal(bar.barType, DEFAULT_CORNER_BAR_DIAMETER)
+  assert.ok(bar.segments.every((s) => s.lengthMm == null && s.measurementType == null))
+  assert.equal(bar.deductionTotalMm, undefined)
 
-  // 別の形状に変えたら、その形状の標準の径・寸法に入れ替わる
-  const crank = makeCornerBarDraft('OPENING_CRANK', hook)
-  assert.equal(crank.bars[0]!.barType, 'D13')
-  assert.deepEqual(crank.bars[0]!.segments.map((s) => s.lengthMm), [150, 450, 650])
-  assert.equal(crank.bars[0]!.heightMm, 320)
-  assert.equal(crank.bars[0]!.deductionTotalMm, undefined)
+  const crank = makeCornerBarDraft('OPENING_CRANK', { category: 'OPENING' }).bars[0]!
+  assert.ok(crank.segments.every((s) => s.lengthMm == null))
+  assert.equal(crank.heightMm, undefined)
 
   const ring = defaultPlacementDraftForCategory('OPENING').bars[0]!
-  assert.deepEqual(ring.segments.map((s) => s.lengthMm), [100, 350, 350, 350, 350, 100])
-  assert.equal(ring.deductionTotalMm, 80)
-  assert.equal(cornerBarKakouchouMm(ring.segments, ZERO_MEASUREMENT_DEDUCTIONS, ring.deductionTotalMm), 1520)
+  assert.ok(ring.segments.every((s) => s.lengthMm == null && s.measurementType == null))
+  assert.equal(ring.deductionTotalMm, undefined)
 
-  // 資料の値は D13 のときだけ。ほかの径に変えたら空にし、D13 に戻したらまた入る
+  // 径を変えても手で入れた寸法は残る
   const ringShape = getCornerBarShape('OPENING_RING')!
-  const d10 = changeCornerBarBarDiameter(ringShape, 'OPENING', ring, 'D10')
-  assert.deepEqual(d10.segments.map((s) => s.lengthMm), [null, null, null, null, null, null])
-  assert.ok(d10.segments.every((s) => s.measurementType == null))
-  const back = changeCornerBarBarDiameter(ringShape, 'OPENING', d10, 'D13')
-  assert.deepEqual(back.segments.map((s) => s.lengthMm), [100, 350, 350, 350, 350, 100])
-
-  // 追加した別の径の鉄筋も空から始まる
-  const added = makeCornerBarBar(ringShape, 'OPENING', 'D10', { id: 'b2' })
-  assert.ok(added.segments.every((s) => s.lengthMm == null))
+  const typed = applyStandardSegmentLengths(ringShape, 'OPENING', 'D13', ring.segments.map((s) => ({ ...s, lengthMm: 300 })))
+  const d10 = changeCornerBarBarDiameter(ringShape, 'OPENING', { ...ring, segments: typed }, 'D10')
+  assert.ok(d10.segments.every((s) => s.lengthMm === 300))
 })
 
-test('OPENING_RING keeps the 4 sides equal and sums 4 sides + laps', () => {
+test('OPENING_RING keeps the horizontal and vertical sides equal and sums 4 sides + laps', () => {
   const shape = getCornerBarShape('OPENING_RING')
   assert.ok(shape)
   const segments = makeCornerBarSegments(shape)
-  const edited = patchCornerBarSegment(shape, segments, 2, { lengthMm: 800 })
-  assert.deepEqual(
-    edited.map((s) => s.lengthMm),
-    [null, 800, 800, 800, 800, null],
-  )
-  // 保存値が揃っていなくても、読み込むと先頭の辺に揃える
+  const wide = patchCornerBarSegment(shape, segments, 2, { lengthMm: 800 })
+  assert.deepEqual(wide.map((s) => s.lengthMm), [null, null, 800, null, 800, null])
+  const edited = patchCornerBarSegment(shape, wide, 1, { lengthMm: 600 })
+  assert.deepEqual(edited.map((s) => s.lengthMm), [null, 600, 800, 600, 800, null])
+  // 保存値が揃っていなくても、読み込むと組の先頭の辺に揃える
   const normalized = normalizeCornerBarSegments(shape, [
     { lengthMm: 200 },
     { lengthMm: 700 },
-    { lengthMm: 1 },
+    { lengthMm: 900 },
     { lengthMm: 2 },
     { lengthMm: 3 },
     { lengthMm: 250 },
   ])
   assert.deepEqual(
     normalized.map((s) => s.lengthMm),
-    [200, 700, 700, 700, 700, 250],
+    [200, 700, 900, 700, 900, 250],
   )
-  assert.equal(cornerBarKakouchouMm(normalized, ZERO_MEASUREMENT_DEDUCTIONS), 700 * 4 + 200 + 250)
+  assert.equal(cornerBarKakouchouMm(normalized, ZERO_MEASUREMENT_DEDUCTIONS), 900 * 2 + 700 * 2 + 200 + 250)
 })
 
 test('OPENING_HOOK_L draws the hook as an arc bulging away from the leg', () => {
