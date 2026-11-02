@@ -29,17 +29,20 @@ import {
   printCardPage2PlacementStorageKey,
   printCornerRowHeightStorageKey,
   printCardZoomStorageKey,
+  printLineStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
 import {
   PrintLayoutModal,
   parsePrintCardPlacements,
   parsePrintCardZooms,
+  parsePrintLines,
   type PrintCard,
   type PrintCardId,
   type PrintCardPlacement,
   type PrintCardPlacements,
   type PrintCardZooms,
+  type PrintLine,
 } from '@/components/print-layout-modal'
 import {
   getSegmentBars,
@@ -60,6 +63,11 @@ type ManufactureLegendPositionState = {
 type PrintCardPlacementState = {
   storageKey: string | null
   placements: PrintCardPlacements
+}
+
+type PrintLineState = {
+  storageKey: string | null
+  lines: PrintLine[]
 }
 
 type PrintCardZoomState = {
@@ -315,6 +323,38 @@ export function OptimizeClient({
       })
     },
     [printZoomStorageKey],
+  )
+
+  // 印刷レイアウトの余白に引いた横線と、その上の文字
+  const printLinesStorageKey = useMemo(() => printLineStorageKey(projectId), [projectId])
+  const [printLineState, setPrintLineState] = useState<PrintLineState>({
+    storageKey: null,
+    lines: [],
+  })
+  const printLines = printLineState.storageKey === printLinesStorageKey ? printLineState.lines : []
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setPrintLineState({
+      storageKey: printLinesStorageKey,
+      lines: parsePrintLines(window.localStorage.getItem(printLinesStorageKey)),
+    })
+  }, [printLinesStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || printLineState.storageKey !== printLinesStorageKey) {
+      return
+    }
+    try {
+      window.localStorage.setItem(printLinesStorageKey, JSON.stringify(printLineState.lines))
+    } catch {
+      // Ignore storage write errors so editing remains usable.
+    }
+  }, [printLineState, printLinesStorageKey])
+
+  const handlePrintLinesChange = useCallback(
+    (lines: PrintLine[]) => setPrintLineState({ storageKey: printLinesStorageKey, lines }),
+    [printLinesStorageKey],
   )
 
   // 2 ページ目の位置・大きさ。1 ページ目と同じ形で、原点だけ用紙の左上
@@ -1065,6 +1105,8 @@ export function OptimizeClient({
             </section>
           )}
           cards={printCards}
+          lines={printLines}
+          onLinesChange={handlePrintLinesChange}
         />
       )}
     </div>

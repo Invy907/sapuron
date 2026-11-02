@@ -45,6 +45,20 @@ export type PrintCardPlacements = Partial<Record<PrintCardId, PrintCardPlacement
 
 type CardSize = { w?: number; h?: number }
 
+/**
+ * 余白に引く横線。線の上に文字を書ける（空のままなら手書き用の線になる）。
+ * 位置はどちらのページも用紙の左上を原点とした px
+ */
+export type PrintLine = {
+  id: string
+  page: 1 | 2
+  x: number
+  y: number
+  /** 線の長さ (px) */
+  w: number
+  text: string
+}
+
 /** 位置・大きさを決められる範囲（カードの左端の最小値と、右端の最大値） */
 type CardBounds = { minX: number; maxRight: number; minY: number }
 
@@ -95,6 +109,12 @@ const MIN_CARD_ZOOM = 0.5
 const MAX_CARD_ZOOM = 2
 /** −/＋ ボタン 1 回で変える拡大率 */
 const CARD_ZOOM_STEP = 0.1
+const MIN_LINE_WIDTH_PX = 40
+const DEFAULT_LINE_WIDTH_PX = 320
+/** 線を追加したときの位置（1 ページ目の左下の余白）。続けて追加すると上へずらす */
+const NEW_LINE_X_PX = 40
+const NEW_LINE_BOTTOM_PX = 80
+const NEW_LINE_STEP_PX = 32
 
 export function parsePrintCardPlacements(raw: string | null): PrintCardPlacements {
   if (!raw) return {}
@@ -134,6 +154,24 @@ export function parsePrintCardZooms(raw: string | null): PrintCardZooms {
   }
 }
 
+export function parsePrintLines(raw: string | null): PrintLine[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+    return parsed.flatMap((value): PrintLine[] => {
+      if (!value || typeof value !== 'object') return []
+      const { id, page, x, y, w, text } = value as Record<string, unknown>
+      if (typeof id !== 'string' || (page !== 1 && page !== 2)) return []
+      if (!finite(x) || !finite(y) || !finite(w) || w <= 0) return []
+      return [{ id, page, x, y, w, text: typeof text === 'string' ? text : '' }]
+    })
+  } catch {
+    return []
+  }
+}
+
 function parseCardSize(w: unknown, h: unknown): CardSize {
   const valid = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
   return { ...(valid(w) ? { w } : {}), ...(valid(h) ? { h } : {}) }
@@ -159,6 +197,8 @@ export function PrintLayoutModal({
   hasOtherLayoutChanges = false,
   renderPage1,
   cards,
+  lines,
+  onLinesChange,
 }: {
   onClose: () => void
   onPrint: () => void
@@ -181,6 +221,9 @@ export function PrintLayoutModal({
   renderPage1: (overlay: ReactNode, layeredIds: ReadonlySet<PrintCardId>) => ReactNode
   /** 印刷するカード。表示できるものだけ渡す */
   cards: PrintCard[]
+  /** 余白に引いた横線（配置のリセットでは消さない） */
+  lines: PrintLine[]
+  onLinesChange: (lines: PrintLine[]) => void
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const sheet1Ref = useRef<HTMLDivElement | null>(null)
@@ -262,7 +305,10 @@ export function PrintLayoutModal({
 
   const page1Cards = cards.filter((c) => placementOf(c.id))
   const page2Cards = cards.filter((c) => !c.page1Only && !placements[c.id])
-  const page2Empty = page2Cards.length === 0
+  const page1Lines = lines.filter((l) => l.page === 1)
+  const page2Lines = lines.filter((l) => l.page === 2)
+  // 2 ページ目に線だけが残っていれば、線を印刷するために 2 ページ目も出す
+  const page2Empty = page2Cards.length === 0 && page2Lines.length === 0
   // 2 ページ目に位置が決まっていないカードがあれば、いったん従来の 2 列の並びで描いて位置を測る
   const measuringPage2 = page2Cards.some((c) => !page2Placements[c.id])
   const page2CardIdsKey = page2Cards.map((c) => c.id).join(',')
@@ -324,6 +370,67 @@ export function PrintLayoutModal({
     [defaultPlacements, onPage2PlacementChange, onPlacementChange, page2Placements, placements],
   )
 
+  const updateLine = (id: string, patch: Partial<PrintLine>) => {
+    onLinesChange(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)))
+  }
+
+  /** 1 ページ目の左下の余白に線を足す。続けて足すと前の線の上に並べる */
+  const addLine = () => {
+    let y = SHEET_HEIGHT_PX - NEW_LINE_BOTTOM_PX
+    while (page1Lines.some((l) => Math.abs(l.y - y) < NEW_LINE_STEP_PX / 2 && l.x === NEW_LINE_X_PX)) {
+      y -= NEW_LINE_STEP_PX
+    }
+    onLinesChange([
+      ...lines,
+      {
+        id: crypto.randomUUID(),
+        page: 1,
+        x: NEW_LINE_X_PX,
+        y: Math.max(0, y),
+        w: DEFAULT_LINE_WIDTH_PX,
+        text: '',
+      },
+    ])
+  }
+
+  /** 線を離した場所の用紙へ移す。用紙の外（または印刷しない 2 ページ目）なら元に戻す */
+  const handleLineDrop = (id: string, lineRect: DOMRect, clientX: number, clientY: number) => {
+    const line = lines.find((l) => l.id === id)
+    if (!line) return
+    const s1 = sheet1Ref.current?.getBoundingClientRect()
+    const s2 = sheet2Ref.current?.getBoundingClientRect()
+    const inside = (r: DOMRect | undefined) =>
+      r != null && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom
+    const page: 1 | 2 | null = inside(s1)
+      ? 1
+      : inside(s2) && (!page2Empty || line.page === 2)
+        ? 2
+        : null
+    const sheet = page === 1 ? s1 : page === 2 ? s2 : null
+    if (!page || !sheet) return
+    const k = sheet.width / SHEET_WIDTH_PX
+    const w = Math.min(line.w, SHEET_WIDTH_PX)
+    const x = (lineRect.left - sheet.left) / k
+    const y = (lineRect.top - sheet.top) / k
+    updateLine(id, {
+      page,
+      x: Math.round(Math.min(SHEET_WIDTH_PX - w, Math.max(0, x))),
+      y: Math.round(Math.min(SHEET_HEIGHT_PX - lineRect.height / k, Math.max(0, y))),
+      w,
+    })
+  }
+
+  const renderLine = (line: PrintLine) => (
+    <SheetLine
+      key={line.id}
+      line={line}
+      scale={scale}
+      onDrop={(rect, clientX, clientY) => handleLineDrop(line.id, rect, clientX, clientY)}
+      onChange={(patch) => updateLine(line.id, patch)}
+      onDelete={() => onLinesChange(lines.filter((l) => l.id !== line.id))}
+    />
+  )
+
   /** 拡大率を変える。幅・高さを決めてあるカードはそれも同じ比率で変える */
   const handleZoom = (id: PrintCardId, zoom: number, box: CardSize | null) => {
     onZoomChange(id, Math.abs(zoom - 1) < 0.005 ? null : zoom)
@@ -379,10 +486,17 @@ export function PrintLayoutModal({
         <div className="min-w-0">
           <h2 className="text-base font-semibold">印刷レイアウト</h2>
           <p className="text-xs text-muted">
-            カードはドラッグで自由に動かせます（1 ページ目の空いているところにも置けます）。カードに乗せると出る −／＋ か右下の角で拡大・縮小、辺をドラッグすると形を変えられます。ほかのカードは動きません。
+            カードはドラッグで自由に動かせます（1 ページ目の空いているところにも置けます）。カードに乗せると出る −／＋ か右下の角で拡大・縮小、辺をドラッグすると形を変えられます。ほかのカードは動きません。「線を追加」で余白に横線を引き、線の上に文字を書けます（左のつまみで移動、右端で長さを変更）。
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={addLine}
+            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-gray-50"
+          >
+            線を追加
+          </button>
           <button
             type="button"
             onClick={onResetPlacements}
@@ -419,8 +533,13 @@ export function PrintLayoutModal({
           style={{ gap: SHEET_GAP_PX }}
         >
           <SheetFrame label="1ページ目" scale={scale} height={sheetHeights[0]}>
-            <div ref={sheet1Ref} className="print-sheet" style={sheetStyle(scale)}>
+            <div
+              ref={sheet1Ref}
+              className={`print-sheet ${page1Lines.length > 0 ? 'print-sheet-free' : ''}`}
+              style={sheetStyle(scale)}
+            >
               {renderPage1(overlay, new Set(page1Cards.map((c) => c.id)))}
+              {page1Lines.map(renderLine)}
               {sheetHeights[0] > SHEET_HEIGHT_PX + 1 ? (
                 <div
                   aria-hidden
@@ -450,7 +569,7 @@ export function PrintLayoutModal({
                 <p className="print-sheet-ui flex h-[1077px] items-center justify-center text-sm text-muted">
                   すべて 1 ページ目に移しました（2 ページ目は印刷されません）
                 </p>
-              ) : measuringPage2 ? (
+              ) : page2Cards.length === 0 ? null : measuringPage2 ? (
                 // 最初の位置を測るための従来の 2 列の並び。Ctrl+P で直接印刷したときもこの並びで出る
                 <div className="optimize-print-summary-layout">
                   {page2Left.length > 0 ? (
@@ -471,6 +590,7 @@ export function PrintLayoutModal({
               ) : (
                 page2Cards.map((card) => renderCard(card, page2Placements[card.id], PAGE2_BOUNDS))
               )}
+              {page2Lines.map(renderLine)}
             </div>
           </SheetFrame>
         </div>
@@ -874,6 +994,144 @@ function SheetCard({
         className={`print-sheet-ui absolute -bottom-2 -right-2 z-20 h-4 w-4 cursor-nwse-resize touch-none rounded-sm border-2 border-primary bg-white shadow-sm transition-opacity group-hover:opacity-100 ${
           liveZoom ? 'opacity-100' : 'opacity-0'
         }`}
+      />
+    </div>
+  )
+}
+
+/**
+ * 用紙の余白に引いた横線。線の上の入力欄にそのまま文字を書ける。
+ * 左のつまみで移動（ほかのページへも移せる）、右端で長さを変え、× で消す。
+ * つまみ・× は画面だけに出し、印刷には線と文字だけが出る。
+ */
+function SheetLine({
+  line,
+  scale,
+  onDrop,
+  onChange,
+  onDelete,
+}: {
+  line: PrintLine
+  scale: number
+  onDrop: (lineRect: DOMRect, clientX: number, clientY: number) => void
+  onChange: (patch: Partial<PrintLine>) => void
+  onDelete: () => void
+}) {
+  const lineRef = useRef<HTMLDivElement | null>(null)
+  const dragRef = useRef<{ startX: number; startY: number } | null>(null)
+  const [offset, setOffset] = useState<{ dx: number; dy: number } | null>(null)
+  const resizeRef = useRef<{ startX: number; startW: number } | null>(null)
+  const [liveW, setLiveW] = useState<number | null>(null)
+
+  const handleGripPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { startX: e.clientX, startY: e.clientY }
+    setOffset({ dx: 0, dy: 0 })
+  }
+
+  const handleGripPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (!d) return
+    setOffset({ dx: (e.clientX - d.startX) / scale, dy: (e.clientY - d.startY) / scale })
+  }
+
+  const handleGripPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return
+    dragRef.current = null
+    const rect = lineRef.current?.getBoundingClientRect()
+    setOffset(null)
+    if (rect) onDrop(rect, e.clientX, e.clientY)
+  }
+
+  const handleGripPointerCancel = () => {
+    dragRef.current = null
+    setOffset(null)
+  }
+
+  const handleResizePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    resizeRef.current = { startX: e.clientX, startW: line.w }
+    setLiveW(line.w)
+  }
+
+  const handleResizePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const r = resizeRef.current
+    if (!r) return
+    const maxW = SHEET_WIDTH_PX - line.x
+    setLiveW(
+      Math.round(Math.min(maxW, Math.max(MIN_LINE_WIDTH_PX, r.startW + (e.clientX - r.startX) / scale))),
+    )
+  }
+
+  const handleResizePointerUp = () => {
+    if (!resizeRef.current) return
+    resizeRef.current = null
+    if (liveW != null && liveW !== line.w) onChange({ w: liveW })
+    setLiveW(null)
+  }
+
+  const active = offset != null || liveW != null
+
+  return (
+    <div
+      ref={lineRef}
+      className="group absolute z-20"
+      style={{
+        left: line.x,
+        top: line.y,
+        width: liveW ?? line.w,
+        ...(offset
+          ? { transform: `translate(${offset.dx}px, ${offset.dy}px)`, zIndex: 50, opacity: 0.85 }
+          : {}),
+      }}
+    >
+      <input
+        type="text"
+        value={line.text}
+        onChange={(e) => onChange({ text: e.target.value })}
+        placeholder="ここに記入"
+        aria-label="線の上の文字"
+        className="print-line-input block w-full border-0 border-b border-solid border-[#0f172a] bg-transparent px-1 pb-0.5 text-[13px] leading-tight text-[#0f172a] outline-none placeholder:text-slate-300 focus:bg-primary/5"
+      />
+
+      {/* 用紙ごと縮小表示しているので、操作部品は逆に拡大して画面上の大きさを保つ */}
+      <div
+        aria-label="線を動かす"
+        title="ドラッグで移動"
+        onPointerDown={handleGripPointerDown}
+        onPointerMove={handleGripPointerMove}
+        onPointerUp={handleGripPointerUp}
+        onPointerCancel={handleGripPointerCancel}
+        style={{ transform: `scale(${1 / scale})`, transformOrigin: 'right center' }}
+        className={`print-sheet-ui absolute right-full top-1/2 mr-1 flex h-5 w-3 -translate-y-1/2 cursor-move touch-none items-center justify-center rounded-sm border border-primary/40 bg-white text-[10px] leading-none text-primary shadow-sm transition-opacity group-hover:opacity-100 ${
+          active ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        ⋮
+      </div>
+      <button
+        type="button"
+        onClick={onDelete}
+        aria-label="線を消す"
+        title="線を消す"
+        style={{ transform: `scale(${1 / scale})`, transformOrigin: 'right bottom' }}
+        className="print-sheet-ui absolute bottom-full right-0 mb-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-primary/40 bg-white text-[10px] leading-none text-primary opacity-0 shadow-sm transition-opacity hover:bg-primary/10 group-hover:opacity-100"
+      >
+        ×
+      </button>
+      <div
+        aria-label="線の長さを変える"
+        title="ドラッグで長さを変える"
+        onPointerDown={handleResizePointerDown}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={handleResizePointerUp}
+        onPointerCancel={handleResizePointerUp}
+        style={{ width: EDGE_GRAB_PX / scale, right: -EDGE_GRAB_PX / scale / 2 }}
+        className="print-sheet-ui absolute inset-y-0 cursor-ew-resize touch-none rounded bg-primary/0 transition-colors hover:bg-primary/30"
       />
     </div>
   )

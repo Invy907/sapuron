@@ -522,6 +522,8 @@ const PRINT_FIGURE_HEIGHT_RATIO = 180 / 280
 
 /** 形状の線の太さ（viewBox 単位） */
 const FIGURE_STROKE_WIDTH = 2.5
+/** 重ね継手の段差 / 二重線（開口補強筋など）の中心線から外形線までの距離（viewBox 単位） */
+const FIGURE_LAP_INSET = 4
 
 /** 文字幅の概算（em 比）。寸法は数字、寸法基準は「内々」などの全角 */
 const DIGIT_WIDTH_EM = 0.6
@@ -602,12 +604,14 @@ function labelHalfSizes(
 /**
  * 辺の中点から外向きへ、ラベルの枠が自分の辺にかからない距離だけずらす。
  * 横の辺ならラベルの高さの半分、縦の辺なら幅の半分に gap を足した距離になる。
+ * 二重線の形状は中心線から外形線まで lineHalfWidth あるので、その分も離す。
  */
 function offsetAnchors(
   anchors: LabelAnchor[],
   halfWidth: number[],
   halfHeight: number[],
   gap: number,
+  lineHalfWidth: number,
 ): LabelAnchor[] {
   return anchors.map((anchor, i) => {
     const dx = anchor.x - anchor.mx
@@ -615,7 +619,8 @@ function offsetAnchors(
     const len = Math.hypot(dx, dy) || 1
     const nx = dx / len
     const ny = dy / len
-    const distance = Math.abs(nx) * halfWidth[i]! + Math.abs(ny) * halfHeight[i]! + gap
+    const distance =
+      Math.abs(nx) * halfWidth[i]! + Math.abs(ny) * halfHeight[i]! + gap + lineHalfWidth
     return { ...anchor, x: anchor.mx + nx * distance, y: anchor.my + ny * distance }
   })
 }
@@ -632,11 +637,12 @@ function resolveLabelAnchors(
   textLines: string[][],
   points: Array<{ x: number; y: number }>,
   metrics: FigureMetrics,
+  lineHalfWidth: number,
   scale = 1,
 ): LabelAnchor[] | null {
   const { halfWidth, halfHeight } = labelHalfSizes(textLines, metrics, scale)
   const gap = metrics.labelGap * scale
-  const outside = offsetAnchors(anchors, halfWidth, halfHeight, gap)
+  const outside = offsetAnchors(anchors, halfWidth, halfHeight, gap, lineHalfWidth)
 
   const fits = (candidate: LabelAnchor[]): boolean => {
     for (let i = 0; i < candidate.length; i += 1) {
@@ -651,8 +657,8 @@ function resolveLabelAnchors(
         }
       }
       // 自分の辺からはラベルの大きさ分だけ離しているので判定しない。
-      // 他の辺は線の太さの半分だけ外側まで判定し、文字が線に触れて見えないようにする
-      const clearance = FIGURE_STROKE_WIDTH / 2
+      // 他の辺は線の太さの半分（二重線は外形線まで）外側まで判定し、文字が線に触れて見えないようにする
+      const clearance = FIGURE_STROKE_WIDTH / 2 + lineHalfWidth
       for (let k = 0; k < points.length - 1; k += 1) {
         if (k === a.index) continue
         const p1 = points[k]!
@@ -693,15 +699,29 @@ function layoutLabels(
   textLines: string[][],
   points: Array<{ x: number; y: number }>,
   metrics: FigureMetrics,
+  lineHalfWidth: number,
 ): { anchors: LabelAnchor[]; scale: number; fits: boolean } {
   for (const scale of metrics.labelScales) {
-    const placed = resolveLabelAnchors(anchors, textLines, points, metrics, scale)
+    const placed = resolveLabelAnchors(
+      anchors,
+      textLines,
+      points,
+      metrics,
+      lineHalfWidth,
+      scale,
+    )
     if (placed) return { anchors: placed, scale, fits: true }
   }
   const scale = metrics.labelScales[metrics.labelScales.length - 1] ?? 1
   const { halfWidth, halfHeight } = labelHalfSizes(textLines, metrics, scale)
   return {
-    anchors: offsetAnchors(anchors, halfWidth, halfHeight, metrics.labelGap * scale),
+    anchors: offsetAnchors(
+      anchors,
+      halfWidth,
+      halfHeight,
+      metrics.labelGap * scale,
+      lineHalfWidth,
+    ),
     scale,
     fits: false,
   }
@@ -797,6 +817,8 @@ function ShapeFigureSvg({
   if (!shape) return null
 
   const rotation = pickSummaryFigureRotation(shape, metrics.pad)
+  // 二重線の形状は中心線の両側に外形線を描くので、寸法はその外形線から離す
+  const lineHalfWidth = shape.doubleLine ? FIGURE_LAP_INSET : 0
   // 同じ寸法の辺の組（四角の 4 辺）は先頭の辺にだけ寸法を書く
   // フックの寸法は半円の頂点から、ふくらむ向きへ離す（弦の中点からだと半円に重なる）
   const anchorsFor = (points: Array<{ x: number; y: number }>) =>
@@ -829,7 +851,7 @@ function ShapeFigureSvg({
   const layoutWith = (m: FigureMetrics) => {
     const points = cornerBarThumbPoints(shape, m.width, m.height, m.pad, rotation, false)
     // 外向きの向きだけ受け取り、中点からの距離は layoutLabels がラベルの大きさで決める
-    const placed = layoutLabels(anchorsFor(points), labelLines, points, m)
+    const placed = layoutLabels(anchorsFor(points), labelLines, points, m, lineHalfWidth)
     // 印刷は図とラベルが入る範囲まで上下を詰める（横は変えない）
     let viewTop = 0
     let viewHeight = m.height
@@ -897,7 +919,7 @@ function ShapeFigureSvg({
   const displayWidth = baseWidth * zoom
   const displayHeight = baseHeight * zoom
 
-  const path = cornerBarStrokePathD(shape, points, 4)
+  const path = cornerBarStrokePathD(shape, points, FIGURE_LAP_INSET)
   const lineDy = m.lineDy * scale
 
   // 高さ（段違い・斜め）は資料と同じく、形の右に「I 320」のように縦の寸法で書く
