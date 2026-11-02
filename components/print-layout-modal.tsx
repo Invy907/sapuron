@@ -115,10 +115,8 @@ const MAX_CARD_ZOOM = 2
 const CARD_ZOOM_STEP = 0.1
 const MIN_LINE_WIDTH_PX = 40
 const DEFAULT_LINE_WIDTH_PX = 320
-/** 線を追加したときの位置（1 ページ目の左下の余白）。続けて追加すると上へずらす */
-const NEW_LINE_X_PX = 40
-const NEW_LINE_BOTTOM_PX = 80
-const NEW_LINE_STEP_PX = 32
+/** 線の要素の上端から線（入力欄の下線）までの高さ。クリックした所に線が来るよう、この分だけ上に置く */
+const LINE_BASELINE_PX = 19
 
 export function parsePrintCardPlacements(raw: string | null): PrintCardPlacements {
   if (!raw) return {}
@@ -244,6 +242,12 @@ export function PrintLayoutModal({
     SHEET_HEIGHT_PX,
   ])
   const [defaultPlacements, setDefaultPlacements] = useState<PrintCardPlacements>({})
+  /** 「線を追加」を押して、線を置く場所のクリックを待っている */
+  const [placingLine, setPlacingLine] = useState(false)
+  const placingLineRef = useRef(false)
+  useEffect(() => {
+    placingLineRef.current = placingLine
+  }, [placingLine])
   const cardsRef = useRef(cards)
   useEffect(() => {
     cardsRef.current = cards
@@ -297,7 +301,10 @@ export function PrintLayoutModal({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      // 線を置く場所を選んでいるときは、それだけやめる
+      if (placingLineRef.current) setPlacingLine(false)
+      else onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     const previousOverflow = document.body.style.overflow
@@ -443,22 +450,31 @@ export function PrintLayoutModal({
   }
 
   /** 1 ページ目の左下の余白に線を足す。続けて足すと前の線の上に並べる */
-  const addLine = () => {
-    let y = SHEET_HEIGHT_PX - NEW_LINE_BOTTOM_PX
-    while (page1Lines.some((l) => Math.abs(l.y - y) < NEW_LINE_STEP_PX / 2 && l.x === NEW_LINE_X_PX)) {
-      y -= NEW_LINE_STEP_PX
-    }
+  /**
+   * 「線を追加」のあと用紙をクリックした所に線を引く（線の左端・線の高さがクリックした点）。
+   * カードの上でもカードは動かさずに線を置く
+   */
+  const placeLineAt = (page: 1 | 2, e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!placingLine || e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const sheet = e.currentTarget.getBoundingClientRect()
+    const k = sheet.width / SHEET_WIDTH_PX
+    const w = DEFAULT_LINE_WIDTH_PX
+    const x = (e.clientX - sheet.left) / k
+    const y = (e.clientY - sheet.top) / k - LINE_BASELINE_PX
     onLinesChange([
       ...lines,
       {
         id: crypto.randomUUID(),
-        page: 1,
-        x: NEW_LINE_X_PX,
-        y: Math.max(0, y),
-        w: DEFAULT_LINE_WIDTH_PX,
+        page,
+        x: Math.round(Math.min(SHEET_WIDTH_PX - w, Math.max(0, x))),
+        y: Math.round(Math.min(SHEET_HEIGHT_PX - LINE_BASELINE_PX, Math.max(0, y))),
+        w,
         text: '',
       },
     ])
+    setPlacingLine(false)
   }
 
   /** 線を離した場所の用紙へ移す。用紙の外（または印刷しない 2 ページ目）なら元に戻す */
@@ -573,10 +589,14 @@ export function PrintLayoutModal({
           </button>
           <button
             type="button"
-            onClick={addLine}
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-gray-50"
+            onClick={() => setPlacingLine((v) => !v)}
+            className={`rounded-md border px-3 py-1.5 text-sm ${
+              placingLine
+                ? 'border-primary bg-primary text-white hover:bg-primary-hover'
+                : 'border-border hover:bg-gray-50'
+            }`}
           >
-            線を追加
+            {placingLine ? '用紙をクリックして線を置く（Esc でやめる）' : '線を追加'}
           </button>
           <button
             type="button"
@@ -620,8 +640,11 @@ export function PrintLayoutModal({
           <SheetFrame label="1ページ目" scale={scale} height={sheetHeights[0]}>
             <div
               ref={sheet1Ref}
-              className={`print-sheet ${page1Lines.length > 0 ? 'print-sheet-free' : ''}`}
+              className={`print-sheet ${page1Lines.length > 0 ? 'print-sheet-free' : ''} ${
+                placingLine ? 'cursor-crosshair' : ''
+              }`}
               style={sheetStyle(scale)}
+              onPointerDownCapture={(e) => placeLineAt(1, e)}
             >
               {renderPage1(overlay, new Set(page1Cards.map((c) => c.id)))}
               {page1Lines.map(renderLine)}
@@ -650,8 +673,14 @@ export function PrintLayoutModal({
                 sheet2Ref.current = el
                 freeSheetRefs.current[0] = el
               }}
-              className={`print-sheet ${!page2Empty && !measuringPage2 ? 'print-sheet-free' : ''}`}
+              className={`print-sheet ${!page2Empty && !measuringPage2 ? 'print-sheet-free' : ''} ${
+                placingLine && !page2Empty ? 'cursor-crosshair' : ''
+              }`}
               style={sheetStyle(scale)}
+              onPointerDownCapture={(e) => {
+                // 印刷しない（空の）2 ページ目には置かない
+                if (!page2Empty) placeLineAt(2, e)
+              }}
             >
               {page2Empty ? (
                 <p className="print-sheet-ui flex h-[1077px] items-center justify-center text-sm text-muted">
