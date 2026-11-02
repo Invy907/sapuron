@@ -334,11 +334,12 @@ export function PrintLayoutModal({
     }
   }, [measuringPage2, onPage2PlacementChange, page2CardIdsKey, page2Placements])
 
-  // 2 ページ目以降は、カードがあるいちばん後ろのページまで用紙を出す
+  // 2 ページ目以降は、カードがあるいちばん後ろのページか、「ページを追加」で足したページまで用紙を出す
+  const [addedFreePageCount, setAddedFreePageCount] = useState(1)
   const freePageCount = measuringPage2
     ? 1
     : Math.max(
-        1,
+        addedFreePageCount,
         ...page2Cards.map((c) => pageIndexOf(page2Placements[c.id]?.y ?? 0) + 1),
       )
 
@@ -560,11 +561,16 @@ export function PrintLayoutModal({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-white px-5 py-3 print:hidden">
         <div className="min-w-0">
           <h2 className="text-base font-semibold">印刷レイアウト</h2>
-          <p className="text-xs text-muted">
-            カードはドラッグで自由に動かせます（1 ページ目の空いているところにも置けます）。カードに乗せると出る −／＋ か右下の角で拡大・縮小、辺をドラッグすると形を変えられます。ほかのカードは動きません。用紙の下にはみ出したカードは次のページへ自動で送ります。「線を追加」で余白に横線を引き、線の上に文字を書けます（左のつまみで移動、右端で長さを変更）。
-          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAddedFreePageCount(freePageCount + 1)}
+            disabled={measuringPage2}
+            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-40"
+          >
+            ページを追加
+          </button>
           <button
             type="button"
             onClick={addLine}
@@ -574,7 +580,10 @@ export function PrintLayoutModal({
           </button>
           <button
             type="button"
-            onClick={onResetPlacements}
+            onClick={() => {
+              setAddedFreePageCount(1)
+              onResetPlacements()
+            }}
             disabled={
               Object.keys(placements).length === 0 &&
               Object.keys(zooms).length === 0 &&
@@ -676,23 +685,47 @@ export function PrintLayoutModal({
           </SheetFrame>
 
           {/* 2 ページ目に収まらなかったカードのページ（3 ページ目以降） */}
-          {Array.from({ length: freePageCount - 1 }, (_, i) => i + 1).map((page) => (
-            <SheetFrame key={page} label={`${page + 2}ページ目`} scale={scale} height={SHEET_HEIGHT_PX}>
-              <div
-                ref={(el) => {
-                  freeSheetRefs.current[page] = el
-                }}
-                className="print-sheet print-sheet-free"
-                style={sheetStyle(scale)}
+          {Array.from({ length: freePageCount - 1 }, (_, i) => i + 1).map((page) => {
+            const pageCards = page2Cards.filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === page)
+            // 「ページを追加」で足した空のページは印刷しない。いちばん後ろなら消せる
+            const empty = pageCards.length === 0
+            return (
+              <SheetFrame
+                key={page}
+                label={`${page + 2}ページ目`}
+                scale={scale}
+                height={SHEET_HEIGHT_PX}
+                className={empty ? 'print-sheet-empty' : ''}
               >
-                {page2Cards
-                  .filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === page)
-                  .map((card) =>
-                    renderCard(card, page2Placements[card.id], PAGE2_BOUNDS, page * SHEET_HEIGHT_PX),
+                <div
+                  ref={(el) => {
+                    freeSheetRefs.current[page] = el
+                  }}
+                  className="print-sheet print-sheet-free"
+                  style={sheetStyle(scale)}
+                >
+                  {empty ? (
+                    <div className="print-sheet-ui flex h-[1077px] flex-col items-center justify-center gap-3 text-sm text-muted">
+                      <p>カードをここへドラッグしてください（空のままなら印刷されません）</p>
+                      {page === freePageCount - 1 ? (
+                        <button
+                          type="button"
+                          onClick={() => setAddedFreePageCount(page)}
+                          className="rounded-md border border-border bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
+                        >
+                          このページを削除
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    pageCards.map((card) =>
+                      renderCard(card, page2Placements[card.id], PAGE2_BOUNDS, page * SHEET_HEIGHT_PX),
+                    )
                   )}
-              </div>
-            </SheetFrame>
-          ))}
+                </div>
+              </SheetFrame>
+            )
+          })}
         </div>
       </div>
     </div>,
