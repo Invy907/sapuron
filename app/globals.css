@@ -451,6 +451,11 @@ button,
     display: none !important;
   }
 
+  /* 余白の線は、空のままなら線だけを印刷する（入力の案内は出さない） */
+  .print-line-input::placeholder {
+    color: transparent !important;
+  }
+
   .print-sheet {
     min-height: 0;
     box-shadow: none;
