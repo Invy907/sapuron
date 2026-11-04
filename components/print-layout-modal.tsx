@@ -26,6 +26,7 @@ export type PrintCardId =
   | 'special-corner-bars'
   | 'opening-bars'
   | 'doma-summary'
+  | 'manufacture-continued'
   | 'memo'
 
 export type PrintCardPlacement = {
@@ -83,10 +84,16 @@ const PRINT_CARD_IDS: readonly PrintCardId[] = [
   'special-corner-bars',
   'opening-bars',
   'doma-summary',
+  'manufacture-continued',
   'memo',
 ]
 /** 2 ページ目の既定の並び（左列＝材料取り、残りは右列）。最初の位置を測るときだけ使う */
 const LEFT_COLUMN_IDS: readonly PrintCardId[] = ['bar-summary', 'hook-summary', 'doma-summary']
+/**
+ * 2 ページ目の先頭（左上）に置くカード。1 ページ目から続く製作図リストは次のページの最初に来る。
+ * あとから増えたときは、2 ページ目のほかのカードをその分だけ下へずらす
+ */
+const LEADING_CARD_IDS: readonly PrintCardId[] = ['manufacture-continued']
 
 /** A4 縦・左右余白 10mm の印刷幅 190mm (96dpi) */
 const SHEET_WIDTH_PX = 718
@@ -180,6 +187,58 @@ const RULE_TEXT_PADDING_PX = 2
 
 /** row: 上から何本目の罫線か（1 始まり）。間隔を変えても同じ行の文字が同じ行に残る */
 type RuleRow = { row: number; y: number; segments: Array<[number, number]> }
+
+/** 製作図リストのブロックがページの下端ぎりぎりのときに、念のため次のページへ送る余裕 (px) */
+const PAGE_BREAK_SAFETY_PX = 2
+
+/**
+ * 1 ページ目の製作図リストで、ページの下に収まらない最初のブロックが何番目か（groups の添字）。
+ * 全部収まっていれば null。先頭のブロックは収まらなくても送らない
+ */
+function findManufactureOverflowIndex(sheet: HTMLElement): number | null {
+  const table = sheet.querySelector<HTMLElement>('.manufacture-list-table-wrap > div > table')
+  if (!table) return null
+  const sheetRect = sheet.getBoundingClientRect()
+  if (sheetRect.width <= 0) return null
+  const k = sheetRect.width / SHEET_WIDTH_PX
+  const groups = Array.from(table.querySelectorAll<HTMLElement>(':scope > tbody[data-group-key]'))
+  const index = groups.findIndex(
+    (group, i) =>
+      i > 0 &&
+      (group.getBoundingClientRect().bottom - sheetRect.top) / k >
+        SHEET_HEIGHT_PX - PAGE_BREAK_SAFETY_PX,
+  )
+  return index > 0 ? index : null
+}
+
+type FreeRect = { page: number; x: number; y: number; w: number; h: number }
+
+/**
+ * 2 ページ目以降で、置いてあるカードに重ならずに w × h のカードを置ける最初の場所
+ * （上のページから、上から順・左から順に探す）。どこにも無ければ最後のカードの次のページの左上
+ */
+function findFreeCardSpot(rects: FreeRect[], w: number, h: number): { x: number; y: number } {
+  const step = 8
+  const lastPage = rects.reduce((max, r) => Math.max(max, r.page), 0)
+  if (h <= SHEET_HEIGHT_PX && w <= SHEET_WIDTH_PX) {
+    for (let page = 0; page <= lastPage; page++) {
+      const onPage = rects.filter((r) => r.page === page)
+      for (let y = 0; y + h <= SHEET_HEIGHT_PX; y += step) {
+        for (let x = 0; x + w <= SHEET_WIDTH_PX; x += step) {
+          const hit = onPage.some(
+            (r) =>
+              x < r.x + r.w + CARD_STACK_GAP_PX &&
+              r.x < x + w + CARD_STACK_GAP_PX &&
+              y < r.y + r.h + CARD_STACK_GAP_PX &&
+              r.y < y + h + CARD_STACK_GAP_PX,
+          )
+          if (!hit) return { x, y: page * SHEET_HEIGHT_PX + y }
+        }
+      }
+    }
+  }
+  return { x: 0, y: (lastPage + 1) * SHEET_HEIGHT_PX }
+}
 
 export function parsePrintCardPlacements(raw: string | null): PrintCardPlacements {
   if (!raw) return {}
@@ -337,6 +396,7 @@ export function PrintLayoutModal({
   onLinesChange,
   ruleSettings,
   onRuleSettingsChange,
+  onManufactureOverflow,
 }: {
   onClose: () => void
   onPrint: () => void
@@ -357,6 +417,12 @@ export function PrintLayoutModal({
    * layeredIds は層に描いているカード。メモが入っていれば元のメモは出さない
    */
   renderPage1: (overlay: ReactNode, layeredIds: ReadonlySet<PrintCardId>) => ReactNode
+  /**
+   * 1 ページ目の製作図リストで、ページに収まらない最初のブロックの添字を知らせる。
+   * 受け取った側はそこから後ろを「続き」のカード（manufacture-continued）にして 1 ページ目から外す。
+   * 印刷レイアウトを閉じると null に戻す
+   */
+  onManufactureOverflow?: (index: number | null) => void
   /** 印刷するカード。表示できるものだけ渡す */
   cards: PrintCard[]
   /** 余白に引いた横線（配置のリセットでは消さない） */
@@ -414,6 +480,23 @@ export function PrintLayoutModal({
     return () => observer.disconnect()
   }, [])
 
+  // 製作図リストが 1 ページに収まらないとき、ページの境目にかかるブロックから後ろを
+  // 「続き」のカードにして次のページへ送る。送ったあとは 1 ページ目に収まるので、
+  // 送る位置は前に戻らない（印刷レイアウトを開くたびに全部描いて測り直す）
+  useEffect(() => {
+    const sheet = sheet1Ref.current
+    if (!sheet || !onManufactureOverflow) return
+    const update = () => {
+      const index = findManufactureOverflowIndex(sheet)
+      if (index != null) onManufactureOverflow(index)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(sheet)
+    return () => observer.disconnect()
+  }, [onManufactureOverflow, scale])
+  useEffect(() => () => onManufactureOverflow?.(null), [onManufactureOverflow])
+
   // 縮小表示の枠の高さに使うため、用紙の実際の高さ（中身が 1 ページを超えると伸びる）を測る
   useEffect(() => {
     const s1 = sheet1Ref.current
@@ -454,6 +537,8 @@ export function PrintLayoutModal({
     }
   }, [onClose])
 
+  /** 1 ページ目の用紙が何ページ分か（製作図リストが長いと次のページへ続く） */
+  const page1PageCount = Math.max(1, Math.ceil((sheetHeights[0] - 1) / SHEET_HEIGHT_PX))
   const page1OnlyIds = new Set(cards.filter((c) => c.page1Only).map((c) => c.id))
   const placementOf = (id: PrintCardId): PrintCardPlacement | undefined =>
     placements[id] ?? (page1OnlyIds.has(id) ? defaultPlacements[id] : undefined)
@@ -473,10 +558,41 @@ export function PrintLayoutModal({
     const sheet = sheet2Ref.current
     if (!sheet) return
     // カードの offsetParent は用紙（position: relative）なので、offset* がそのまま用紙上の位置になる
-    for (const el of Array.from(sheet.querySelectorAll<HTMLElement>('[data-print-card]'))) {
+    const els = Array.from(sheet.querySelectorAll<HTMLElement>('[data-print-card]'))
+    // 置き場所の決まっているカードがあれば（あとから増えたカード）、それらに重ならない空いた所へ置く
+    const placed: FreeRect[] = els.flatMap((el) => {
+      const p = page2Placements[el.dataset.printCard as PrintCardId]
+      if (!p) return []
+      const page = pageIndexOf(p.y)
+      const y = p.y - page * SHEET_HEIGHT_PX
+      return [{ page, x: p.x, y, w: p.w ?? el.offsetWidth, h: p.h ?? el.offsetHeight }]
+    })
+    const anyPlaced = placed.length > 0
+    for (const el of els) {
       const id = el.dataset.printCard as PrintCardId
       if (page2Placements[id]) continue
-      onPage2PlacementChange(id, { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth })
+      const w = el.offsetWidth
+      if (!anyPlaced) {
+        onPage2PlacementChange(id, { x: el.offsetLeft, y: el.offsetTop, w })
+        continue
+      }
+      if (LEADING_CARD_IDS.includes(id)) {
+        // 2 ページ目の左上に置き、2 ページ目のカードを下へずらす。
+        // 用紙の下からはみ出したカードは、下の「次のページへ送る」処理が次のページへ移す
+        const shift = el.offsetHeight + CARD_STACK_GAP_PX
+        onPage2PlacementChange(id, { x: 0, y: 0, w })
+        for (const other of els) {
+          const otherId = other.dataset.printCard as PrintCardId
+          const p = page2Placements[otherId]
+          if (!p || pageIndexOf(p.y) !== 0) continue
+          onPage2PlacementChange(otherId, { ...p, y: Math.min(p.y + shift, SHEET_HEIGHT_PX - 1) })
+        }
+        continue
+      }
+      const spot = findFreeCardSpot(placed, w, el.offsetHeight)
+      onPage2PlacementChange(id, { ...spot, w })
+      const page = pageIndexOf(spot.y)
+      placed.push({ page, x: spot.x, y: spot.y - page * SHEET_HEIGHT_PX, w, h: el.offsetHeight })
     }
   }, [measuringPage2, onPage2PlacementChange, page2CardIdsKey, page2Placements])
 
@@ -615,7 +731,9 @@ export function PrintLayoutModal({
         value={entry?.text ?? ''}
         onChange={(e) => onText(e.target.value)}
         aria-label="罫線の上の文字"
-        className="absolute border-0 bg-transparent p-0 leading-none text-[#0f172a] outline-none focus:bg-primary/5"
+        // 製作図リストの外枠（relative で用紙の幅いっぱい）より上に置く。下だと表の右の罫線をクリックできない。
+        // 1 ページ目へ移したカード（z-10）・余白の線（z-20）よりは下
+        className="absolute z-[5] border-0 bg-transparent p-0 leading-none text-[#0f172a] outline-none focus:bg-primary/5"
         style={{
           left,
           top: y - height,
@@ -846,8 +964,10 @@ export function PrintLayoutModal({
     </div>
   )
 
-  const page2Left = page2Cards.filter((c) => LEFT_COLUMN_IDS.includes(c.id))
-  const page2Right = page2Cards.filter((c) => !LEFT_COLUMN_IDS.includes(c.id))
+  const page2Leading = page2Cards.filter((c) => LEADING_CARD_IDS.includes(c.id))
+  const page2Columns = page2Cards.filter((c) => !LEADING_CARD_IDS.includes(c.id))
+  const page2Left = page2Columns.filter((c) => LEFT_COLUMN_IDS.includes(c.id))
+  const page2Right = page2Columns.filter((c) => !LEFT_COLUMN_IDS.includes(c.id))
 
   return createPortal(
     <div
@@ -970,7 +1090,11 @@ export function PrintLayoutModal({
           // 3 ページ以上で横にはみ出したときも左端までスクロールできるように safe center
           style={{ gap: SHEET_GAP_PX, justifyContent: 'safe center' }}
         >
-          <SheetFrame label="1ページ目" scale={scale} height={sheetHeights[0]}>
+          <SheetFrame
+            label={page1PageCount > 1 ? `1〜${page1PageCount}ページ目` : '1ページ目'}
+            scale={scale}
+            height={sheetHeights[0]}
+          >
             <div
               ref={sheet1Ref}
               className={`print-sheet ${
@@ -984,22 +1108,23 @@ export function PrintLayoutModal({
               {rulePage1 ? renderRules(ruleRows.page1, 0) : null}
               {renderPage1(overlay, new Set(page1Cards.map((c) => c.id)))}
               {page1Lines.map(renderLine)}
-              {sheetHeights[0] > SHEET_HEIGHT_PX + 1 ? (
+              {Array.from({ length: page1PageCount - 1 }, (_, i) => (
                 <div
+                  key={i}
                   aria-hidden
                   className="print-sheet-ui pointer-events-none absolute inset-x-0 border-t-2 border-dashed border-red-400"
-                  style={{ top: SHEET_HEIGHT_PX }}
+                  style={{ top: SHEET_HEIGHT_PX * (i + 1) }}
                 >
                   <span className="absolute right-2 top-1 text-[11px] text-red-500">
                     ここで改ページ
                   </span>
                 </div>
-              ) : null}
+              ))}
             </div>
           </SheetFrame>
 
           <SheetFrame
-            label="2ページ目"
+            label={`${page1PageCount + 1}ページ目`}
             scale={scale}
             height={sheetHeights[1]}
             className={page2Empty ? 'print-sheet-empty' : ''}
@@ -1024,7 +1149,14 @@ export function PrintLayoutModal({
                   すべて 1 ページ目に移しました（2 ページ目は印刷されません）
                 </p>
               ) : page2Cards.length === 0 ? null : measuringPage2 ? (
-                // 最初の位置を測るための従来の 2 列の並び。Ctrl+P で直接印刷したときもこの並びで出る
+                // 最初の位置を測るための従来の 2 列の並び。Ctrl+P で直接印刷したときもこの並びで出る。
+                // 1 ページ目から続く製作図リストは 2 列の上（ページの先頭）に置く
+                <>
+                {page2Leading.map((card) => (
+                  <div key={card.id} className="mb-4 w-fit">
+                    {renderCard(card, undefined, PAGE2_BOUNDS)}
+                  </div>
+                ))}
                 <div className="optimize-print-summary-layout">
                   {page2Left.length > 0 ? (
                     <section className="optimize-print-results space-y-4">
@@ -1041,6 +1173,7 @@ export function PrintLayoutModal({
                     </section>
                   ) : null}
                 </div>
+                </>
               ) : (
                 page2Cards
                   .filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === 0)
@@ -1058,7 +1191,7 @@ export function PrintLayoutModal({
             return (
               <SheetFrame
                 key={page}
-                label={`${page + 2}ページ目`}
+                label={`${page + page1PageCount + 1}ページ目`}
                 scale={scale}
                 height={SHEET_HEIGHT_PX}
                 className={empty ? 'print-sheet-empty' : ''}
