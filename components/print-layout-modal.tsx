@@ -118,6 +118,69 @@ const DEFAULT_LINE_WIDTH_PX = 320
 /** 線の要素の上端から線（入力欄の下線）までの高さ。クリックした所に線が来るよう、この分だけ上に置く */
 const LINE_BASELINE_PX = 19
 
+/**
+ * 罫線の上に書いた文字。page は 0 = 1 ページ目、1 = 2 ページ目…、row は上から何本目の罫線か（1 始まり）。
+ * x はその罫線の区間で書き始めた位置 (px)。カードを動かして区間が変わっても同じ所に残す
+ */
+export type PrintRuleText = {
+  id: string
+  page: number
+  row: number
+  x: number
+  text: string
+}
+
+/**
+ * 余白全体に引く罫線（ノートの罫線のように、すべてのページの空いているところに等間隔の横線を引く）。
+ * enabled: 引くかどうか、spacingMm: 線と線の間隔、strokePx: 線の太さ、texts: 罫線の上に書いた文字
+ */
+export type PrintRuleSettings = {
+  enabled: boolean
+  spacingMm: number
+  strokePx: number
+  texts: PrintRuleText[]
+}
+
+export const DEFAULT_PRINT_RULE_SETTINGS: PrintRuleSettings = {
+  enabled: false,
+  spacingMm: 8,
+  strokePx: 0.5,
+  texts: [],
+}
+const RULE_SPACING_OPTIONS_MM = [5, 6, 7, 8, 10, 12] as const
+const RULE_STROKE_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 0.5, label: '細い' },
+  { value: 1, label: '普通' },
+  { value: 1.5, label: '太い' },
+]
+const RULE_COLOR = '#94a3b8'
+/** 96dpi の 1mm */
+const PX_PER_MM = 96 / 25.4
+/** 罫線を避けるもの（見出し・表・メモ・カード・余白の線） */
+const RULE_OCCUPIED_SELECTOR = [
+  '.manufacture-list-header',
+  '.manufacture-list-table-wrap > div > table',
+  '.manufacture-memo-print',
+  '[data-print-card]',
+  '[data-print-line]',
+].join(', ')
+/** 罫線と中身とのすき間（横・縦） */
+const RULE_CLEARANCE_X_PX = 6
+const RULE_CLEARANCE_Y_PX = 4
+/** これより短い切れ端の罫線は引かない */
+const MIN_RULE_SEGMENT_PX = 24
+
+/** 罫線の上の文字の大きさの上限と、罫線の間隔に対する比 */
+const RULE_TEXT_MAX_FONT_PX = 13
+const RULE_TEXT_FONT_RATIO = 0.55
+/** 文字の入力欄の高さの上限 */
+const RULE_TEXT_MAX_HEIGHT_PX = 22
+/** 文字と区間の左端とのすき間 */
+const RULE_TEXT_PADDING_PX = 2
+
+/** row: 上から何本目の罫線か（1 始まり）。間隔を変えても同じ行の文字が同じ行に残る */
+type RuleRow = { row: number; y: number; segments: Array<[number, number]> }
+
 export function parsePrintCardPlacements(raw: string | null): PrintCardPlacements {
   if (!raw) return {}
   try {
@@ -174,6 +237,77 @@ export function parsePrintLines(raw: string | null): PrintLine[] {
   }
 }
 
+export function parsePrintRuleSettings(raw: string | null): PrintRuleSettings {
+  if (!raw) return DEFAULT_PRINT_RULE_SETTINGS
+  try {
+    const parsed = JSON.parse(raw) as
+      | (Partial<Record<keyof PrintRuleSettings, unknown>> & { pages?: unknown })
+      | null
+    if (!parsed || typeof parsed !== 'object') return DEFAULT_PRINT_RULE_SETTINGS
+    // 以前はページを選んでいた（pages: 'none' 以外なら引く）
+    const enabled =
+      typeof parsed.enabled === 'boolean'
+        ? parsed.enabled
+        : typeof parsed.pages === 'string' && parsed.pages !== 'none'
+    const spacingMm = RULE_SPACING_OPTIONS_MM.find((v) => v === parsed.spacingMm)
+    const strokePx = RULE_STROKE_OPTIONS.find((o) => o.value === parsed.strokePx)?.value
+    const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+    const texts = Array.isArray(parsed.texts)
+      ? parsed.texts.flatMap((value): PrintRuleText[] => {
+          if (!value || typeof value !== 'object') return []
+          const { id, page, row, x, text } = value as Record<string, unknown>
+          if (typeof id !== 'string' || typeof text !== 'string' || !text) return []
+          if (!finite(page) || !finite(row) || !finite(x)) return []
+          return [{ id, page, row, x, text }]
+        })
+      : []
+    return {
+      enabled,
+      spacingMm: spacingMm ?? DEFAULT_PRINT_RULE_SETTINGS.spacingMm,
+      strokePx: strokePx ?? DEFAULT_PRINT_RULE_SETTINGS.strokePx,
+      texts,
+    }
+  } catch {
+    return DEFAULT_PRINT_RULE_SETTINGS
+  }
+}
+
+/**
+ * 用紙の上の空いているところに引く罫線を求める。
+ * 上から spacing ごとに横線を引き、見出し・表・カードなどにかかる区間だけ抜く
+ */
+function computeRuleRows(sheet: HTMLElement, spacing: number): RuleRow[] {
+  const sheetRect = sheet.getBoundingClientRect()
+  if (sheetRect.width <= 0) return []
+  // 画面では用紙ごと縮小しているので、用紙の実寸 (px) に戻す
+  const k = sheetRect.width / SHEET_WIDTH_PX
+  const blocks = Array.from(sheet.querySelectorAll<HTMLElement>(RULE_OCCUPIED_SELECTOR))
+    .map((el) => el.getBoundingClientRect())
+    .filter((r) => r.width > 0 && r.height > 0)
+    .map((r) => ({
+      left: (r.left - sheetRect.left) / k - RULE_CLEARANCE_X_PX,
+      right: (r.right - sheetRect.left) / k + RULE_CLEARANCE_X_PX,
+      top: (r.top - sheetRect.top) / k - RULE_CLEARANCE_Y_PX,
+      bottom: (r.bottom - sheetRect.top) / k + RULE_CLEARANCE_Y_PX,
+    }))
+  const rows: RuleRow[] = []
+  for (let row = 1; row * spacing <= SHEET_HEIGHT_PX - RULE_CLEARANCE_Y_PX; row += 1) {
+    const y = row * spacing
+    const covering = blocks
+      .filter((b) => b.top < y && b.bottom > y)
+      .sort((a, b) => a.left - b.left)
+    const segments: Array<[number, number]> = []
+    let start = 0
+    for (const b of covering) {
+      if (b.left - start >= MIN_RULE_SEGMENT_PX) segments.push([start, b.left])
+      start = Math.max(start, b.right)
+    }
+    if (SHEET_WIDTH_PX - start >= MIN_RULE_SEGMENT_PX) segments.push([start, SHEET_WIDTH_PX])
+    if (segments.length > 0) rows.push({ row, y: Math.round(y * 10) / 10, segments })
+  }
+  return rows
+}
+
 function parseCardSize(w: unknown, h: unknown): CardSize {
   const valid = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
   return { ...(valid(w) ? { w } : {}), ...(valid(h) ? { h } : {}) }
@@ -201,6 +335,8 @@ export function PrintLayoutModal({
   cards,
   lines,
   onLinesChange,
+  ruleSettings,
+  onRuleSettingsChange,
 }: {
   onClose: () => void
   onPrint: () => void
@@ -226,6 +362,9 @@ export function PrintLayoutModal({
   /** 余白に引いた横線（配置のリセットでは消さない） */
   lines: PrintLine[]
   onLinesChange: (lines: PrintLine[]) => void
+  /** 余白全体に引く罫線の設定 */
+  ruleSettings: PrintRuleSettings
+  onRuleSettingsChange: (settings: PrintRuleSettings) => void
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const sheet1Ref = useRef<HTMLDivElement | null>(null)
@@ -385,6 +524,149 @@ export function PrintLayoutModal({
       }
     }
   }, [cards, freePageCount, measuringPage2, onPage2PlacementChange, page2Cards, page2Placements, zooms])
+
+  // 罫線は空いているところにだけ引くので、カードや線を動かすたび・大きさが変わるたびに測り直す。
+  // 印刷しない空のページには引かない
+  const rulePage1 = ruleSettings.enabled
+  const ruleRest = ruleSettings.enabled
+  const ruledFreePages = Array.from({ length: freePageCount }, (_, page) =>
+    ruleRest &&
+    (page === 0
+      ? !page2Empty
+      : page2Cards.some((c) => pageIndexOf(page2Placements[c.id]?.y ?? 0) === page)),
+  )
+  const ruledFreePagesKey = ruledFreePages.join(',')
+  const [ruleRows, setRuleRows] = useState<{ page1: RuleRow[]; free: RuleRow[][] }>({
+    page1: [],
+    free: [],
+  })
+  useEffect(() => {
+    const ruled = ruledFreePagesKey.split(',').map((v) => v === 'true')
+    const s1 = rulePage1 ? sheet1Ref.current : null
+    const free = freeSheetRefs.current.map((el, page) => (ruled[page] ? el : null))
+    const spacing = ruleSettings.spacingMm * PX_PER_MM
+    const update = () => {
+      setRuleRows({
+        page1: s1 ? computeRuleRows(s1, spacing) : [],
+        free: free.map((el) => (el ? computeRuleRows(el, spacing) : [])),
+      })
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    for (const sheet of [s1, ...free]) {
+      if (!sheet) continue
+      observer.observe(sheet)
+      for (const el of Array.from(sheet.querySelectorAll(RULE_OCCUPIED_SELECTOR))) {
+        observer.observe(el)
+      }
+    }
+    return () => observer.disconnect()
+  }, [
+    rulePage1,
+    ruledFreePagesKey,
+    ruleSettings.spacingMm,
+    placements,
+    page2Placements,
+    zooms,
+    lines,
+    measuringPage2,
+    scale,
+  ])
+
+  /** 罫線の上の文字を書き換える。空にしたら消し、まだ無ければその区間の左端から書き始める */
+  const setRuleText = (
+    page: number,
+    row: number,
+    entry: PrintRuleText | undefined,
+    x: number,
+    text: string,
+  ) => {
+    const others = ruleSettings.texts.filter((t) => t.id !== entry?.id)
+    onRuleSettingsChange({
+      ...ruleSettings,
+      texts: text
+        ? [...others, { id: entry?.id ?? crypto.randomUUID(), page, row, x: entry?.x ?? x, text }]
+        : others,
+    })
+  }
+
+  /**
+   * 罫線と、その上に文字を書く入力欄。罫線の区間ごとに 1 つ入力欄を置き、クリックすればそのまま書ける。
+   * 区間が変わって（カードを動かすなど）どの区間にも入らなくなった文字も、消さずに元の位置に出す
+   */
+  const renderRules = (rows: RuleRow[] | undefined, page: number) => {
+    if (!rows || rows.length === 0) return null
+    const spacing = ruleSettings.spacingMm * PX_PER_MM
+    const fontSize = Math.min(RULE_TEXT_MAX_FONT_PX, Math.round(spacing * RULE_TEXT_FONT_RATIO))
+    const height = Math.min(RULE_TEXT_MAX_HEIGHT_PX, spacing - 2)
+    const pageTexts = ruleSettings.texts.filter((t) => t.page === page)
+    const placed = new Set<string>()
+    const input = (
+      key: string,
+      left: number,
+      width: number,
+      y: number,
+      entry: PrintRuleText | undefined,
+      onText: (text: string) => void,
+    ) => (
+      <input
+        key={key}
+        type="text"
+        value={entry?.text ?? ''}
+        onChange={(e) => onText(e.target.value)}
+        aria-label="罫線の上の文字"
+        className="absolute border-0 bg-transparent p-0 leading-none text-[#0f172a] outline-none focus:bg-primary/5"
+        style={{
+          left,
+          top: y - height,
+          width,
+          height,
+          fontSize,
+          paddingLeft: (entry ? entry.x - left : 0) + RULE_TEXT_PADDING_PX,
+        }}
+      />
+    )
+    const segmentInputs = rows.flatMap((row) =>
+      row.segments.map(([a, b]) => {
+        const entry = pageTexts.find((t) => t.row === row.row && t.x >= a - 1 && t.x < b)
+        if (entry) placed.add(entry.id)
+        return input(`${row.row}:${Math.round(a)}`, a, b - a, row.y, entry, (text) =>
+          setRuleText(page, row.row, entry, a, text),
+        )
+      }),
+    )
+    const strayInputs = pageTexts
+      .filter((t) => !placed.has(t.id) && t.row * spacing <= SHEET_HEIGHT_PX)
+      .map((t) => {
+        const width = Math.max(MIN_RULE_SEGMENT_PX, SHEET_WIDTH_PX - t.x)
+        return input(t.id, t.x, width, t.row * spacing, t, (text) =>
+          setRuleText(page, t.row, t, t.x, text),
+        )
+      })
+    return (
+      <>
+        <svg
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-0"
+          width={SHEET_WIDTH_PX}
+          height={SHEET_HEIGHT_PX}
+        >
+          <path
+            d={rows
+              .flatMap((row) =>
+                row.segments.map(([a, b]) => `M${a.toFixed(1)} ${row.y}H${b.toFixed(1)}`),
+              )
+              .join('')}
+            fill="none"
+            stroke={RULE_COLOR}
+            strokeWidth={ruleSettings.strokePx}
+          />
+        </svg>
+        {segmentInputs}
+        {strayInputs}
+      </>
+    )
+  }
 
   const handleDrop = useCallback(
     ({ id, cardRect, clientX, clientY }: DropInfo) => {
@@ -579,6 +861,55 @@ export function PrintLayoutModal({
           <h2 className="text-base font-semibold">印刷レイアウト</h2>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <div className="flex items-center gap-1 text-sm">
+            <button
+              type="button"
+              onClick={() =>
+                onRuleSettingsChange({ ...ruleSettings, enabled: !ruleSettings.enabled })
+              }
+              aria-pressed={ruleSettings.enabled}
+              title="すべてのページの余白に罫線を引く"
+              className={`rounded-md border px-3 py-1.5 text-sm ${
+                ruleSettings.enabled
+                  ? 'border-primary bg-primary text-white hover:bg-primary-hover'
+                  : 'border-border hover:bg-gray-50'
+              }`}
+            >
+              {ruleSettings.enabled ? '罫線あり' : '罫線なし'}
+            </button>
+            <select
+              value={ruleSettings.spacingMm}
+              onChange={(e) =>
+                onRuleSettingsChange({ ...ruleSettings, spacingMm: Number(e.target.value) })
+              }
+              disabled={!ruleSettings.enabled}
+              aria-label="罫線の間隔"
+              title="線と線の間隔"
+              className="rounded-md border border-border px-1.5 py-1.5 disabled:opacity-40"
+            >
+              {RULE_SPACING_OPTIONS_MM.map((mm) => (
+                <option key={mm} value={mm}>
+                  間隔 {mm}mm
+                </option>
+              ))}
+            </select>
+            <select
+              value={ruleSettings.strokePx}
+              onChange={(e) =>
+                onRuleSettingsChange({ ...ruleSettings, strokePx: Number(e.target.value) })
+              }
+              disabled={!ruleSettings.enabled}
+              aria-label="罫線の太さ"
+              title="線の太さ"
+              className="rounded-md border border-border px-1.5 py-1.5 disabled:opacity-40"
+            >
+              {RULE_STROKE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <button
             type="button"
             onClick={() => setAddedFreePageCount(freePageCount + 1)}
@@ -587,6 +918,7 @@ export function PrintLayoutModal({
           >
             ページを追加
           </button>
+          {/* 罫線の上に直接書けるようになったので、「線を追加」はいったん出さない
           <button
             type="button"
             onClick={() => setPlacingLine((v) => !v)}
@@ -598,6 +930,7 @@ export function PrintLayoutModal({
           >
             {placingLine ? '用紙をクリックして線を置く（Esc でやめる）' : '線を追加'}
           </button>
+          */}
           <button
             type="button"
             onClick={() => {
@@ -640,12 +973,15 @@ export function PrintLayoutModal({
           <SheetFrame label="1ページ目" scale={scale} height={sheetHeights[0]}>
             <div
               ref={sheet1Ref}
-              className={`print-sheet ${page1Lines.length > 0 ? 'print-sheet-free' : ''} ${
+              className={`print-sheet ${
+                page1Lines.length > 0 || rulePage1 ? 'print-sheet-free' : ''
+              } ${
                 placingLine ? 'cursor-crosshair' : ''
               }`}
               style={sheetStyle(scale)}
               onPointerDownCapture={(e) => placeLineAt(1, e)}
             >
+              {rulePage1 ? renderRules(ruleRows.page1, 0) : null}
               {renderPage1(overlay, new Set(page1Cards.map((c) => c.id)))}
               {page1Lines.map(renderLine)}
               {sheetHeights[0] > SHEET_HEIGHT_PX + 1 ? (
@@ -682,6 +1018,7 @@ export function PrintLayoutModal({
                 if (!page2Empty) placeLineAt(2, e)
               }}
             >
+              {ruledFreePages[0] ? renderRules(ruleRows.free[0], 1) : null}
               {page2Empty ? (
                 <p className="print-sheet-ui flex h-[1077px] items-center justify-center text-sm text-muted">
                   すべて 1 ページ目に移しました（2 ページ目は印刷されません）
@@ -733,6 +1070,7 @@ export function PrintLayoutModal({
                   className="print-sheet print-sheet-free"
                   style={sheetStyle(scale)}
                 >
+                  {ruledFreePages[page] ? renderRules(ruleRows.free[page], page + 1) : null}
                   {empty ? (
                     <div className="print-sheet-ui flex h-[1077px] flex-col items-center justify-center gap-3 text-sm text-muted">
                       <p>カードをここへドラッグしてください（空のままなら印刷されません）</p>
@@ -1246,6 +1584,7 @@ function SheetLine({
   return (
     <div
       ref={lineRef}
+      data-print-line
       className="group absolute z-20"
       style={{
         left: line.x,

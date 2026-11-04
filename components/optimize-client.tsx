@@ -37,6 +37,7 @@ import {
   printCornerRowHeightStorageKey,
   printCardZoomStorageKey,
   printLineStorageKey,
+  printRuleStorageKey,
   tateCountOverrideStorageKey,
 } from '@/lib/optimize-settings'
 import {
@@ -44,12 +45,15 @@ import {
   parsePrintCardPlacements,
   parsePrintCardZooms,
   parsePrintLines,
+  parsePrintRuleSettings,
+  DEFAULT_PRINT_RULE_SETTINGS,
   type PrintCard,
   type PrintCardId,
   type PrintCardPlacement,
   type PrintCardPlacements,
   type PrintCardZooms,
   type PrintLine,
+  type PrintRuleSettings,
 } from '@/components/print-layout-modal'
 import {
   getSegmentBars,
@@ -75,6 +79,11 @@ type PrintCardPlacementState = {
 type PrintLineState = {
   storageKey: string | null
   lines: PrintLine[]
+}
+
+type PrintRuleState = {
+  storageKey: string | null
+  settings: PrintRuleSettings
 }
 
 type PrintCardZoomState = {
@@ -368,6 +377,42 @@ export function OptimizeClient({
   const handlePrintLinesChange = useCallback(
     (lines: PrintLine[]) => setPrintLineState({ storageKey: printLinesStorageKey, lines }),
     [printLinesStorageKey],
+  )
+
+  // 印刷レイアウトの余白全体に引く罫線（引くページ・間隔・太さ）
+  const printRulesStorageKey = useMemo(() => printRuleStorageKey(projectId), [projectId])
+  const [printRuleState, setPrintRuleState] = useState<PrintRuleState>({
+    storageKey: null,
+    settings: DEFAULT_PRINT_RULE_SETTINGS,
+  })
+  const printRuleSettings =
+    printRuleState.storageKey === printRulesStorageKey
+      ? printRuleState.settings
+      : DEFAULT_PRINT_RULE_SETTINGS
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setPrintRuleState({
+      storageKey: printRulesStorageKey,
+      settings: parsePrintRuleSettings(window.localStorage.getItem(printRulesStorageKey)),
+    })
+  }, [printRulesStorageKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || printRuleState.storageKey !== printRulesStorageKey) {
+      return
+    }
+    try {
+      window.localStorage.setItem(printRulesStorageKey, JSON.stringify(printRuleState.settings))
+    } catch {
+      // Ignore storage write errors so the setting remains usable.
+    }
+  }, [printRuleState, printRulesStorageKey])
+
+  const handlePrintRuleSettingsChange = useCallback(
+    (settings: PrintRuleSettings) =>
+      setPrintRuleState({ storageKey: printRulesStorageKey, settings }),
+    [printRulesStorageKey],
   )
 
   // 2 ページ目の位置・大きさ。1 ページ目と同じ形で、原点だけ用紙の左上
@@ -1130,6 +1175,8 @@ export function OptimizeClient({
           cards={printCards}
           lines={printLines}
           onLinesChange={handlePrintLinesChange}
+          ruleSettings={printRuleSettings}
+          onRuleSettingsChange={handlePrintRuleSettingsChange}
         />
       )}
     </div>

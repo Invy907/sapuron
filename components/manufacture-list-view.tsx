@@ -526,7 +526,8 @@ export function ManufactureListView({
         style={{ paddingTop: `${HEADER_TABLE_GAP_MM}mm` }}
       >
         {tableOverlay}
-        <div className="overflow-x-auto">
+        {/* スクロールは付けない（overflow を付けると表の横に縦のスクロールバーが出る） */}
+        <div>
         <table
           ref={observeTableWidth}
           className="border-collapse text-sm"

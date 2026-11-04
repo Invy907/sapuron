@@ -38,6 +38,10 @@ export function printLineStorageKey(projectId: string) {
   return `optimize-print-lines:${projectId}`
 }
 
+export function printRuleStorageKey(projectId: string) {
+  return `optimize-print-rules:${projectId}`
+}
+
 /** 印刷レイアウト画面の 2 ページ目のカードの位置・大きさ（カード → 用紙の左上からの px） */
 export function printCardPage2PlacementStorageKey(projectId: string) {
   return `optimize-print-card-page2-placements:${projectId}`
