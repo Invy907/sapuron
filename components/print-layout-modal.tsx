@@ -87,6 +87,11 @@ const PRINT_CARD_IDS: readonly PrintCardId[] = [
 ]
 /** 2 ページ目の既定の並び（左列＝材料取り、残りは右列）。最初の位置を測るときだけ使う */
 const LEFT_COLUMN_IDS: readonly PrintCardId[] = ['bar-summary', 'hook-summary']
+/**
+ * 2 ページ目の先頭（左上）に置くカード。1 ページ目から続く製作図リストは次のページの最初に来る。
+ * あとから増えたときは、2 ページ目のほかのカードをその分だけ下へずらす
+ */
+const LEADING_CARD_IDS: readonly PrintCardId[] = ['manufacture-continued']
 
 /** A4 縦・左右余白 10mm の印刷幅 190mm (96dpi) */
 const SHEET_WIDTH_PX = 718
@@ -569,6 +574,19 @@ export function PrintLayoutModal({
         onPage2PlacementChange(id, { x: el.offsetLeft, y: el.offsetTop, w })
         continue
       }
+      if (LEADING_CARD_IDS.includes(id)) {
+        // 2 ページ目の左上に置き、2 ページ目のカードを下へずらす。
+        // 用紙の下からはみ出したカードは、下の「次のページへ送る」処理が次のページへ移す
+        const shift = el.offsetHeight + CARD_STACK_GAP_PX
+        onPage2PlacementChange(id, { x: 0, y: 0, w })
+        for (const other of els) {
+          const otherId = other.dataset.printCard as PrintCardId
+          const p = page2Placements[otherId]
+          if (!p || pageIndexOf(p.y) !== 0) continue
+          onPage2PlacementChange(otherId, { ...p, y: Math.min(p.y + shift, SHEET_HEIGHT_PX - 1) })
+        }
+        continue
+      }
       const spot = findFreeCardSpot(placed, w, el.offsetHeight)
       onPage2PlacementChange(id, { ...spot, w })
       const page = pageIndexOf(spot.y)
@@ -944,8 +962,10 @@ export function PrintLayoutModal({
     </div>
   )
 
-  const page2Left = page2Cards.filter((c) => LEFT_COLUMN_IDS.includes(c.id))
-  const page2Right = page2Cards.filter((c) => !LEFT_COLUMN_IDS.includes(c.id))
+  const page2Leading = page2Cards.filter((c) => LEADING_CARD_IDS.includes(c.id))
+  const page2Columns = page2Cards.filter((c) => !LEADING_CARD_IDS.includes(c.id))
+  const page2Left = page2Columns.filter((c) => LEFT_COLUMN_IDS.includes(c.id))
+  const page2Right = page2Columns.filter((c) => !LEFT_COLUMN_IDS.includes(c.id))
 
   return createPortal(
     <div
@@ -1127,7 +1147,14 @@ export function PrintLayoutModal({
                   すべて 1 ページ目に移しました（2 ページ目は印刷されません）
                 </p>
               ) : page2Cards.length === 0 ? null : measuringPage2 ? (
-                // 最初の位置を測るための従来の 2 列の並び。Ctrl+P で直接印刷したときもこの並びで出る
+                // 最初の位置を測るための従来の 2 列の並び。Ctrl+P で直接印刷したときもこの並びで出る。
+                // 1 ページ目から続く製作図リストは 2 列の上（ページの先頭）に置く
+                <>
+                {page2Leading.map((card) => (
+                  <div key={card.id} className="mb-4 w-fit">
+                    {renderCard(card, undefined, PAGE2_BOUNDS)}
+                  </div>
+                ))}
                 <div className="optimize-print-summary-layout">
                   {page2Left.length > 0 ? (
                     <section className="optimize-print-results space-y-4">
@@ -1144,6 +1171,7 @@ export function PrintLayoutModal({
                     </section>
                   ) : null}
                 </div>
+                </>
               ) : (
                 page2Cards
                   .filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === 0)
