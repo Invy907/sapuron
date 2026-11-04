@@ -949,7 +949,11 @@ export function OptimizeClient({
   }, [canPrint])
 
   // 画面と印刷レイアウト画面の両方に同じものを出す
-  const renderManufactureList = (tableOverlay?: ReactNode, hidePrintMemo = false) => (
+  const renderManufactureList = (
+    tableOverlay?: ReactNode,
+    hidePrintMemo = false,
+    pageBreaks?: Readonly<Record<string, number>>,
+  ) => (
     <ManufactureListView
       segments={segments}
       units={units}
@@ -978,6 +982,7 @@ export function OptimizeClient({
       onTateCountOverrideChange={handleTateCountOverrideChange}
       tableOverlay={tableOverlay}
       hidePrintMemo={hidePrintMemo}
+      pageBreaks={pageBreaks}
     />
   )
 
@@ -1143,10 +1148,10 @@ export function OptimizeClient({
           onPage2PlacementChange={handlePrintCardPage2PlacementChange}
           onResetPlacements={handleResetPrintCardPlacements}
           hasOtherLayoutChanges={Object.keys(printCornerRowHeights).length > 0}
-          renderPage1={(overlay, layeredIds) => (
+          renderPage1={(overlay, layeredIds, pageBreaks) => (
             <section className="optimize-print-manufacture">
               {/* 既定位置を測る前（Ctrl+P で直接印刷したときなど）は元のメモを出す */}
-              {renderManufactureList(overlay, layeredIds.has('memo'))}
+              {renderManufactureList(overlay, layeredIds.has('memo'), pageBreaks)}
             </section>
           )}
           cards={printCards}

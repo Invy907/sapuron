@@ -179,6 +179,41 @@ const RULE_TEXT_PADDING_PX = 2
 /** row: 上から何本目の罫線か（1 始まり）。間隔を変えても同じ行の文字が同じ行に残る */
 type RuleRow = { row: number; y: number; segments: Array<[number, number]> }
 
+/** 製作図リストのブロックがページの下端ぎりぎりのときに、念のため次のページへ送る余裕 (px) */
+const PAGE_BREAK_SAFETY_PX = 2
+
+/**
+ * 1 ページ目の製作図リストで、ページの下に収まらないブロックを次のページへ送るための空きを求める。
+ * ブロックの高さだけから決めるので、空きを入れて描き直しても同じ答えになる（測り直しで揺れない）
+ */
+function computeManufacturePageBreaks(sheet: HTMLElement): Record<string, number> {
+  const table = sheet.querySelector<HTMLElement>('.manufacture-list-table-wrap > div > table')
+  if (!table) return {}
+  const sheetRect = sheet.getBoundingClientRect()
+  if (sheetRect.width <= 0) return {}
+  const k = sheetRect.width / SHEET_WIDTH_PX
+  const groups = Array.from(table.querySelectorAll<HTMLElement>(':scope > tbody[data-group-key]'))
+  if (groups.length === 0) return {}
+  const headRect = table.querySelector('thead')?.getBoundingClientRect()
+  const headerH = headRect ? headRect.height / k : 0
+  let y = (groups[0]!.getBoundingClientRect().top - sheetRect.top) / k
+  let pageBottom = SHEET_HEIGHT_PX
+  const breaks: Record<string, number> = {}
+  groups.forEach((group, i) => {
+    const h = group.getBoundingClientRect().height / k
+    // 1 ページより高いブロックは送っても収まらないので、そのまま流す
+    if (i > 0 && y + h > pageBottom - PAGE_BREAK_SAFETY_PX && h + headerH < SHEET_HEIGHT_PX) {
+      // 空きの行は残りより 1px 低くしてこのページに収め、見出しの行から次のページになるようにする
+      breaks[group.dataset.groupKey!] = Math.max(0, Math.floor(pageBottom - y) - 1)
+      y = pageBottom + headerH
+      pageBottom += SHEET_HEIGHT_PX
+    }
+    while (y + h > pageBottom) pageBottom += SHEET_HEIGHT_PX
+    y += h
+  })
+  return breaks
+}
+
 export function parsePrintCardPlacements(raw: string | null): PrintCardPlacements {
   if (!raw) return {}
   try {
@@ -354,7 +389,12 @@ export function PrintLayoutModal({
    * 1 ページ目の中身。overlay は表の左上に重ねる層（1 ページ目へ移したカード）。
    * layeredIds は層に描いているカード。メモが入っていれば元のメモは出さない
    */
-  renderPage1: (overlay: ReactNode, layeredIds: ReadonlySet<PrintCardId>) => ReactNode
+  renderPage1: (
+    overlay: ReactNode,
+    layeredIds: ReadonlySet<PrintCardId>,
+    /** 製作図リストで次のページへ送るブロック（ブロック key → その前に空ける高さ px） */
+    pageBreaks: Readonly<Record<string, number>>,
+  ) => ReactNode
   /** 印刷するカード。表示できるものだけ渡す */
   cards: PrintCard[]
   /** 余白に引いた横線（配置のリセットでは消さない） */
@@ -412,6 +452,24 @@ export function PrintLayoutModal({
     return () => observer.disconnect()
   }, [])
 
+  // 製作図リストが 1 ページに収まらないとき、ページの境目にかかるブロックを丸ごと次のページへ送る。
+  // ブロックの高さ（行の数や図）が変わるたびに測り直す
+  const [manufacturePageBreaks, setManufacturePageBreaks] = useState<Record<string, number>>({})
+  useEffect(() => {
+    const sheet = sheet1Ref.current
+    if (!sheet) return
+    const update = () => {
+      const next = computeManufacturePageBreaks(sheet)
+      setManufacturePageBreaks((prev) =>
+        JSON.stringify(prev) === JSON.stringify(next) ? prev : next,
+      )
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(sheet)
+    return () => observer.disconnect()
+  }, [scale])
+
   // 縮小表示の枠の高さに使うため、用紙の実際の高さ（中身が 1 ページを超えると伸びる）を測る
   useEffect(() => {
     const s1 = sheet1Ref.current
@@ -452,6 +510,8 @@ export function PrintLayoutModal({
     }
   }, [onClose])
 
+  /** 1 ページ目の用紙が何ページ分か（製作図リストが長いと次のページへ続く） */
+  const page1PageCount = Math.max(1, Math.ceil((sheetHeights[0] - 1) / SHEET_HEIGHT_PX))
   const page1OnlyIds = new Set(cards.filter((c) => c.page1Only).map((c) => c.id))
   const placementOf = (id: PrintCardId): PrintCardPlacement | undefined =>
     placements[id] ?? (page1OnlyIds.has(id) ? defaultPlacements[id] : undefined)
@@ -613,7 +673,9 @@ export function PrintLayoutModal({
         value={entry?.text ?? ''}
         onChange={(e) => onText(e.target.value)}
         aria-label="罫線の上の文字"
-        className="absolute border-0 bg-transparent p-0 leading-none text-[#0f172a] outline-none focus:bg-primary/5"
+        // 製作図リストの外枠（relative で用紙の幅いっぱい）より上に置く。下だと表の右の罫線をクリックできない。
+        // 1 ページ目へ移したカード（z-10）・余白の線（z-20）よりは下
+        className="absolute z-[5] border-0 bg-transparent p-0 leading-none text-[#0f172a] outline-none focus:bg-primary/5"
         style={{
           left,
           top: y - height,
@@ -968,7 +1030,11 @@ export function PrintLayoutModal({
           // 3 ページ以上で横にはみ出したときも左端までスクロールできるように safe center
           style={{ gap: SHEET_GAP_PX, justifyContent: 'safe center' }}
         >
-          <SheetFrame label="1ページ目" scale={scale} height={sheetHeights[0]}>
+          <SheetFrame
+            label={page1PageCount > 1 ? `1〜${page1PageCount}ページ目` : '1ページ目'}
+            scale={scale}
+            height={sheetHeights[0]}
+          >
             <div
               ref={sheet1Ref}
               className={`print-sheet ${
@@ -980,24 +1046,29 @@ export function PrintLayoutModal({
               onPointerDownCapture={(e) => placeLineAt(1, e)}
             >
               {rulePage1 ? renderRules(ruleRows.page1, 0) : null}
-              {renderPage1(overlay, new Set(page1Cards.map((c) => c.id)))}
+              {renderPage1(
+                overlay,
+                new Set(page1Cards.map((c) => c.id)),
+                manufacturePageBreaks,
+              )}
               {page1Lines.map(renderLine)}
-              {sheetHeights[0] > SHEET_HEIGHT_PX + 1 ? (
+              {Array.from({ length: page1PageCount - 1 }, (_, i) => (
                 <div
+                  key={i}
                   aria-hidden
                   className="print-sheet-ui pointer-events-none absolute inset-x-0 border-t-2 border-dashed border-red-400"
-                  style={{ top: SHEET_HEIGHT_PX }}
+                  style={{ top: SHEET_HEIGHT_PX * (i + 1) }}
                 >
                   <span className="absolute right-2 top-1 text-[11px] text-red-500">
                     ここで改ページ
                   </span>
                 </div>
-              ) : null}
+              ))}
             </div>
           </SheetFrame>
 
           <SheetFrame
-            label="2ページ目"
+            label={`${page1PageCount + 1}ページ目`}
             scale={scale}
             height={sheetHeights[1]}
             className={page2Empty ? 'print-sheet-empty' : ''}
@@ -1056,7 +1127,7 @@ export function PrintLayoutModal({
             return (
               <SheetFrame
                 key={page}
-                label={`${page + 2}ページ目`}
+                label={`${page + page1PageCount + 1}ページ目`}
                 scale={scale}
                 height={SHEET_HEIGHT_PX}
                 className={empty ? 'print-sheet-empty' : ''}

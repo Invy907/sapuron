@@ -8,7 +8,14 @@
 
 'use client'
 
-import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  Fragment,
+  useCallback,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 import type { DrawingSegment, Unit } from '@/lib/types/database'
 import {
   UnitShapeThumbnail,
@@ -308,6 +315,7 @@ export function ManufactureListView({
   onTateCountOverrideChange,
   tableOverlay,
   hidePrintMemo = false,
+  pageBreaks = {},
 }: {
   segments: DrawingSegment[]
   units: Unit[]
@@ -339,6 +347,11 @@ export function ManufactureListView({
   tableOverlay?: ReactNode
   /** 印刷レイアウト画面ではメモを自由に動かせるカードとして別に描くので、ここでは出さない */
   hidePrintMemo?: boolean
+  /**
+   * 印刷で次のページへ送るブロック（ブロック key → その前に空ける高さ px）。
+   * ページの下に収まらないブロックを、空きを詰めて次のページの先頭から描く
+   */
+  pageBreaks?: Readonly<Record<string, number>>
 }) {
   const groups = useMemo(
     () =>
@@ -539,7 +552,8 @@ export function ManufactureListView({
             <col style={{ width: COL_QTY }} />
             <col style={{ width: COL_TATE }} />
           </colgroup>
-          <thead>
+          {/* 次のページの見出しは改ページの所に自分で描くので、印刷で見出しを繰り返さない */}
+          <thead className="[display:table-row-group]">
             <tr>
               <th className={headCell}>製作図</th>
               <th className={headCell}>長さ 呼称(実寸)</th>
@@ -552,8 +566,25 @@ export function ManufactureListView({
             const totalRowIndex = g.rows.length
             const rowSlots = Math.max(totalRowIndex + 1, MIN_ROWS_PER_BLOCK)
             const shapeCellHeight = rowSlots * ROW_HEIGHT
+            const breakSpace = pageBreaks[g.key]
             return (
-              <tbody key={g.key} className="break-inside-avoid">
+              <Fragment key={g.key}>
+              {breakSpace != null ? (
+                // ページの残りを空けて、次のページの先頭に見出しからもう一度描く
+                // 空きの行はページに収まる高さにしてあり、見出しの行から次のページへ送られる
+                <tbody data-page-break>
+                  <tr aria-hidden>
+                    <td colSpan={4} className="border-0 p-0" style={{ height: breakSpace }} />
+                  </tr>
+                  <tr>
+                    <th className={headCell}>製作図</th>
+                    <th className={headCell}>長さ 呼称(実寸)</th>
+                    <th className={headCell}>数量</th>
+                    <th className={headCell}>タテ筋</th>
+                  </tr>
+                </tbody>
+              ) : null}
+              <tbody data-group-key={g.key} className="break-inside-avoid">
                 {Array.from({ length: rowSlots }, (_, idx) => {
                   const r = g.rows[idx] ?? null
                   const isTotalRow = idx === totalRowIndex
@@ -671,6 +702,7 @@ export function ManufactureListView({
                   )
                 })}
               </tbody>
+              </Fragment>
             )
           })}
         </table>
