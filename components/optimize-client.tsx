@@ -949,10 +949,16 @@ export function OptimizeClient({
   }, [canPrint])
 
   // 画面と印刷レイアウト画面の両方に同じものを出す
+  /**
+   * 印刷レイアウトで、製作図リストのうち 1 ページ目に収まらない最初のブロックの添字。
+   * そこから後ろは「製作図リスト（続き）」のカードにして次のページへ送る
+   */
+  const [manufactureOverflowIndex, setManufactureOverflowIndex] = useState<number | null>(null)
+
   const renderManufactureList = (
     tableOverlay?: ReactNode,
     hidePrintMemo = false,
-    pageBreaks?: Readonly<Record<string, number>>,
+    view?: { groupRange?: { start: number; end?: number }; tableOnly?: boolean },
   ) => (
     <ManufactureListView
       segments={segments}
@@ -982,7 +988,8 @@ export function OptimizeClient({
       onTateCountOverrideChange={handleTateCountOverrideChange}
       tableOverlay={tableOverlay}
       hidePrintMemo={hidePrintMemo}
-      pageBreaks={pageBreaks}
+      groupRange={view?.groupRange}
+      tableOnly={view?.tableOnly}
     />
   )
 
@@ -1058,6 +1065,16 @@ export function OptimizeClient({
   }
   if (openingBarsCard) {
     printCards.push({ id: 'opening-bars', label: '開口補強筋', node: openingBarsCard })
+  }
+  if (manufactureOverflowIndex != null) {
+    printCards.push({
+      id: 'manufacture-continued',
+      label: '製作図リスト（続き）',
+      node: renderManufactureList(undefined, false, {
+        groupRange: { start: manufactureOverflowIndex },
+        tableOnly: true,
+      }),
+    })
   }
   if (customerMemo.trim()) {
     printCards.push({
@@ -1148,10 +1165,16 @@ export function OptimizeClient({
           onPage2PlacementChange={handlePrintCardPage2PlacementChange}
           onResetPlacements={handleResetPrintCardPlacements}
           hasOtherLayoutChanges={Object.keys(printCornerRowHeights).length > 0}
-          renderPage1={(overlay, layeredIds, pageBreaks) => (
+          renderPage1={(overlay, layeredIds) => (
             <section className="optimize-print-manufacture">
               {/* 既定位置を測る前（Ctrl+P で直接印刷したときなど）は元のメモを出す */}
-              {renderManufactureList(overlay, layeredIds.has('memo'), pageBreaks)}
+              {renderManufactureList(
+                overlay,
+                layeredIds.has('memo'),
+                manufactureOverflowIndex != null
+                  ? { groupRange: { start: 0, end: manufactureOverflowIndex } }
+                  : undefined,
+              )}
             </section>
           )}
           cards={printCards}
@@ -1159,6 +1182,7 @@ export function OptimizeClient({
           onLinesChange={handlePrintLinesChange}
           ruleSettings={printRuleSettings}
           onRuleSettingsChange={handlePrintRuleSettingsChange}
+          onManufactureOverflow={setManufactureOverflowIndex}
         />
       )}
     </div>

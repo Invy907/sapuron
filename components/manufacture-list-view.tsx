@@ -9,7 +9,6 @@
 'use client'
 
 import {
-  Fragment,
   useCallback,
   useMemo,
   useState,
@@ -315,7 +314,8 @@ export function ManufactureListView({
   onTateCountOverrideChange,
   tableOverlay,
   hidePrintMemo = false,
-  pageBreaks = {},
+  groupRange,
+  tableOnly = false,
 }: {
   segments: DrawingSegment[]
   units: Unit[]
@@ -348,10 +348,12 @@ export function ManufactureListView({
   /** 印刷レイアウト画面ではメモを自由に動かせるカードとして別に描くので、ここでは出さない */
   hidePrintMemo?: boolean
   /**
-   * 印刷で次のページへ送るブロック（ブロック key → その前に空ける高さ px）。
-   * ページの下に収まらないブロックを、空きを詰めて次のページの先頭から描く
+   * 描くブロックの範囲（groups の添字。end は含まない）。印刷レイアウトで 1 ページ目に収まらない
+   * ブロックを「続き」のカードへ分けるときに使う
    */
-  pageBreaks?: Readonly<Record<string, number>>
+  groupRange?: { start: number; end?: number }
+  /** 表だけを描く（見出しの会社名・メモなどは出さない）。「続き」のカード用 */
+  tableOnly?: boolean
 }) {
   const groups = useMemo(
     () =>
@@ -361,6 +363,7 @@ export function ManufactureListView({
       ),
     [segments, units, adjustmentMm, tateCountOverrides],
   )
+  const shownGroups = groupRange ? groups.slice(groupRange.start, groupRange.end) : groups
 
   // 印刷メモを「表の右端〜用紙の右端」の余白の中央に置くため、表の幅を測る
   const [tableWidthPx, setTableWidthPx] = useState<number | null>(null)
@@ -390,6 +393,159 @@ export function ManufactureListView({
     'border border-slate-400 px-1 py-1 text-center text-sm font-semibold bg-slate-50'
   const dataCell =
     'border border-slate-400 px-1 font-mono text-[15px] leading-none tabular-nums'
+
+  const table = (
+    <table
+      ref={observeTableWidth}
+      className="border-collapse text-sm"
+      style={{ tableLayout: 'fixed' }}
+    >
+      <colgroup>
+        <col style={{ width: COL_SHAPE }} />
+        <col style={{ width: COL_LEN }} />
+        <col style={{ width: COL_QTY }} />
+        <col style={{ width: COL_TATE }} />
+      </colgroup>
+      <thead>
+        <tr>
+          <th className={headCell}>製作図</th>
+          <th className={headCell}>長さ 呼称(実寸)</th>
+          <th className={headCell}>数量</th>
+          <th className={headCell}>タテ筋</th>
+        </tr>
+      </thead>
+      {shownGroups.map((g) => {
+        // 合計行はデータ行の直後に 1 行入れる（残りは空行で埋める）
+        const totalRowIndex = g.rows.length
+        const rowSlots = Math.max(totalRowIndex + 1, MIN_ROWS_PER_BLOCK)
+        const shapeCellHeight = rowSlots * ROW_HEIGHT
+        return (
+          <tbody key={g.key} data-group-key={g.key} className="break-inside-avoid">
+            {Array.from({ length: rowSlots }, (_, idx) => {
+              const r = g.rows[idx] ?? null
+              const isTotalRow = idx === totalRowIndex
+              return (
+                <tr key={`${g.key}:${idx}`}>
+                  {idx === 0 && (
+                    <td
+                      className="border border-slate-400 p-0 text-center align-middle"
+                      rowSpan={rowSlots}
+                    >
+                      <div
+                        className="flex flex-col items-center justify-center gap-0.5 px-1"
+                        style={{ height: shapeCellHeight }}
+                      >
+                        {g.unit ? (
+                          <div className="min-h-0 w-full flex-1">
+                            <UnitShapeThumbnail
+                              unit={g.unit}
+                              large
+                              containerClassName="relative h-full w-full"
+                              legendPositions={legendPositions[g.key]}
+                              onLegendPositionChange={
+                                onLegendPositionChange
+                                  ? (diameter, position) =>
+                                      onLegendPositionChange(g.key, diameter, position)
+                                  : undefined
+                              }
+                            />
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted">
+                            （形状なし）
+                          </span>
+                        )}
+                        <span className="shrink-0 text-[11px] font-semibold leading-none text-slate-700">
+                          {g.unitName}
+                        </span>
+                      </div>
+                    </td>
+                  )}
+                  <td
+                    className={`${dataCell} text-right`}
+                    style={{ height: ROW_HEIGHT }}
+                  >
+                    {r ? (
+                      <>
+                        <span
+                          className="font-semibold"
+                          style={{ color: g.colorHex }}
+                        >
+                          {r.nominalMm.toLocaleString('ja-JP')}
+                        </span>
+                        <span className="text-muted">
+                          ({r.actualMm.toLocaleString('ja-JP')})
+                        </span>
+                      </>
+                    ) : isTotalRow ? (
+                      // 数量列の合計値と近づきすぎないよう右に少し余白を取る
+                      <span className="pr-2 font-semibold text-slate-700">計</span>
+                    ) : null}
+                  </td>
+                  <td
+                    className={`${dataCell} text-center`}
+                    style={{ height: ROW_HEIGHT }}
+                  >
+                    {r ? (
+                      r.qty
+                    ) : isTotalRow ? (
+                      <span className="font-semibold">
+                        {g.qtyTotal.toLocaleString('ja-JP')}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td
+                    className={`${dataCell} text-center`}
+                    style={{ height: ROW_HEIGHT }}
+                  >
+                    {r ? (
+                      r.tateCount != null && onTateCountOverrideChange ? (
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          aria-label={`${g.unitName} 呼称${r.nominalMm} のタテ筋本数`}
+                          title={
+                            r.autoTateCount != null
+                              ? `自動: ${r.autoTateCount} 本`
+                              : undefined
+                          }
+                          value={r.tateCount}
+                          onChange={(e) => {
+                            const raw = e.target.value
+                            if (raw === '') {
+                              onTateCountOverrideChange(r.key, null)
+                              return
+                            }
+                            const n = Number.parseInt(raw, 10)
+                            if (!Number.isFinite(n) || n < 0) return
+                            onTateCountOverrideChange(r.key, n)
+                          }}
+                          className="w-full min-w-[2.5rem] border-0 bg-transparent px-0 py-0 text-center outline-none focus:underline focus:decoration-primary/40 print:border-transparent print:bg-transparent"
+                        />
+                      ) : (
+                        (r.tateCount ?? '-')
+                      )
+                    ) : isTotalRow ? (
+                      <span className="font-semibold">
+                        {g.pitchMm != null && g.pitchMm > 0
+                          ? g.tateTotal.toLocaleString('ja-JP')
+                          : '-'}
+                      </span>
+                    ) : null}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        )
+      })}
+    </table>
+  )
+
+  // 印刷レイアウトで次のページへ送った「続き」は、表だけをカードとして描く
+  if (tableOnly) return <div className="manufacture-list-continued">{table}</div>
+
   return (
     <div className="manufacture-list-root relative space-y-3 print:space-y-0.5">
       <div className="manufacture-list-header relative flex items-start justify-between gap-4">
@@ -541,171 +697,7 @@ export function ManufactureListView({
         {tableOverlay}
         {/* スクロールは付けない（overflow を付けると表の横に縦のスクロールバーが出る） */}
         <div>
-        <table
-          ref={observeTableWidth}
-          className="border-collapse text-sm"
-          style={{ tableLayout: 'fixed' }}
-        >
-          <colgroup>
-            <col style={{ width: COL_SHAPE }} />
-            <col style={{ width: COL_LEN }} />
-            <col style={{ width: COL_QTY }} />
-            <col style={{ width: COL_TATE }} />
-          </colgroup>
-          {/* 次のページの見出しは改ページの所に自分で描くので、印刷で見出しを繰り返さない */}
-          <thead className="[display:table-row-group]">
-            <tr>
-              <th className={headCell}>製作図</th>
-              <th className={headCell}>長さ 呼称(実寸)</th>
-              <th className={headCell}>数量</th>
-              <th className={headCell}>タテ筋</th>
-            </tr>
-          </thead>
-          {groups.map((g) => {
-            // 合計行はデータ行の直後に 1 行入れる（残りは空行で埋める）
-            const totalRowIndex = g.rows.length
-            const rowSlots = Math.max(totalRowIndex + 1, MIN_ROWS_PER_BLOCK)
-            const shapeCellHeight = rowSlots * ROW_HEIGHT
-            const breakSpace = pageBreaks[g.key]
-            return (
-              <Fragment key={g.key}>
-              {breakSpace != null ? (
-                // ページの残りを空けて、次のページの先頭に見出しからもう一度描く
-                // 空きの行はページに収まる高さにしてあり、見出しの行から次のページへ送られる
-                <tbody data-page-break>
-                  <tr aria-hidden>
-                    <td colSpan={4} className="border-0 p-0" style={{ height: breakSpace }} />
-                  </tr>
-                  <tr>
-                    <th className={headCell}>製作図</th>
-                    <th className={headCell}>長さ 呼称(実寸)</th>
-                    <th className={headCell}>数量</th>
-                    <th className={headCell}>タテ筋</th>
-                  </tr>
-                </tbody>
-              ) : null}
-              <tbody data-group-key={g.key} className="break-inside-avoid">
-                {Array.from({ length: rowSlots }, (_, idx) => {
-                  const r = g.rows[idx] ?? null
-                  const isTotalRow = idx === totalRowIndex
-                  return (
-                    <tr key={`${g.key}:${idx}`}>
-                      {idx === 0 && (
-                        <td
-                          className="border border-slate-400 p-0 text-center align-middle"
-                          rowSpan={rowSlots}
-                        >
-                          <div
-                            className="flex flex-col items-center justify-center gap-0.5 px-1"
-                            style={{ height: shapeCellHeight }}
-                          >
-                            {g.unit ? (
-                              <div className="min-h-0 w-full flex-1">
-                                <UnitShapeThumbnail
-                                  unit={g.unit}
-                                  large
-                                  containerClassName="relative h-full w-full"
-                                  legendPositions={legendPositions[g.key]}
-                                  onLegendPositionChange={
-                                    onLegendPositionChange
-                                      ? (diameter, position) =>
-                                          onLegendPositionChange(g.key, diameter, position)
-                                      : undefined
-                                  }
-                                />
-                              </div>
-                            ) : (
-                              <span className="text-xs text-muted">
-                                （形状なし）
-                              </span>
-                            )}
-                            <span className="shrink-0 text-[11px] font-semibold leading-none text-slate-700">
-                              {g.unitName}
-                            </span>
-                          </div>
-                        </td>
-                      )}
-                      <td
-                        className={`${dataCell} text-right`}
-                        style={{ height: ROW_HEIGHT }}
-                      >
-                        {r ? (
-                          <>
-                            <span
-                              className="font-semibold"
-                              style={{ color: g.colorHex }}
-                            >
-                              {r.nominalMm.toLocaleString('ja-JP')}
-                            </span>
-                            <span className="text-muted">
-                              ({r.actualMm.toLocaleString('ja-JP')})
-                            </span>
-                          </>
-                        ) : isTotalRow ? (
-                          // 数量列の合計値と近づきすぎないよう右に少し余白を取る
-                          <span className="pr-2 font-semibold text-slate-700">計</span>
-                        ) : null}
-                      </td>
-                      <td
-                        className={`${dataCell} text-center`}
-                        style={{ height: ROW_HEIGHT }}
-                      >
-                        {r ? (
-                          r.qty
-                        ) : isTotalRow ? (
-                          <span className="font-semibold">
-                            {g.qtyTotal.toLocaleString('ja-JP')}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td
-                        className={`${dataCell} text-center`}
-                        style={{ height: ROW_HEIGHT }}
-                      >
-                        {r ? (
-                          r.tateCount != null && onTateCountOverrideChange ? (
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              aria-label={`${g.unitName} 呼称${r.nominalMm} のタテ筋本数`}
-                              title={
-                                r.autoTateCount != null
-                                  ? `自動: ${r.autoTateCount} 本`
-                                  : undefined
-                              }
-                              value={r.tateCount}
-                              onChange={(e) => {
-                                const raw = e.target.value
-                                if (raw === '') {
-                                  onTateCountOverrideChange(r.key, null)
-                                  return
-                                }
-                                const n = Number.parseInt(raw, 10)
-                                if (!Number.isFinite(n) || n < 0) return
-                                onTateCountOverrideChange(r.key, n)
-                              }}
-                              className="w-full min-w-[2.5rem] border-0 bg-transparent px-0 py-0 text-center outline-none focus:underline focus:decoration-primary/40 print:border-transparent print:bg-transparent"
-                            />
-                          ) : (
-                            (r.tateCount ?? '-')
-                          )
-                        ) : isTotalRow ? (
-                          <span className="font-semibold">
-                            {g.pitchMm != null && g.pitchMm > 0
-                              ? g.tateTotal.toLocaleString('ja-JP')
-                              : '-'}
-                          </span>
-                        ) : null}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-              </Fragment>
-            )
-          })}
-        </table>
+        {table}
         </div>
       </div>
     </div>
