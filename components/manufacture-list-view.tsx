@@ -44,6 +44,9 @@ const COL_TATE = 54
 /** 印刷時に自由記入メモを置く、表の右外に残る余白の幅(px)。
  *  A4 縦・左右余白 10mm で使える幅は約 698px、表は 554px なので右に約 144px 残る */
 const RIGHT_COL_WIDTH = 140
+/** 到着日の入力欄の幅（em）。いちばん長い行に合わせて、この範囲で広げる */
+const ARRIVAL_INPUT_MIN_EM = 15
+const ARRIVAL_INPUT_MAX_EM = 28
 /** ヘッダー（会社名・現場名）と表のあいだに空ける距離。印刷で 5mm ほど空ける指示 */
 const HEADER_TABLE_GAP_MM = 5
 /** 自由記入メモを置く、ヘッダー上端からのオフセット(px)。
@@ -601,7 +604,7 @@ export function ManufactureListView({
               value={customerDate}
               onChange={(e) => onCustomerDateChange(e.target.value)}
               aria-label="積み込み日"
-              className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+              className="w-[15em] rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
           </label>
           <label className="inline-flex items-start gap-1">
@@ -612,11 +615,22 @@ export function ManufactureListView({
               value={customerArrival}
               onChange={(e) => onCustomerArrivalChange(e.target.value)}
               aria-label="到着日"
-              rows={Math.max(1, customerArrival.split('\n').length)}
+              // 2 行は常に見せ、行を足すと高さも伸ばす。幅はいちばん長い行に合わせて広げる
+              // （狭いと横のスクロールバーが行に重なって読めない）
+              rows={Math.max(2, customerArrival.split('\n').length)}
               wrap="off"
               placeholder={'R8.11.9（月）\n8:00予定'}
               title="Enter で改行すると、印刷も同じ所で改行します"
-              className="w-36 resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+              style={{
+                width: `${Math.min(
+                  ARRIVAL_INPUT_MAX_EM,
+                  Math.max(
+                    ARRIVAL_INPUT_MIN_EM,
+                    ...customerArrival.split('\n').map((line) => line.length + 1),
+                  ),
+                )}em`,
+              }}
+              className="resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
           </label>
           <span className="text-[11px] text-muted">到着日は Enter で改行（印刷も同じ所で改行）</span>
