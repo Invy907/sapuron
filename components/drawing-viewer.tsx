@@ -42,6 +42,7 @@ import {
   paintDomaDraftLine,
   paintDomaDraftInfo,
   paintDomaZone,
+  paintDomaZoneCutBars,
   paintDomaZoneDraft,
   domaZoneLines,
   domaZoneEdgeAt,
@@ -51,6 +52,8 @@ import {
 import {
   DEFAULT_DOMA_ZONE_PITCH_MM,
   domaZoneRect,
+  domaRunZoneCuts,
+  domaZoneCutGap,
   domaZoneSpecOf,
   type DomaZoneEdge,
 } from '@/lib/doma-zone'
@@ -3058,12 +3061,25 @@ export function DrawingViewer({
           }
         } else if (domaSelection?.type === 'bar') {
           const run = domaBars.find((b) => b.id === domaSelection.id)
-          if (run?.length_dim_id) linkedDimIds.add(run.length_dim_id)
-          if (run?.span_dim_id) linkedDimIds.add(run.span_dim_id)
+          if (run?.kind === 'special') {
+            // 区域は、その区域で切る標準筋の L の寸法線（区域がどの寸法の中で切っているか）
+            for (const b of domaBars) {
+              if (b.kind === 'special' || !b.length_dim_id) continue
+              if (domaRunZoneCuts(b, domaBars, domaDimensions).some((c) => c.zoneId === run.id)) {
+                linkedDimIds.add(b.length_dim_id)
+              }
+            }
+          } else if (run) {
+            if (run.length_dim_id) linkedDimIds.add(run.length_dim_id)
+            if (run.span_dim_id) linkedDimIds.add(run.span_dim_id)
+          }
         }
       }
+      // 置いた文字の枠。寸法値・土間筋・区域の文字が互いに重ならないよう、描く順に共有する
+      const labelBoxes: DomaLine[] = []
       domaDimensions.forEach((dim) => {
         paintDomaDimension(ctx, dim, {
+          labelBoxes,
           viewScale: scale,
           selected: isSelected('dimension', dim.id) || linkedDimIds.has(dim.id),
           viewRotationSteps: rotationSteps,
@@ -3081,22 +3097,48 @@ export function DrawingViewer({
           obstacles: obstaclesExcept(zone.id),
           // 右パネルの一覧と同じ名前
           name: `特殊${i + 1}`,
+          labelBoxes,
+          // 特殊を描いているときは、筋をピッチごとに 1 本ずつ
+          detailed: specialMode,
         })
       })
-      ctx.globalAlpha = standardAlpha
       const numberInDirection = { tate: 0, yoko: 0 }
       domaBars.forEach((bar) => {
         if (bar.kind === 'special') return
         // 右パネルの一覧（方向ごとの通し番号）と同じ名前。両方向を描くときも方向ごとに数える
         const no = ++numberInDirection[bar.direction]
         if (!directions.includes(bar.direction)) return
+        // 区域のパネルから選んだ標準筋は、特殊を描いているときも薄くしない
+        const selected = isSelected('bar', bar.id)
+        ctx.globalAlpha = selected ? 1 : standardAlpha
+        // 区域で切った形は特殊を描いているときだけ。標準では元の線のまま
+        const zoneGaps = specialMode
+          ? domaRunZoneCuts(bar, domaBars, domaDimensions).flatMap((cut) => {
+              const zone = zones.find((z) => z.id === cut.zoneId)
+              const gap = zone ? domaZoneCutGap(bar, zone, cut) : null
+              return gap ? [gap] : []
+            })
+          : []
         paintDomaRun(ctx, bar, {
           viewScale: scale,
-          selected: isSelected('bar', bar.id),
+          selected,
           viewRotationSteps: rotationSteps,
           obstacles: obstaclesExcept(bar.id),
           name: `${DOMA_DIRECTION_LABEL[bar.direction]}${no}`,
+          labelBoxes,
+          zoneGaps,
+          zoneGapMarks: false,
         })
+        if (specialMode && zoneGaps.length > 0) {
+          // 区域にかかる本は薄くせず、ピッチごとに描いて区域へ重ね分入るところを見せる
+          ctx.globalAlpha = 1
+          paintDomaZoneCutBars(ctx, bar, zoneGaps, {
+            viewScale: scale,
+            viewRotationSteps: rotationSteps,
+            obstacles: obstaclesExcept(bar.id),
+            labelBoxes,
+          })
+        }
       })
       ctx.restore()
       // 描いている途中の線は画面だけ（印刷には出さない）

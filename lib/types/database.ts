@@ -118,7 +118,11 @@ export interface DrawingDomaRun {
   span_mm: number
   bends: DomaBends
   /** 特殊（kind = 'special'）は範囲の条件を zone に持つ（lib/doma-zone.ts） */
-  settings: DomaBarSettings & { zone?: DomaZoneSpec }
+  settings: DomaBarSettings & {
+    zone?: DomaZoneSpec
+    /** 標準筋で、始点から区域の辺までの長さの手入力（区域の id ごと）。なければ図面から測る */
+    zoneStarts?: Record<string, number>
+  }
   /** 加工本の長さの手入力。null なら自動 */
   pieces_override: number[] | null
   /** L・配筋範囲に使った寸法線。手入力や寸法線が消えたときは null */

@@ -2,6 +2,7 @@
 // 座標は図面座標（drawing_segments と同じ）。線幅・文字は viewScale で割って画面上の大きさを一定にする。
 
 import {
+  countBars,
   layoutDomaRun,
   type DomaBarSettings,
   type DomaBends,
@@ -13,10 +14,12 @@ import {
   DOMA_ZONE_COLOR,
   DOMA_ZONE_EDGES,
   domaZoneEdgeLine,
+  domaZoneExtendMm,
   domaZoneRect,
   domaZoneRuns,
   domaZoneSpecOf,
   type DomaZoneEdge,
+  type DomaZoneGap,
 } from './doma-zone'
 
 type Pt = { x: number; y: number }
@@ -93,6 +96,8 @@ export function paintDomaDimension(
     viewRotationSteps?: number
     /** 寸法値が重なったら反対側へ逃がすための、他の線（土間筋・他の寸法線） */
     obstacles?: DomaLine[]
+    /** 図面に置いた文字の枠（drawUprightLabel の placed）。図面全体で共有する */
+    labelBoxes?: DomaLine[]
   },
 ) {
   const s = opts.viewScale
@@ -131,6 +136,7 @@ export function paintDomaDimension(
       viewScale: s,
       viewRotationSteps,
       obstacles: opts.obstacles,
+      placed: opts.labelBoxes,
       // 端の短い線（tick）より外に出す
       minDistance: 7 / s,
     })
@@ -180,7 +186,8 @@ function segmentHitsBox(a: Pt, b: Pt, c: Pt, hx: number, hy: number): boolean {
  * 文字の枠が線にかからない距離だけ離して置く。
  *
  * outward を複数渡すと順に試し、obstacles のどの線も文字の枠にかからない最初の向きに置く。
- * どの向きでも重なるときは最初の向き。
+ * どの向きでも重なるときは、線にそってずらす・離す位置も試す。それでも線にかかるなら、
+ * せめて置いた文字（placed）には重ならない位置。どこも重なるときは最初の向き。
  */
 function drawUprightLabel(
   ctx: CanvasRenderingContext2D,
@@ -196,6 +203,11 @@ function drawUprightLabel(
     obstacles?: DomaLine[]
     /** 線からの最小距離（寸法線の端の短い線をよけるときなど） */
     minDistance?: number
+    /**
+     * これまでに置いた文字の枠（4 辺）。線と同じくよけ、置いた文字の枠もここに足す。
+     * 土間筋の名前と長さの文字が同じ側に重なるのを防ぐ
+     */
+    placed?: DomaLine[]
   },
 ) {
   const s = opts.viewScale
@@ -210,15 +222,25 @@ function drawUprightLabel(
   const boxHalfY = odd ? halfWidth : halfHeight
   const margin = 2 / s
 
-  const centerFor = (outward: Pt): Pt => {
-    // 文字の枠を外向きに測った半分の長さ + 線の太さの半分 + すき間
-    const screen = toScreenDirection(outward, opts.viewRotationSteps)
-    const halfExtent = Math.abs(screen.x) * halfWidth + Math.abs(screen.y) * halfHeight
-    const distance = Math.max(halfExtent + 1.25 / s + 3 / s, (opts.minDistance ?? 0) + halfExtent)
-    return { x: anchor.x + outward.x * distance, y: anchor.y + outward.y * distance }
+  // 画面で測った、向き v に沿った文字の枠の半分の長さ
+  const halfAlong = (v: Pt) => {
+    const screen = toScreenDirection(v, opts.viewRotationSteps)
+    return Math.abs(screen.x) * halfWidth + Math.abs(screen.y) * halfHeight
   }
-  const isClear = (center: Pt) =>
-    !(opts.obstacles ?? []).some((line) =>
+  const centerFor = (outward: Pt, slide = 0, farther = 0): Pt => {
+    // 文字の枠を外向きに測った半分の長さ + 線の太さの半分 + すき間
+    const halfExtent = halfAlong(outward)
+    const distance =
+      Math.max(halfExtent + 1.25 / s + 3 / s, (opts.minDistance ?? 0) + halfExtent) + farther * (halfExtent * 2 + 2 / s)
+    const tangent = { x: -outward.y, y: outward.x }
+    const along = slide * (halfAlong(tangent) * 2 + 4 / s)
+    return {
+      x: anchor.x + outward.x * distance + tangent.x * along,
+      y: anchor.y + outward.y * distance + tangent.y * along,
+    }
+  }
+  const hits = (lines: DomaLine[]) => (center: Pt) =>
+    lines.some((line) =>
       segmentHitsBox(
         { x: line.x1, y: line.y1 },
         { x: line.x2, y: line.y2 },
@@ -227,9 +249,20 @@ function drawUprightLabel(
         boxHalfY + margin,
       ),
     )
+  const hitsPlaced = hits(opts.placed ?? [])
+  const hitsLine = hits(opts.obstacles ?? [])
+  const isClear = (center: Pt) => !hitsPlaced(center) && !hitsLine(center)
 
-  const centers = outwards.map(centerFor)
-  const center = centers.find(isClear) ?? centers[0]
+  const centers = outwards.map((o) => centerFor(o))
+  const fallbacks = () =>
+    [0, 1].flatMap((farther) =>
+      [0, 1, -1, 2, -2, 3, -3].flatMap((slide) => outwards.map((o) => centerFor(o, slide, farther))),
+    )
+  let center = centers.find(isClear)
+  if (!center) {
+    const more = fallbacks()
+    center = more.find(isClear) ?? more.find((c) => !hitsPlaced(c)) ?? centers[0]
+  }
   if (!center) return
   drawText(ctx, text, center, {
     fontPx: opts.fontPx,
@@ -238,6 +271,15 @@ function drawUprightLabel(
     // 図面の表示回転を打ち消して、画面上で常に横書きの向きにする
     angle: (-opts.viewRotationSteps * Math.PI) / 2,
   })
+  if (opts.placed) {
+    const [x0, x1, y0, y1] = [center.x - boxHalfX, center.x + boxHalfX, center.y - boxHalfY, center.y + boxHalfY]
+    opts.placed.push(
+      { x1: x0, y1: y0, x2: x1, y2: y0 },
+      { x1: x1, y1: y0, x2: x1, y2: y1 },
+      { x1: x1, y1: y1, x2: x0, y2: y1 },
+      { x1: x0, y1: y1, x2: x0, y2: y0 },
+    )
+  }
 }
 
 /**
@@ -307,7 +349,13 @@ export function domaRunLines(run: DomaRunShape, viewScale: number, viewRotationS
   for (const p of pieces) {
     lines.push({ x1: p.a.x, y1: p.a.y, x2: p.b.x, y2: p.b.y })
     for (const hook of [p.hookStart, p.hookEnd]) {
-      if (hook) lines.push({ x1: hook[0].x, y1: hook[0].y, x2: hook[1].x, y2: hook[1].y })
+      if (hook)
+        lines.push({
+          x1: hook[0].x,
+          y1: hook[0].y,
+          x2: hook[1].x,
+          y2: hook[1].y,
+        })
     }
   }
   return lines
@@ -328,23 +376,49 @@ export function paintDomaRun(
     obstacles?: DomaLine[]
     /** 右パネルの一覧と同じ名前（「タテ1」など） */
     name?: string
+    /** 線・文字の色。未指定なら向きの色（タテ赤・ヨコ青） */
+    color?: string
+    /** 図面に置いた文字の枠（drawUprightLabel の placed）。図面全体で共有する */
+    labelBoxes?: DomaLine[]
+    /** この土間筋を切る区域で、線を消す範囲（domaZoneCutGap） */
+    zoneGaps?: DomaZoneGap[]
+    /** 区域に入ったところの短い直交線と「重ね」の文字。筋を 1 本ずつ描くとき（paintDomaZoneCutBars）は出さない */
+    zoneGapMarks?: boolean
   },
 ): DomaRunLayout | null {
   const s = opts.viewScale
   const viewRotationSteps = opts.viewRotationSteps ?? 0
   const g = runGeometry(run, s, viewRotationSteps)
   if (g.f.len <= 0 || g.pieces.length === 0) return null
-  const color = g.layout.warnings.length > 0 ? WARNING_COLOR : DOMA_DIRECTION_COLORS[run.direction]
+  const color = g.layout.warnings.length > 0 ? WARNING_COLOR : (opts.color ?? DOMA_DIRECTION_COLORS[run.direction])
   const fontPx = 11 / s
-  const labelOpts = { fontPx, color, viewScale: s, viewRotationSteps, obstacles: opts.obstacles }
+  // この土間筋の文字どうしも重ならないよう、共有の枠がなければこの土間筋だけで持つ
+  const placed = opts.labelBoxes ?? []
+  const labelOpts = {
+    fontPx,
+    color,
+    viewScale: s,
+    viewRotationSteps,
+    obstacles: opts.obstacles,
+    placed,
+  }
 
   if (opts.selected) strokeHighlight(ctx, g.along(0, 0), g.along(run.length_mm, 0), s)
 
+  const zoneGaps = opts.zoneGaps ?? []
   ctx.save()
   ctx.strokeStyle = color
   ctx.lineWidth = 2.5 / s
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
+  if (zoneGaps.length > 0) {
+    // 区域の中（重ねで入ったところより先）は線を描かない
+    const far = 1e7
+    ctx.beginPath()
+    ctx.rect(-far, -far, far * 2, far * 2)
+    for (const gap of zoneGaps) ctx.rect(gap.minX, gap.minY, gap.maxX - gap.minX, gap.maxY - gap.minY)
+    ctx.clip('evenodd')
+  }
   for (const p of g.pieces) {
     ctx.beginPath()
     if (p.hookStart) {
@@ -359,6 +433,46 @@ export function paintDomaRun(
   }
   ctx.restore()
 
+  // 区域に重ねで入ったところ: 線の端に短い直交線、最初の 1 か所に区域へ入る長さ
+  let lapLabeled = false
+  for (const gap of opts.zoneGapMarks === false ? [] : zoneGaps) {
+    const d = gap.vertical ? run.y2 - run.y1 : run.x2 - run.x1
+    if (d === 0) continue
+    const pointAt = (c: number): Pt | null => {
+      const t = (c - (gap.vertical ? run.y1 : run.x1)) / d
+      if (t < 0 || t > 1) return null
+      const p = {
+        x: run.x1 + (run.x2 - run.x1) * t,
+        y: run.y1 + (run.y2 - run.y1) * t,
+      }
+      const cross = gap.vertical ? p.x : p.y
+      const [c0, c1] = gap.vertical ? [gap.minX, gap.maxX] : [gap.minY, gap.maxY]
+      return cross >= c0 && cross <= c1 ? p : null
+    }
+    for (const entry of gap.entries) {
+      const end = pointAt(entry.inner)
+      if (!end) continue
+      const tick = 5 / s
+      ctx.save()
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2 / s
+      ctx.beginPath()
+      ctx.moveTo(end.x - g.right.x * tick, end.y - g.right.y * tick)
+      ctx.lineTo(end.x + g.right.x * tick, end.y + g.right.y * tick)
+      ctx.stroke()
+      ctx.restore()
+      const mid = pointAt((entry.edge + entry.inner) / 2)
+      if (!lapLabeled && mid) {
+        lapLabeled = true
+        const at = {
+          x: mid.x + g.right.x * g.lane,
+          y: mid.y + g.right.y * g.lane,
+        }
+        drawUprightLabel(ctx, String(Math.round(gap.lapMm)), at, [g.right, g.left], { ...labelOpts, fontPx: 10 / s })
+      }
+    }
+  }
+
   // 端部曲げ: 曲げ辺をはさんで直線部と反対側（上端の曲げなら上、下端なら下）
   for (const p of g.pieces) {
     for (const [hook, outward] of [
@@ -366,8 +480,14 @@ export function paintDomaRun(
       [p.hookEnd, g.f.u],
     ] as const) {
       if (!hook) continue
-      const mid = { x: (hook[0].x + hook[1].x) / 2, y: (hook[0].y + hook[1].y) / 2 }
-      drawUprightLabel(ctx, String(run.settings.bendMm), mid, [outward], { ...labelOpts, obstacles: undefined })
+      const mid = {
+        x: (hook[0].x + hook[1].x) / 2,
+        y: (hook[0].y + hook[1].y) / 2,
+      }
+      drawUprightLabel(ctx, String(run.settings.bendMm), mid, [outward], {
+        ...labelOpts,
+        obstacles: undefined,
+      })
     }
   }
 
@@ -379,7 +499,11 @@ export function paintDomaRun(
     const from = g.clamp(i > 0 ? laps[i - 1]!.toMm : p.piece.fromMm)
     const to = g.clamp(i < laps.length ? laps[i]!.fromMm : p.piece.toMm)
     const straightMm = Math.round(p.piece.toMm - p.piece.fromMm)
-    drawUprightLabel(ctx, String(straightMm), g.along((from + to) / 2, p.off), [g.left, g.right], labelOpts)
+    // 長さは常に線のすぐ左（横向きなら上）。図面の線にかかっても離さず、他の文字と重なるときだけ線にそってずらす
+    drawUprightLabel(ctx, String(straightMm), g.along((from + to) / 2, p.off), [g.left], {
+      ...labelOpts,
+      obstacles: undefined,
+    })
   })
 
   // 名前: 一覧のどれか分かるよう、加工本の長さとは反対側の右（横向きなら下）。
@@ -392,8 +516,9 @@ export function paintDomaRun(
       const to = edges[i + 1]!
       if (to - from > best.to - best.from || i === 0) best = { from, to }
     }
-    drawUprightLabel(ctx, opts.name, g.along((best.from + best.to) / 2, g.lane), [g.right, g.left], {
+    drawUprightLabel(ctx, opts.name, g.along((best.from + best.to) / 2, g.lane), [g.right], {
       ...labelOpts,
+      obstacles: undefined,
       fontPx: 13 / s,
       bold: true,
     })
@@ -402,8 +527,9 @@ export function paintDomaRun(
   // 重ね: 重なっている 2 本の外側（右・下）
   for (const lap of laps) {
     const mid = (g.clamp(lap.fromMm) + g.clamp(lap.toMm)) / 2
-    drawUprightLabel(ctx, `重ね${Math.round(lap.mm)}`, g.along(mid, g.lane), [g.right, g.left], {
+    drawUprightLabel(ctx, `重ね${Math.round(lap.mm)}`, g.along(mid, g.lane), [g.right], {
       ...labelOpts,
+      obstacles: undefined,
       fontPx: 10 / s,
     })
   }
@@ -435,7 +561,10 @@ export function paintDomaDraftInfo(
   const halfHeight = (lineGap * texts.length) / 2
   const screen = toScreenDirection(right, opts.viewRotationSteps)
   const distance = Math.abs(screen.x) * halfWidth + Math.abs(screen.y) * halfHeight + 10 / s
-  const center = { x: anchor.x + right.x * distance, y: anchor.y + right.y * distance }
+  const center = {
+    x: anchor.x + right.x * distance,
+    y: anchor.y + right.y * distance,
+  }
   ctx.save()
   ctx.translate(center.x, center.y)
   ctx.rotate((-opts.viewRotationSteps * Math.PI) / 2)
@@ -490,6 +619,10 @@ export function paintDomaZone(
     directions?: SlabBarDirection[]
     obstacles?: DomaLine[]
     name?: string
+    /** 図面に置いた文字の枠（drawUprightLabel の placed）。図面全体で共有する */
+    labelBoxes?: DomaLine[]
+    /** 区域の筋を代表線でなく、ピッチごとに 1 本ずつ描く（特殊を描いているとき） */
+    detailed?: boolean
   },
 ) {
   const s = opts.viewScale
@@ -533,7 +666,23 @@ export function paintDomaZone(
   const directions = opts.directions ?? ['tate', 'yoko']
   for (const run of domaZoneRuns(zone)) {
     if (!directions.includes(run.direction)) continue
-    paintDomaRun(ctx, run, { viewScale: s, viewRotationSteps, obstacles: opts.obstacles })
+    if (opts.detailed) {
+      paintZoneRunBars(ctx, zone, run, r, {
+        viewScale: s,
+        viewRotationSteps,
+        obstacles: opts.obstacles,
+        labelBoxes: opts.labelBoxes,
+      })
+      continue
+    }
+    // 区域の中はタテ・ヨコとも区域の色（標準の赤・青と見分ける。向きは線の向きで分かる）
+    paintDomaRun(ctx, run, {
+      viewScale: s,
+      viewRotationSteps,
+      obstacles: opts.obstacles,
+      color: DOMA_ZONE_COLOR,
+      labelBoxes: opts.labelBoxes,
+    })
   }
 
   if (opts.name) {
@@ -566,6 +715,231 @@ export function paintDomaZone(
       angle: (-viewRotationSteps * Math.PI) / 2,
       bold: true,
     })
+  }
+}
+
+type BarSetLabelOpts = {
+  viewScale: number
+  viewRotationSteps: number
+  obstacles?: DomaLine[]
+  labelBoxes?: DomaLine[]
+}
+
+/** 筋を 1 本ずつ描くときの文字に付ける向き（右パネルの一覧と同じ） */
+const DIRECTION_TEXT: Record<SlabBarDirection, string> = { tate: 'タテ', yoko: 'ヨコ' }
+
+/** 筋を 1 本ずつ描くときの 1 セットの最大本数。多いと図面が線で埋まるので、範囲全体から何本か選んで見せる */
+const MAX_DETAIL_BARS = 6
+
+/**
+ * 図面の縦（vertical）か横にそった筋を、直交する範囲 cross に描く。筋の位置は実際のピッチ（pitchPx）の並びで、
+ * 多ければそのうち両端を含めて MAX_DETAIL_BARS 本を範囲全体から等間隔に選ぶ
+ * （区域の筋と標準筋はピッチが違うので、図面でも同じ位置に重ならない）。
+ * along は筋の両端（線の向きの座標）、hooks はその端の曲げ（直交する向きの短い線）。
+ * 文字を置くため、真ん中の 1 本の座標を返す
+ */
+function strokeBarSet(
+  ctx: CanvasRenderingContext2D,
+  bar: {
+    vertical: boolean
+    along: [number, number]
+    hooks: [boolean, boolean]
+    hookPx: number
+  },
+  cross: [number, number],
+  count: number,
+  pitchPx: number,
+  color: string,
+  s: number,
+): ((along: number) => Pt) | null {
+  if (count <= 0 || !(cross[1] > cross[0]) || !(pitchPx > 0) || bar.along[0] === bar.along[1]) return null
+  const pt = (along: number, c: number): Pt => (bar.vertical ? { x: c, y: along } : { x: along, y: c })
+  const hookDir: Pt = bar.vertical ? { x: 1, y: 0 } : { x: 0, y: 1 }
+  const shown = Math.min(count, MAX_DETAIL_BARS)
+  const positions = Array.from({ length: shown }, (_, j) => {
+    const i = shown > 1 ? Math.round((j * (count - 1)) / (shown - 1)) : 0
+    return Math.min(cross[0] + pitchPx * (i + 0.5), cross[1])
+  })
+  ctx.save()
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1.4 / s
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  for (const c of positions) {
+    const a = pt(bar.along[0], c)
+    const b = pt(bar.along[1], c)
+    if (bar.hooks[0]) {
+      ctx.moveTo(a.x + hookDir.x * bar.hookPx, a.y + hookDir.y * bar.hookPx)
+      ctx.lineTo(a.x, a.y)
+    } else {
+      ctx.moveTo(a.x, a.y)
+    }
+    ctx.lineTo(b.x, b.y)
+    if (bar.hooks[1]) ctx.lineTo(b.x + hookDir.x * bar.hookPx, b.y + hookDir.y * bar.hookPx)
+  }
+  ctx.stroke()
+  ctx.restore()
+  const middle = positions[Math.floor((shown - 1) / 2)]!
+  return (along) => pt(along, middle)
+}
+
+/** 筋の真ん中の 1 本の横に文字を置く（画面で左右のあいている側） */
+function labelBarSet(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  at: Pt,
+  vertical: boolean,
+  color: string,
+  opts: BarSetLabelOpts,
+) {
+  const s = opts.viewScale
+  const f = frame({ x1: 0, y1: 0, x2: vertical ? 0 : 1, y2: vertical ? 1 : 0 })
+  const left = screenLeftNormal(f.n, opts.viewRotationSteps)
+  drawUprightLabel(ctx, text, at, [negate(left), left], {
+    fontPx: 10 / s,
+    color,
+    viewScale: s,
+    viewRotationSteps: opts.viewRotationSteps,
+    obstacles: opts.obstacles,
+    placed: opts.labelBoxes,
+  })
+}
+
+/** 区域の 1 方向の筋を、区域の幅いっぱいにピッチごとに描く（壁の辺は曲げ、ほかははみ出し） */
+function paintZoneRunBars(
+  ctx: CanvasRenderingContext2D,
+  zone: DrawingDomaRun,
+  run: DrawingDomaRun,
+  r: ReturnType<typeof domaZoneRect>,
+  opts: BarSetLabelOpts,
+) {
+  const s = opts.viewScale
+  const vertical = Math.abs(run.y2 - run.y1) >= Math.abs(run.x2 - run.x1)
+  const linePx = Math.hypot(run.x2 - run.x1, run.y2 - run.y1)
+  if (!(run.length_mm > 0) || !(linePx > 0)) return
+  const pitch = run.settings.pitchMm
+  const count = countBars(run.span_mm, pitch)
+  const cross: [number, number] = vertical ? [r.minX, r.maxX] : [r.minY, r.maxY]
+  const middleAt = strokeBarSet(
+    ctx,
+    {
+      vertical,
+      along: vertical ? [run.y1, run.y2] : [run.x1, run.x2],
+      hooks: [run.bends === 'both' || run.bends === 'start', run.bends === 'both' || run.bends === 'end'],
+      hookPx: Math.max((run.settings.bendMm * linePx) / run.length_mm, 6 / s),
+    },
+    cross,
+    count,
+    run.span_mm > 0 ? (pitch * (cross[1] - cross[0])) / run.span_mm : 0,
+    DOMA_ZONE_COLOR,
+    s,
+  )
+  if (!middleAt) return
+  // 区域の中は辺の長さ、区域の外へはみ出した部分はその長さを、それぞれの部分に書く（筋 1 本の長さは右パネル・集計）
+  const [zoneLo, zoneHi] = vertical ? [r.minY, r.maxY] : [r.minX, r.maxX]
+  const sizeMm = run.direction === 'tate' ? zone.length_mm : zone.span_mm
+  labelBarSet(
+    ctx,
+    `${DIRECTION_TEXT[run.direction]} ${Math.round(sizeMm)} @${pitch} ${count}本`,
+    middleAt((zoneLo + zoneHi) / 2),
+    vertical,
+    DOMA_ZONE_COLOR,
+    opts,
+  )
+  const [lo, hi] = vertical
+    ? [Math.min(run.y1, run.y2), Math.max(run.y1, run.y2)]
+    : [Math.min(run.x1, run.x2), Math.max(run.x1, run.x2)]
+  const extendText = String(Math.round(domaZoneExtendMm(zone)))
+  const eps = 1e-6
+  if (lo < zoneLo - eps) labelBarSet(ctx, extendText, middleAt((lo + zoneLo) / 2), vertical, DOMA_ZONE_COLOR, opts)
+  if (hi > zoneHi + eps) labelBarSet(ctx, extendText, middleAt((zoneHi + hi) / 2), vertical, DOMA_ZONE_COLOR, opts)
+}
+
+/**
+ * 区域にかかる標準筋を、標準筋のピッチで何本か描く。区域の辺の外から重ね分の長さだけ見せ、
+ * 区域の辺から重ね分入ったところ（壁の辺なら辺で曲げ）で止める。
+ */
+export function paintDomaZoneCutBars(
+  ctx: CanvasRenderingContext2D,
+  run: DomaRunShape,
+  gaps: DomaZoneGap[],
+  opts: BarSetLabelOpts,
+) {
+  const s = opts.viewScale
+  const color = DOMA_DIRECTION_COLORS[run.direction]
+  const linePx = Math.hypot(run.x2 - run.x1, run.y2 - run.y1)
+  if (!(run.length_mm > 0) || !(linePx > 0)) return
+  const hookPx = Math.max((run.settings.bendMm * linePx) / run.length_mm, 6 / s)
+  const startBend = run.bends === 'both' || run.bends === 'start'
+  const endBend = run.bends === 'both' || run.bends === 'end'
+  for (const gap of gaps) {
+    const [p1, p2] = gap.vertical ? [run.y1, run.y2] : [run.x1, run.x2]
+    const startLow = p2 >= p1
+    const runLo = Math.min(p1, p2)
+    const runHi = Math.max(p1, p2)
+    const [loBend, hiBend] = startLow ? [startBend, endBend] : [endBend, startBend]
+    // 区域の外は重ね分だけ（筋の端がそれより近ければ端まで、端の曲げも描く）
+    const outsidePx = gap.lapMm * gap.pxPerMm
+    const edgeOf = (end: number) => gap.entries.find((e) => e.inner === end)?.edge ?? end
+    const parts: { along: [number, number]; hooks: [boolean, boolean] }[] = []
+    if (gap.low && gap.low.end > runLo) {
+      const outer = Math.max(runLo, edgeOf(gap.low.end) - outsidePx)
+      parts.push({
+        along: [outer, gap.low.end],
+        hooks: [outer === runLo && loBend, gap.low.wall],
+      })
+    }
+    if (gap.high && runHi > gap.high.end) {
+      const outer = Math.min(runHi, edgeOf(gap.high.end) + outsidePx)
+      parts.push({
+        along: [gap.high.end, outer],
+        hooks: [gap.high.wall, outer === runHi && hiBend],
+      })
+    }
+    let labeled = false
+    for (const part of parts) {
+      const middleAt = strokeBarSet(
+        ctx,
+        {
+          vertical: gap.vertical,
+          along: part.along,
+          hooks: part.hooks,
+          hookPx,
+        },
+        gap.crossPx,
+        gap.count,
+        run.settings.pitchMm * gap.pxPerMm,
+        color,
+        s,
+      )
+      if (!middleAt || labeled) continue
+      labeled = true
+      // 区域の外の中ほどにピッチ、区域に入った部分に重ね
+      const lowSide = gap.low != null && part.along[1] === gap.low.end
+      const zoneEnd = lowSide ? part.along[1] : part.along[0]
+      const entry = gap.entries.find((e) => e.inner === zoneEnd)
+      const outer = entry ? entry.edge : zoneEnd
+      const far = lowSide ? part.along[0] : part.along[1]
+      labelBarSet(
+        ctx,
+        `${DIRECTION_TEXT[run.direction]} @${run.settings.pitchMm} ${gap.count}本`,
+        middleAt((outer + far) / 2),
+        gap.vertical,
+        color,
+        opts,
+      )
+      if (entry) {
+        labelBarSet(
+          ctx,
+          String(Math.round(gap.lapMm)),
+          middleAt((entry.edge + entry.inner) / 2),
+          gap.vertical,
+          color,
+          opts,
+        )
+      }
+    }
   }
 }
 

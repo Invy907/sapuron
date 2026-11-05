@@ -7,6 +7,7 @@ import {
   domaZoneRuns,
   domaZoneScreenSide,
   domaRunZoneCuts,
+  domaZoneCutGap,
   expandDomaRuns,
   splitDomaRunByZones,
   type DomaZoneSpec,
@@ -135,8 +136,10 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     count: 8,
     fromMm: 0,
     toMm: 1950,
+    positionSource: 'drawing',
     before: null,
     after: { lengthMm: 4110, bends: 'end' },
+    crossPx: [500, 650],
   })
   // 区域にかからない 7 本は元の L、かかる 8 本は 4110
   const rows = splitDomaRunByZones(tate, [tate, top], dims)
@@ -155,6 +158,24 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     [cut2!.fromMm, cut2!.toMm, cut2!.before, cut2!.after],
     [2000, 3950, { lengthMm: 2600, bends: 'start' }, { lengthMm: 2110, bends: 'end' }],
   )
+
+  // 区域までの長さを手入力したら、図面で測った位置より優先する（始点から 1200 → 1200〜3150）
+  const typed = { ...tate, settings: { ...tate.settings, zoneStarts: { z1: 1200 } } }
+  const [cut4] = domaRunZoneCuts(typed, [typed, middle], dims)
+  assert.deepStrictEqual(
+    [cut4!.positionSource, cut4!.fromMm, cut4!.toMm, cut4!.before, cut4!.after],
+    ['input', 1200, 3150, { lengthMm: 1800, bends: 'start' }, { lengthMm: 2910, bends: 'end' }],
+  )
+
+  // 図面の線は区域の辺から重ね 600（60 px）入ったところまで。L の端にかかる側は区域の外まで消す
+  const gap2 = domaZoneCutGap(tate, middle, cut2!)
+  assert.deepStrictEqual(
+    [gap2!.minY, gap2!.maxY, gap2!.entries],
+    [260, 335, [{ edge: 200, inner: 260 }, { edge: 395, inner: 335 }]],
+  )
+  const gap1 = domaZoneCutGap(tate, top, cut!)
+  assert.deepStrictEqual([gap1!.maxY, gap1!.entries], [135, [{ edge: 195, inner: 135 }]])
+  assert.ok(gap1!.minY < 0)
 
   // ヨコだけの区域・並ぶ幅の外の区域ではタテの標準筋を切らない
   assert.deepStrictEqual(domaRunZoneCuts(tate, [tate, zoneAt(0, 195, { directions: { tate: false } })], dims), [])

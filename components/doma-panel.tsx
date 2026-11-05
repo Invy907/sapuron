@@ -7,6 +7,7 @@ import {
   DEFAULT_DOMA_ZONE_WALLS,
   DOMA_ZONE_COLOR,
   DOMA_ZONE_SIDE_LABEL,
+  domaZoneScreenSide,
   domaZoneEdgeAtScreenSide,
   domaZoneExtendMm,
   domaZoneHasDirection,
@@ -583,12 +584,15 @@ function RunEditor({
   run,
   runs,
   dimensions,
+  viewRotationSteps,
   onUpdate,
 }: {
   run: DrawingDomaRun
   /** 図面の土間筋すべて（区域で切る本を出すため） */
   runs: DrawingDomaRun[]
   dimensions: DrawingDomaDimension[]
+  /** 始点が画面のどちらの端かを出すため */
+  viewRotationSteps: number
   onUpdate: (patch: RunPatch) => void
 }) {
   // 寸法線と結びついていて値も同じなら「寸法線」、それ以外は「手入力」
@@ -600,6 +604,17 @@ function RunEditor({
   const cuts = domaRunZoneCuts(run, runs, dimensions)
   const rows = splitDomaRunByZones(run, runs, dimensions)
   const zones = runs.filter((r) => r.kind === 'special')
+  const [zoneStartDrafts, setZoneStartDrafts] = useState<Record<string, string>>({})
+  // 始点（線を引き始めた端）が画面で上下左右のどれか
+  const vertical = Math.abs(run.y2 - run.y1) >= Math.abs(run.x2 - run.x1)
+  const startEdge = vertical ? (run.y1 <= run.y2 ? 'top' : 'bottom') : run.x1 <= run.x2 ? 'left' : 'right'
+  const startSideLabel = DOMA_ZONE_SIDE_LABEL[domaZoneScreenSide(startEdge, viewRotationSteps)]
+  const setZoneStart = (zoneId: string, mm: number | null) => {
+    const zoneStarts = { ...run.settings.zoneStarts }
+    if (mm == null) delete zoneStarts[zoneId]
+    else zoneStarts[zoneId] = mm
+    commit({ settings: { ...run.settings, zoneStarts } })
+  }
 
   const commit = (patch: Partial<RunPatch>) =>
     onUpdate({
@@ -667,6 +682,47 @@ function RunEditor({
                 特殊{zones.findIndex((z) => z.id === cut.zoneId) + 1} にかかる {cut.count}本（区域{' '}
                 {cut.fromMm.toLocaleString()}〜{cut.toMm.toLocaleString()}）
               </p>
+              <div className="my-1 flex items-end gap-2">
+                <div className="flex-1">
+                  <NumField
+                    label={`${startSideLabel}端から区域まで (mm)`}
+                    value={zoneStartDrafts[cut.zoneId] ?? String(cut.fromMm)}
+                    onChange={(v) => {
+                      setZoneStartDrafts((prev) => ({ ...prev, [cut.zoneId]: v }))
+                      const mm = parseMm(v)
+                      if (Number.isFinite(mm) && mm >= 0 && mm < run.length_mm) setZoneStart(cut.zoneId, mm)
+                    }}
+                    onBlur={() =>
+                      setZoneStartDrafts((prev) => {
+                        const next = { ...prev }
+                        delete next[cut.zoneId]
+                        return next
+                      })
+                    }
+                  />
+                </div>
+                <span
+                  className={`mb-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
+                    cut.positionSource === 'input' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
+                  }`}
+                  title={
+                    cut.positionSource === 'input'
+                      ? '入力した長さで計算しています'
+                      : '図面から測った長さです（区域が端に近いときは端にそろえます）'
+                  }
+                >
+                  {cut.positionSource === 'input' ? '入力' : '図面から'}
+                </span>
+              </div>
+              {cut.positionSource === 'input' ? (
+                <button
+                  type="button"
+                  onClick={() => setZoneStart(cut.zoneId, null)}
+                  className="mb-1 text-[11px] text-primary hover:underline"
+                >
+                  図面から測り直す
+                </button>
+              ) : null}
               {(
                 [
                   ['手前', cut.before],
@@ -793,14 +849,30 @@ function zoneLengthText(zone: DrawingDomaRun, direction: SlabBarDirection): stri
  */
 function ZoneEditor({
   zone,
+  allRuns,
+  dimensions,
   viewRotationSteps,
   onUpdate,
+  onSelectRun,
 }: {
   zone: DrawingDomaRun
+  /** 図面の土間筋すべて（この区域で切る標準筋を出すため） */
+  allRuns: DrawingDomaRun[]
+  dimensions: DrawingDomaDimension[]
   viewRotationSteps: number
   onUpdate: (patch: RunPatch) => void
+  /** 区域で切る標準筋の行を押したとき、その標準筋を選ぶ */
+  onSelectRun: (id: string) => void
 }) {
   const spec = domaZoneSpecOf(zone)
+  // この区域で切る標準筋（図面では黄色）。名前は一覧と同じ方向ごとの通し番号
+  const standardRuns = allRuns.filter((r) => r.kind !== 'special')
+  const affected = standardRuns.flatMap((r) => {
+    const cut = domaRunZoneCuts(r, allRuns, dimensions).find((c) => c.zoneId === zone.id)
+    if (!cut) return []
+    const no = standardRuns.filter((b) => b.direction === r.direction).indexOf(r) + 1
+    return [{ run: r, cut, name: `${DIRECTION_LABEL[r.direction]}${no}` }]
+  })
   const [tateDraft, setTateDraft] = useState<string | null>(null)
   const [yokoDraft, setYokoDraft] = useState<string | null>(null)
   const [extendDraft, setExtendDraft] = useState<string | null>(null)
@@ -847,7 +919,7 @@ function ZoneEditor({
       </section>
       <div className="grid grid-cols-2 gap-x-3">
         <NumField
-          label="タテ方向の区域 (mm)"
+          label="タテの辺の長さ (mm)"
           value={tateDraft ?? String(zone.length_mm)}
           onChange={(v) => {
             setTateDraft(v)
@@ -857,7 +929,7 @@ function ZoneEditor({
           onBlur={() => setTateDraft(null)}
         />
         <NumField
-          label="ヨコ方向の区域 (mm)"
+          label="ヨコの辺の長さ (mm)"
           value={yokoDraft ?? String(zone.span_mm)}
           onChange={(v) => {
             setYokoDraft(v)
@@ -893,6 +965,38 @@ function ZoneEditor({
           重ねと同じにする
         </button>
       ) : null}
+      <section className="space-y-1 rounded-md border border-green-200 bg-green-50/60 p-2 text-[11px]">
+        <p className="font-medium" style={{ color: DOMA_ZONE_COLOR }}>
+          この区域で切る標準筋（図面でその L の寸法線を黄色）
+        </p>
+        {affected.length === 0 ? (
+          <p className="text-muted">かかる標準筋はありません。</p>
+        ) : (
+          affected.map(({ run, cut, name }) => (
+            <button
+              key={run.id}
+              type="button"
+              onClick={() => onSelectRun(run.id)}
+              title="押すとこの標準筋を選び、区域までの長さを直せます"
+              className="flex w-full items-center justify-between gap-2 rounded px-1 py-0.5 text-left tabular-nums hover:bg-green-100/70"
+            >
+              <span>
+                <span className="font-semibold" style={{ color: DOMA_DIRECTION_COLORS[run.direction] }}>
+                  {name}
+                </span>{' '}
+                {cut.count}本・区域 {cut.fromMm.toLocaleString()}〜{cut.toMm.toLocaleString()}
+              </span>
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
+                  cut.positionSource === 'input' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
+                }`}
+              >
+                {cut.positionSource === 'input' ? '入力' : '図面から'}
+              </span>
+            </button>
+          ))
+        )}
+      </section>
       <details className="text-[11px] text-muted">
         <summary className="cursor-pointer">入れる向き（タテ・ヨコ）</summary>
         <div className="mt-2 flex gap-3">
@@ -1038,7 +1142,7 @@ export function DomaZoneInputModal({
         <h3 className="mb-3 text-sm font-semibold">区域を入力</h3>
         <div className="flex flex-col gap-2">
           <NumField
-            label="タテ方向の区域 (mm)"
+            label="タテの辺の長さ (mm)"
             value={tate}
             onChange={setTate}
             inputRef={inputRef}
@@ -1052,7 +1156,7 @@ export function DomaZoneInputModal({
               setTateChoice(c)
             }}
           />
-          <NumField label="ヨコ方向の区域 (mm)" value={yoko} onChange={setYoko} onEnter={confirm} />
+          <NumField label="ヨコの辺の長さ (mm)" value={yoko} onChange={setYoko} onEnter={confirm} />
           <DimensionChips
             choices={dimensionChoices}
             candidates={state.yokoCandidates}
@@ -1382,8 +1486,11 @@ export function DomaPanel({
               <ZoneEditor
                 key={selectedBar.id}
                 zone={selectedBar}
+                allRuns={bars}
+                dimensions={dimensions}
                 viewRotationSteps={viewRotationSteps}
                 onUpdate={(patch) => onUpdateBar(selectedBar.id, patch)}
+                onSelectRun={(id) => onSelect({ type: 'bar', id })}
               />
             ) : selectedBar ? (
               <RunEditor
@@ -1391,6 +1498,7 @@ export function DomaPanel({
                 run={selectedBar}
                 runs={bars}
                 dimensions={dimensions}
+                viewRotationSteps={viewRotationSteps}
                 onUpdate={(patch) => onUpdateBar(selectedBar.id, patch)}
               />
             ) : null}

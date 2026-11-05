@@ -144,9 +144,13 @@ export type DomaZoneCut = {
   /** 区域の位置（標準筋の始点からの mm） */
   fromMm: number
   toMm: number
+  /** 区域の位置を手入力したか（input）、図面から測ったか（drawing） */
+  positionSource: 'input' | 'drawing'
   /** 区域の手前（始点側）・先（終点側）の本。区域が端にかかっていてないときは null */
   before: DomaZoneCutPart | null
   after: DomaZoneCutPart | null
+  /** 区域にかかる本の並ぶ範囲（図面 px。線と直交する向きの座標） */
+  crossPx: [number, number]
 }
 
 function hasStartBend(bends: DomaBends) {
@@ -160,8 +164,9 @@ function hasEndBend(bends: DomaBends) {
 /**
  * 標準筋 1 セットのうち、区域にかかって区域の中へはみ出しの分だけ入るところで切る本。
  *
- * 図面の線（L の長さで描いた線）の縮尺で、区域の位置を標準筋の始点からの mm に直す。
- * 区域が標準筋の端にかかっているとき（3% 以内）は端にそろえ、区域の長さは入力値を使う。
+ * 区域の位置（始点から区域の辺まで）は、標準筋に手入力（settings.zoneStarts）があればそれを使う。
+ * なければ図面の線（L の長さで描いた線）の縮尺で測り、標準筋の端にかかっているとき（3% 以内）は端にそろえる。
+ * 区域の長さは入力値を使う。
  * 標準筋が並ぶ幅は、配筋範囲に使った寸法線があればその位置、なければ描いた線を中心に配筋範囲の幅とする。
  * 同じ向きの土間筋を入れる区域だけが対象（ヨコだけの区域ではタテの標準筋は切らない）
  */
@@ -205,20 +210,29 @@ export function domaRunZoneCuts(
     const r = domaZoneRect(zone)
     const [zlo, zhi] = vertical ? [r.minY, r.maxY] : [r.minX, r.maxX]
     const [zp0, zp1] = vertical ? [r.minX, r.maxX] : [r.minY, r.maxY]
+    // 1 ピッチに満たない重なりは、隣の標準筋の範囲に区域の線が少し掛かっただけとみなす
     const overlapPx = Math.min(zp1, rp1) - Math.max(zp0, rp0)
-    if (overlapPx <= 1e-6) continue
+    if (overlapPx / k < run.settings.pitchMm) continue
     const values = domaZoneRunValues(zone, direction)
     const zoneMm = values.sizeMm
     const zoneWidthMm = values.spanMm
-    let a = Math.min(toMm(zlo), toMm(zhi))
-    let b = Math.max(toMm(zlo), toMm(zhi))
-    if (b <= 0 || a >= L) continue
-    const snapMm = L * 0.03
-    if (Math.abs(a) <= snapMm) [a, b] = [0, zoneMm]
-    else if (Math.abs(b - L) <= snapMm) [a, b] = [L - zoneMm, L]
-    else {
-      a = Math.round(a / 10) * 10
+    const inputStart = run.settings.zoneStarts?.[zone.id]
+    let a: number
+    let b: number
+    if (inputStart != null) {
+      a = inputStart
       b = a + zoneMm
+    } else {
+      a = Math.min(toMm(zlo), toMm(zhi))
+      b = Math.max(toMm(zlo), toMm(zhi))
+      const snapMm = L * 0.03
+      if (Math.min(b, L) - Math.max(a, 0) <= snapMm) continue
+      if (Math.abs(a) <= snapMm) [a, b] = [0, zoneMm]
+      else if (Math.abs(b - L) <= snapMm) [a, b] = [L - zoneMm, L]
+      else {
+        a = Math.round(a / 10) * 10
+        b = a + zoneMm
+      }
     }
     a = Math.max(0, a)
     b = Math.min(L, b)
@@ -242,6 +256,8 @@ export function domaRunZoneCuts(
       count,
       fromMm: a,
       toMm: b,
+      positionSource: inputStart != null ? 'input' : 'drawing',
+      crossPx: [Math.max(zp0, rp0), Math.min(zp1, rp1)],
       before:
         a > 0
           ? { lengthMm: a + (aWall ? 0 : extendMm), bends: bendsOf(hasStartBend(run.bends), aWall) }
@@ -253,6 +269,76 @@ export function domaRunZoneCuts(
     })
   }
   return cuts
+}
+
+/** 標準筋の線を区域の中で消す範囲（図面 px）。entries は区域の辺と、そこから重ね分入った位置（線の向きの座標） */
+export type DomaZoneGap = {
+  vertical: boolean
+  minX: number
+  maxX: number
+  minY: number
+  maxY: number
+  entries: { edge: number; inner: number }[]
+  lapMm: number
+  /** 区域の手前（座標の小さい側）・先の本の区域側の端（線の向きの座標）と、そこが壁（曲げ）か */
+  low: { end: number; wall: boolean } | null
+  high: { end: number; wall: boolean } | null
+  count: number
+  crossPx: [number, number]
+  /** 区域を描いた縮尺（線の向きの px / mm） */
+  pxPerMm: number
+}
+
+/**
+ * 区域で切った標準筋の線を、区域の辺から重ね（はみ出しと同じ長さ）入ったところまで残し、
+ * その先の区域の中を消す範囲。重ねの長さは区域を描いた縮尺（区域の px ÷ 辺の長さ）で測る。
+ * 区域の手前・先に標準筋がなければ（区域が L の端にかかる）その側は区域の外まで消す
+ */
+export function domaZoneCutGap(
+  run: Pick<DrawingDomaRun, 'x1' | 'y1' | 'x2' | 'y2'>,
+  zone: DrawingDomaRun,
+  cut: DomaZoneCut,
+): DomaZoneGap | null {
+  const dx = run.x2 - run.x1
+  const dy = run.y2 - run.y1
+  const vertical = Math.abs(dy) >= Math.abs(dx)
+  const startLow = (vertical ? dy : dx) >= 0
+  const spec = domaZoneSpecOf(zone)
+  const direction: SlabBarDirection = vertical === spec.tateAlongY ? 'tate' : 'yoko'
+  const r = domaZoneRect(zone)
+  const [lo, hi] = vertical ? [r.minY, r.maxY] : [r.minX, r.maxX]
+  const sizeMm = domaZoneRunValues(zone, direction).sizeMm
+  if (!(sizeMm > 0) || !(hi > lo)) return null
+  const depthPx = (domaZoneExtendMm(zone) * (hi - lo)) / sizeMm
+  const [lowEdge, highEdge]: DomaZoneEdge[] = vertical ? ['top', 'bottom'] : ['left', 'right']
+  const [lowPart, highPart] = startLow ? [cut.before, cut.after] : [cut.after, cut.before]
+  const far = 1e7
+  const entries: DomaZoneGap['entries'] = []
+  let from = -far
+  let to = far
+  const lowWall = spec.walls[lowEdge!]
+  const highWall = spec.walls[highEdge!]
+  if (lowPart) {
+    from = lo + (lowWall ? 0 : depthPx)
+    if (from > lo) entries.push({ edge: lo, inner: from })
+  }
+  if (highPart) {
+    to = hi - (highWall ? 0 : depthPx)
+    if (to < hi) entries.push({ edge: hi, inner: to })
+  }
+  if (!(to > from)) return null
+  const rest = {
+    entries,
+    lapMm: domaZoneExtendMm(zone),
+    low: lowPart ? { end: from, wall: lowWall } : null,
+    high: highPart ? { end: to, wall: highWall } : null,
+    count: cut.count,
+    crossPx: cut.crossPx,
+    pxPerMm: (hi - lo) / sizeMm,
+  }
+  return vertical
+    ? { vertical, minX: r.minX, maxX: r.maxX, minY: from, maxY: to, ...rest }
+    : { vertical, minX: from, maxX: to, minY: r.minY, maxY: r.maxY, ...rest }
 }
 
 /**
