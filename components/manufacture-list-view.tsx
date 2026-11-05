@@ -604,37 +604,46 @@ export function ManufactureListView({
               className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
           </label>
-          <label className="inline-flex items-center gap-1">
-            <span className="whitespace-nowrap text-muted">到着日:</span>
-            <input
-              type="text"
+          <label className="inline-flex items-start gap-1">
+            <span className="whitespace-nowrap py-0.5 text-muted">到着日:</span>
+            {/* 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
+                画面でも折り返さずに見せ、どこで改行されるかを入力しながら分かるようにする */}
+            <textarea
               value={customerArrival}
               onChange={(e) => onCustomerArrivalChange(e.target.value)}
               aria-label="到着日"
-              className="w-36 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+              rows={Math.max(1, customerArrival.split('\n').length)}
+              wrap="off"
+              placeholder={'R8.11.9（月）\n8:00予定'}
+              title="Enter で改行すると、印刷も同じ所で改行します"
+              className="w-36 resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
           </label>
+          <span className="text-[11px] text-muted">到着日は Enter で改行（印刷も同じ所で改行）</span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
-          <div className="flex flex-col items-end">
+          {/* 手書き指示：予定（到着日）も積み込み日の左端にそろえる。
+              改行は入力したところだけで行い、自動では折り返さない */}
+          <div className="flex flex-col items-start">
             {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する */}
             {customerDate.trim() ? (
-              <div className="text-xl font-bold">{customerDate.trim()}</div>
+              <div className="whitespace-nowrap text-xl font-bold">{customerDate.trim()}</div>
             ) : null}
             {customerArrival.trim() ? (
               <>
                 {/* 手書きメモの指示どおり「つみこみ」も日付と同じ大きさに揃える */}
-                <div className="mt-0.5 text-xl leading-none">つみこみ</div>
-                <div className="text-xl font-bold">{customerArrival.trim()}</div>
+                <div className="mt-0.5 whitespace-nowrap text-xl leading-none">つみこみ</div>
+                <div className="whitespace-pre text-xl font-bold">{customerArrival.trim()}</div>
               </>
             ) : null}
           </div>
         </div>
       </div>
 
-      {/* 予定・注意事項などを自由に書き込む欄。md 以上の幅は RIGHT_COL_WIDTH (140px) と揃える。
+      {/* メモは結果ページから外した（予定は積み込み日の下にそろえて書く）。戻すときはここを外す
+      {/- 予定・注意事項などを自由に書き込む欄。md 以上の幅は RIGHT_COL_WIDTH (140px) と揃える。
           絶対配置にしてヘッダーや表の高さに影響させない。
-          画面が狭いと表に重なるので、md 未満では絶対配置を外してヘッダーの下に流す */}
+          画面が狭いと表に重なるので、md 未満では絶対配置を外してヘッダーの下に流す -/}
       <div
         className="rounded-md border border-dashed border-slate-300 bg-slate-50/80 px-2 py-1.5 shadow-sm focus-within:border-primary/50 focus-within:bg-primary/5 md:absolute md:right-0 md:w-[140px] print:hidden"
         style={{ top: MEMO_BOX_TOP }}
@@ -674,7 +683,7 @@ export function ManufactureListView({
         />
       </div>
 
-      {/* 印刷では画面と同じ位置・同じ文字サイズでメモ本文だけを出す */}
+      {/- 印刷では画面と同じ位置・同じ文字サイズでメモ本文だけを出す -/}
       {customerMemo.trim() && !hidePrintMemo ? (
         <div
           className="manufacture-memo-print absolute right-0 hidden whitespace-pre-wrap break-words text-center leading-snug print:block"
@@ -687,6 +696,7 @@ export function ManufactureListView({
           {customerMemo}
         </div>
       ) : null}
+      */}
 
       {/* 会社名のヘッダーと表のあいだを空ける（手書き指示：5mm ぐらい）。
           margin だと親の space-y と競合するので padding で取る */}

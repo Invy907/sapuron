@@ -139,22 +139,25 @@ export type PrintRuleText = {
 
 /**
  * 余白全体に引く罫線（ノートの罫線のように、すべてのページの空いているところに等間隔の横線を引く）。
- * enabled: 引くかどうか、spacingMm: 線と線の間隔、strokePx: 線の太さ、texts: 罫線の上に書いた文字
+ * sheets: 罫線を引く用紙（0 = 1 ページ目、1 = 2 ページ目…）。ページごとに選び、カードの無い用紙も罫線だけで印刷する。
+ * spacingMm: 線と線の間隔、strokePx: 線の太さ、texts: 罫線の上に書いた文字
  */
 export type PrintRuleSettings = {
-  enabled: boolean
+  sheets: number[]
   spacingMm: number
   strokePx: number
   texts: PrintRuleText[]
 }
 
 export const DEFAULT_PRINT_RULE_SETTINGS: PrintRuleSettings = {
-  enabled: false,
+  sheets: [],
   spacingMm: 8,
   strokePx: 0.5,
   texts: [],
 }
 const RULE_SPACING_OPTIONS_MM = [5, 6, 7, 8, 10, 12] as const
+/** 以前の「すべてのページに罫線」の設定を読み込むときに、罫線を引いたことにするページ数 */
+const LEGACY_RULED_SHEET_COUNT = 10
 const RULE_STROKE_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
   { value: 0.5, label: '細い' },
   { value: 1, label: '普通' },
@@ -303,11 +306,18 @@ export function parsePrintRuleSettings(raw: string | null): PrintRuleSettings {
       | (Partial<Record<keyof PrintRuleSettings, unknown>> & { pages?: unknown })
       | null
     if (!parsed || typeof parsed !== 'object') return DEFAULT_PRINT_RULE_SETTINGS
-    // 以前はページを選んでいた（pages: 'none' 以外なら引く）
-    const enabled =
-      typeof parsed.enabled === 'boolean'
-        ? parsed.enabled
-        : typeof parsed.pages === 'string' && parsed.pages !== 'none'
+    const finiteSheet = (v: unknown): v is number =>
+      typeof v === 'number' && Number.isInteger(v) && v >= 0
+    // 以前は全ページまとめて引くかどうか（enabled、さらに前は pages: 'none' 以外）だった。
+    // 引いていたときは、ありそうなページ数ぶんを選んだことにする
+    const legacyEnabled =
+      (parsed as { enabled?: unknown }).enabled === true ||
+      (typeof parsed.pages === 'string' && parsed.pages !== 'none')
+    const sheets = Array.isArray(parsed.sheets)
+      ? [...new Set(parsed.sheets.filter(finiteSheet))].sort((a, b) => a - b)
+      : legacyEnabled
+        ? Array.from({ length: LEGACY_RULED_SHEET_COUNT }, (_, i) => i)
+        : []
     const spacingMm = RULE_SPACING_OPTIONS_MM.find((v) => v === parsed.spacingMm)
     const strokePx = RULE_STROKE_OPTIONS.find((o) => o.value === parsed.strokePx)?.value
     const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -321,7 +331,7 @@ export function parsePrintRuleSettings(raw: string | null): PrintRuleSettings {
         })
       : []
     return {
-      enabled,
+      sheets,
       spacingMm: spacingMm ?? DEFAULT_PRINT_RULE_SETTINGS.spacingMm,
       strokePx: strokePx ?? DEFAULT_PRINT_RULE_SETTINGS.strokePx,
       texts,
@@ -641,16 +651,20 @@ export function PrintLayoutModal({
     }
   }, [cards, freePageCount, measuringPage2, onPage2PlacementChange, page2Cards, page2Placements, zooms])
 
-  // 罫線は空いているところにだけ引くので、カードや線を動かすたび・大きさが変わるたびに測り直す。
-  // 印刷しない空のページには引かない
-  const rulePage1 = ruleSettings.enabled
-  const ruleRest = ruleSettings.enabled
-  const ruledFreePages = Array.from({ length: freePageCount }, (_, page) =>
-    ruleRest &&
-    (page === 0
-      ? !page2Empty
-      : page2Cards.some((c) => pageIndexOf(page2Placements[c.id]?.y ?? 0) === page)),
-  )
+  // 罫線はページごとに選ぶ（例：1・2 ページ目は余白のまま、3・4 ページ目は罫線だけ）。
+  // 空いているところにだけ引くので、カードや線を動かすたび・大きさが変わるたびに測り直す
+  const isRuledSheet = (sheet: number) => ruleSettings.sheets.includes(sheet)
+  const toggleRuledSheet = (sheet: number) =>
+    onRuleSettingsChange({
+      ...ruleSettings,
+      sheets: isRuledSheet(sheet)
+        ? ruleSettings.sheets.filter((s) => s !== sheet)
+        : [...ruleSettings.sheets, sheet].sort((a, b) => a - b),
+    })
+  const rulePage1 = isRuledSheet(0)
+  // 2 ページ目以降は freePage（0 = 2 ページ目）。罫線を選んだページはカードが無くても印刷する
+  const ruledFreePages = Array.from({ length: freePageCount }, (_, page) => isRuledSheet(page + 1))
+  const page2Printed = !page2Empty || ruledFreePages[0] === true
   const ruledFreePagesKey = ruledFreePages.join(',')
   const [ruleRows, setRuleRows] = useState<{ page1: RuleRow[]; free: RuleRow[][] }>({
     page1: [],
@@ -887,7 +901,7 @@ export function PrintLayoutModal({
       r != null && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom
     const page: 1 | 2 | null = inside(s1)
       ? 1
-      : inside(s2) && (!page2Empty || line.page === 2)
+      : inside(s2) && (page2Printed || line.page === 2)
         ? 2
         : null
     const sheet = page === 1 ? s1 : page === 2 ? s2 : null
@@ -982,27 +996,18 @@ export function PrintLayoutModal({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <div className="flex items-center gap-1 text-sm">
-            <button
-              type="button"
-              onClick={() =>
-                onRuleSettingsChange({ ...ruleSettings, enabled: !ruleSettings.enabled })
-              }
-              aria-pressed={ruleSettings.enabled}
-              title="すべてのページの余白に罫線を引く"
-              className={`rounded-md border px-3 py-1.5 text-sm ${
-                ruleSettings.enabled
-                  ? 'border-primary bg-primary text-white hover:bg-primary-hover'
-                  : 'border-border hover:bg-gray-50'
-              }`}
+            <span
+              className="whitespace-nowrap text-muted"
+              title="罫線は各ページの上の「罫線」で、ページごとに選びます"
             >
-              {ruleSettings.enabled ? '罫線あり' : '罫線なし'}
-            </button>
+              罫線
+            </span>
             <select
               value={ruleSettings.spacingMm}
               onChange={(e) =>
                 onRuleSettingsChange({ ...ruleSettings, spacingMm: Number(e.target.value) })
               }
-              disabled={!ruleSettings.enabled}
+              disabled={ruleSettings.sheets.length === 0}
               aria-label="罫線の間隔"
               title="線と線の間隔"
               className="rounded-md border border-border px-1.5 py-1.5 disabled:opacity-40"
@@ -1018,7 +1023,7 @@ export function PrintLayoutModal({
               onChange={(e) =>
                 onRuleSettingsChange({ ...ruleSettings, strokePx: Number(e.target.value) })
               }
-              disabled={!ruleSettings.enabled}
+              disabled={ruleSettings.sheets.length === 0}
               aria-label="罫線の太さ"
               title="線の太さ"
               className="rounded-md border border-border px-1.5 py-1.5 disabled:opacity-40"
@@ -1094,6 +1099,8 @@ export function PrintLayoutModal({
             label={page1PageCount > 1 ? `1〜${page1PageCount}ページ目` : '1ページ目'}
             scale={scale}
             height={sheetHeights[0]}
+            ruled={rulePage1}
+            onRuledChange={() => toggleRuledSheet(0)}
           >
             <div
               ref={sheet1Ref}
@@ -1127,26 +1134,30 @@ export function PrintLayoutModal({
             label={`${page1PageCount + 1}ページ目`}
             scale={scale}
             height={sheetHeights[1]}
-            className={page2Empty ? 'print-sheet-empty' : ''}
+            className={page2Printed ? '' : 'print-sheet-empty'}
+            ruled={ruledFreePages[0] === true}
+            onRuledChange={() => toggleRuledSheet(1)}
           >
             <div
               ref={(el) => {
                 sheet2Ref.current = el
                 freeSheetRefs.current[0] = el
               }}
-              className={`print-sheet ${!page2Empty && !measuringPage2 ? 'print-sheet-free' : ''} ${
-                placingLine && !page2Empty ? 'cursor-crosshair' : ''
+              className={`print-sheet ${page2Printed && !measuringPage2 ? 'print-sheet-free' : ''} ${
+                placingLine && page2Printed ? 'cursor-crosshair' : ''
               }`}
               style={sheetStyle(scale)}
               onPointerDownCapture={(e) => {
                 // 印刷しない（空の）2 ページ目には置かない
-                if (!page2Empty) placeLineAt(2, e)
+                if (page2Printed) placeLineAt(2, e)
               }}
             >
               {ruledFreePages[0] ? renderRules(ruleRows.free[0], 1) : null}
               {page2Empty ? (
                 <p className="print-sheet-ui flex h-[1077px] items-center justify-center text-sm text-muted">
-                  すべて 1 ページ目に移しました（2 ページ目は印刷されません）
+                  {page2Printed
+                    ? 'すべて 1 ページ目に移しました（2 ページ目は罫線だけを印刷します）'
+                    : 'すべて 1 ページ目に移しました（2 ページ目は印刷されません）'}
                 </p>
               ) : page2Cards.length === 0 ? null : measuringPage2 ? (
                 // 最初の位置を測るための従来の 2 列の並び。Ctrl+P で直接印刷したときもこの並びで出る。
@@ -1186,15 +1197,18 @@ export function PrintLayoutModal({
           {/* 2 ページ目に収まらなかったカードのページ（3 ページ目以降） */}
           {Array.from({ length: freePageCount - 1 }, (_, i) => i + 1).map((page) => {
             const pageCards = page2Cards.filter((card) => pageIndexOf(page2Placements[card.id]?.y ?? 0) === page)
-            // 「ページを追加」で足した空のページは印刷しない。いちばん後ろなら消せる
+            // 「ページを追加」で足した空のページは、罫線を選ばなければ印刷しない。いちばん後ろなら消せる
             const empty = pageCards.length === 0
+            const ruled = ruledFreePages[page] === true
             return (
               <SheetFrame
                 key={page}
                 label={`${page + page1PageCount + 1}ページ目`}
                 scale={scale}
                 height={SHEET_HEIGHT_PX}
-                className={empty ? 'print-sheet-empty' : ''}
+                className={empty && !ruled ? 'print-sheet-empty' : ''}
+                ruled={ruled}
+                onRuledChange={() => toggleRuledSheet(page + 1)}
               >
                 <div
                   ref={(el) => {
@@ -1206,11 +1220,19 @@ export function PrintLayoutModal({
                   {ruledFreePages[page] ? renderRules(ruleRows.free[page], page + 1) : null}
                   {empty ? (
                     <div className="print-sheet-ui flex h-[1077px] flex-col items-center justify-center gap-3 text-sm text-muted">
-                      <p>カードをここへドラッグしてください（空のままなら印刷されません）</p>
+                      <p>
+                        {ruled
+                          ? 'カードをここへドラッグできます（空のままなら罫線だけを印刷します）'
+                          : 'カードをここへドラッグしてください（空のままなら印刷されません）'}
+                      </p>
                       {page === freePageCount - 1 ? (
                         <button
                           type="button"
-                          onClick={() => setAddedFreePageCount(page)}
+                          onClick={() => {
+                            setAddedFreePageCount(page)
+                            // 消したページの罫線の選択も外す（またページを足したときに引き継がない）
+                            if (ruled) toggleRuledSheet(page + 1)
+                          }}
                           className="rounded-md border border-border bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
                         >
                           このページを削除
@@ -1252,17 +1274,36 @@ function SheetFrame({
   scale,
   height,
   className = '',
+  ruled,
+  onRuledChange,
   children,
 }: {
   label: string
   scale: number
   height: number
   className?: string
+  /** この用紙に罫線を引くか。見出しの横のチェックで切り替える */
+  ruled?: boolean
+  onRuledChange?: () => void
   children: ReactNode
 }) {
   return (
     <div className={`print-sheet-frame shrink-0 ${className}`}>
-      <div className="print-sheet-ui mb-1.5 text-xs font-medium text-white/90">{label}</div>
+      <div className="print-sheet-ui mb-1.5 flex items-center justify-between gap-2 text-xs font-medium text-white/90">
+        <span>{label}</span>
+        {onRuledChange ? (
+          <label className="inline-flex cursor-pointer items-center gap-1">
+            <input
+              type="checkbox"
+              checked={ruled === true}
+              onChange={onRuledChange}
+              aria-label={`${label}に罫線を引く`}
+              className="h-3.5 w-3.5 cursor-pointer accent-white"
+            />
+            罫線
+          </label>
+        ) : null}
+      </div>
       <div style={{ width: SHEET_WIDTH_PX * scale, height: height * scale }}>{children}</div>
     </div>
   )

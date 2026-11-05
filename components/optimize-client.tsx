@@ -1096,6 +1096,8 @@ export function OptimizeClient({
       }),
     })
   }
+  // メモは結果ページから外した（予定は積み込み日の下にそろえて書く）。戻すときはここを外す
+  /*
   if (customerMemo.trim()) {
     printCards.push({
       id: 'memo',
@@ -1123,6 +1125,7 @@ export function OptimizeClient({
       },
     })
   }
+  */
 
   return (
     <div className="space-y-4">
