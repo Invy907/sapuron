@@ -639,16 +639,18 @@ export function ManufactureListView({
           {/* 手書き指示：予定（到着日）も積み込み日の左端にそろえる。
               改行は入力したところだけで行い、自動では折り返さない */}
           <div className="flex flex-col items-start">
-            {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する */}
+            {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する。
+                「つみ込み」は別行にせず、積み込み日のすぐ右に置く */}
             {customerDate.trim() ? (
-              <div className="whitespace-nowrap text-xl font-bold">{customerDate.trim()}</div>
+              <div className="whitespace-nowrap text-xl leading-none">
+                <span className="font-bold">{customerDate.trim()}</span>
+                {customerArrival.trim() ? <span className="ml-1">つみ込み</span> : null}
+              </div>
+            ) : customerArrival.trim() ? (
+              <div className="whitespace-nowrap text-xl leading-none">つみ込み</div>
             ) : null}
             {customerArrival.trim() ? (
-              <>
-                {/* 手書きメモの指示どおり「つみこみ」も日付と同じ大きさに揃える */}
-                <div className="mt-0.5 whitespace-nowrap text-xl leading-none">つみこみ</div>
-                <div className="whitespace-pre text-xl font-bold">{customerArrival.trim()}</div>
-              </>
+              <div className="whitespace-pre text-xl font-bold">{customerArrival.trim()}</div>
             ) : null}
           </div>
         </div>
