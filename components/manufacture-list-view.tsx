@@ -126,7 +126,7 @@ function joinArrival(dateLine: string, timeLine: string): string {
   return date || time
 }
 
-/** 印刷の「R8.11.16（火） / 8:00」を、カレンダーモーダルの日時にする */
+/** 印刷の「R8.11.16（火） / 8:00予定」を、カレンダーモーダルの日時にする */
 function dateTimeFromPrinted(value: string): string {
   const [dateLine = '', timeLine = ''] = value.split('\n')
   const iso = isoFromPrintedDate(dateLine)
@@ -137,11 +137,11 @@ function dateTimeFromPrinted(value: string): string {
   return `${iso}T${hh}:${mm}`
 }
 
-/** カレンダーモーダルの日時を、印刷の日付と時刻の 2 行にする */
+/** カレンダーモーダルの日時を、印刷の日付と「8:00予定」の 2 行にする */
 function printedFromDateTime(value: string): string {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(value)
   if (!match) return ''
-  return joinArrival(formatPrintedDate(match[1]!), `${Number(match[2])}:${match[3]}`)
+  return joinArrival(formatPrintedDate(match[1]!), `${Number(match[2])}:${match[3]}予定`)
 }
 
 /** 画面の日付入力欄が占める幅の下限(px)。印刷の日付より広いので、名前はこの幅も空ける */
