@@ -22,6 +22,7 @@ import {
   type UnitShapeLegendPositions,
 } from '@/components/unit-client'
 import { CustomerDatePicker } from '@/components/customer-date-picker'
+import { CustomerDateTimePicker } from '@/components/customer-datetime-picker'
 import {
   getSegmentColor,
   getSegmentEffectiveLengthMm,
@@ -117,17 +118,30 @@ function isoFromPrintedDate(text: string): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-/** 到着日の 2 行目以降（時刻など） */
-function arrivalTimeOf(value: string): string {
-  return value.split('\n').slice(1).join('\n').trim()
-}
-
 /** 到着日は 1 行目が日付、2 行目が時刻。空の行は印刷に出さない */
 function joinArrival(dateLine: string, timeLine: string): string {
   const date = dateLine.trim()
   const time = timeLine.trim()
   if (date && time) return `${date}\n${time}`
   return date || time
+}
+
+/** 印刷の「R8.11.16（火） / 8:00」を、カレンダーモーダルの日時にする */
+function dateTimeFromPrinted(value: string): string {
+  const [dateLine = '', timeLine = ''] = value.split('\n')
+  const iso = isoFromPrintedDate(dateLine)
+  if (!iso) return ''
+  const time = /^(\d{1,2}):(\d{2})/.exec(timeLine.trim())
+  const hh = time ? time[1]!.padStart(2, '0') : '00'
+  const mm = time ? time[2] : '00'
+  return `${iso}T${hh}:${mm}`
+}
+
+/** カレンダーモーダルの日時を、印刷の日付と時刻の 2 行にする */
+function printedFromDateTime(value: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(value)
+  if (!match) return ''
+  return joinArrival(formatPrintedDate(match[1]!), `${Number(match[2])}:${match[3]}`)
 }
 
 /** 画面の日付入力欄が占める幅の下限(px)。印刷の日付より広いので、名前はこの幅も空ける */
@@ -753,35 +767,21 @@ export function ManufactureListView({
             </label>
           ) : (
             <div className="flex flex-col items-end gap-0.5">
-              <CustomerDatePicker
+              <CustomerDateTimePicker
                 plain
                 labelPrefix="到着日"
-                value={isoFromPrintedDate(customerArrival.split('\n')[0] ?? '')}
-                onChange={(iso) =>
-                  onCustomerArrivalChange(
-                    joinArrival(formatPrintedDate(iso), arrivalTimeOf(customerArrival)),
-                  )
-                }
+                value={dateTimeFromPrinted(customerArrival)}
+                onChange={(value) => onCustomerArrivalChange(printedFromDateTime(value))}
               />
-              <label className="inline-flex items-center gap-1">
-                <span className="whitespace-nowrap text-muted">時刻:</span>
-                <input
-                  type="text"
-                  value={arrivalTimeOf(customerArrival)}
-                  onChange={(e) =>
-                    onCustomerArrivalChange(
-                      joinArrival(customerArrival.split('\n')[0] ?? '', e.target.value),
-                    )
-                  }
-                  aria-label="到着時刻"
-                  placeholder="8:00"
-                  className="w-[8em] rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
-                />
-              </label>
+              {customerArrival.trim() ? (
+                <span className="whitespace-pre text-right text-xs text-foreground">
+                  {customerArrival.trim()}
+                </span>
+              ) : null}
             </div>
           )}
           <span className="text-[11px] text-muted">
-            手打ちとカレンダーを切り替えられます。カレンダーの到着日にも時刻を入れられます。手打ちの到着日は Enter で改行（印刷も同じ所で改行）
+            手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。手打ちは Enter で改行（印刷も同じ所で改行）
           </span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
