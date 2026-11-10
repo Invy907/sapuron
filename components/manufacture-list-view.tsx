@@ -21,6 +21,7 @@ import {
   type UnitShapeLegendPosition,
   type UnitShapeLegendPositions,
 } from '@/components/unit-client'
+import { CustomerDatePicker } from '@/components/customer-date-picker'
 import {
   getSegmentColor,
   getSegmentEffectiveLengthMm,
@@ -66,14 +67,17 @@ import {
   type SegmentColor,
 } from '@/lib/segment-colors'
 
-/** 会社名・現場名の文字サイズ(px)の上限と下限。上限は手書き指示の「大きく」に合わせた値 */
+/** 会社名・現場名の文字サイズ(px)の上限と下限。上限は手書き指示の「大きく」に合わせた値。
+ *  下限は、長い名前が右上の日付に重ならないところまで縮めるための値 */
 const HEADER_FONT_PX_MAX = 24
-const HEADER_FONT_PX_MIN = 12
-/**
- * 印刷時にヘッダーの名前へ使える幅(px)。
- * A4 で使える 698px から、右上の日付ブロック(約 145px)と列間(gap-x-4 × 2 ＋ gap-4 ＝ 48px)を引いた残り。
- */
-const HEADER_TEXT_WIDTH_PX = 505
+const HEADER_FONT_PX_MIN = 8
+/** A4 縦・左右余白 10mm で使える幅(px)。日付ブロックを除く前の値 */
+const PRINT_CONTENT_WIDTH_PX = 698
+/** 会社名・顧客名・現場住所のあいだ（gap-x-4 × 2）と、日付ブロックとのあいだ（gap-4） */
+const HEADER_NAME_GAPS_PX = 32
+const HEADER_COLUMN_GAP_PX = 16
+/** 印刷の日付は text-xl（20px） */
+const DATE_PRINT_FONT_PX = 20
 
 /** 全角を 1em、半角を 0.5em として文字列の概算幅を出す */
 function estimateEmWidth(text: string): number {
@@ -85,14 +89,66 @@ function estimateEmWidth(text: string): number {
   return em
 }
 
+const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'] as const
+
+/** カレンダーで選んだ日を、印刷で使っている「R8.11.15（月）」の形にする */
+function formatPrintedDate(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!match) return ''
+  const y = Number(match[1])
+  const m = Number(match[2])
+  const d = Number(match[3])
+  const weekday = WEEKDAYS_JA[new Date(y, m - 1, d).getDay()] ?? ''
+  const reiwa = y > 2019 || (y === 2019 && m >= 5)
+  const era = reiwa ? `R${y - 2018}` : `H${y - 1988}`
+  return `${era}.${m}.${d}（${weekday}）`
+}
+
+/** 印刷用の日付文字列（または旧データの ISO）から、カレンダーに渡す ISO を取り出す */
+function isoFromPrintedDate(text: string): string {
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text.trim())
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`
+  const printed = /^(R|H)(\d+)\.(\d+)\.(\d+)/.exec(text.trim())
+  if (!printed) return ''
+  const year = (printed[1] === 'R' ? 2018 : 1988) + Number(printed[2])
+  const month = Number(printed[3])
+  const day = Number(printed[4])
+  if (month < 1 || month > 12 || day < 1 || day > 31) return ''
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+/** 到着日は 1 行目だけを日付にし、2 行目以降（時刻など）はそのまま残す */
+function replaceFirstLine(current: string, firstLine: string): string {
+  const rest = current.split('\n').slice(1)
+  return rest.length > 0 ? [firstLine, ...rest].join('\n') : firstLine
+}
+
+/** 画面の日付入力欄が占める幅の下限(px)。印刷の日付より広いので、名前はこの幅も空ける */
+const SCREEN_DATE_FORM_PX = 250
+
+/** 右上の日付ブロックの幅(px)。いちばん長い行に合わせ、名前がこの幅へ重ならないようにする */
+function dateBlockWidthPx(date: string, arrival: string): number {
+  const lines = [date.trim(), 'つみ込み', ...arrival.split('\n').map((line) => line.trim())].filter(
+    Boolean,
+  )
+  const em = lines.reduce((max, line) => Math.max(max, estimateEmWidth(line)), 6)
+  return Math.max(SCREEN_DATE_FORM_PX, Math.ceil(em * DATE_PRINT_FONT_PX))
+}
+
 /**
- * 会社名・顧客名・現場住所を 1 行に収める文字サイズ(px)。
+ * 会社名・顧客名・現場住所を 1 行に収め、右上の日付と重ならない文字サイズ(px)。
  *
  * 長い名前だと 2 行目に折り返してしまうため、幅から逆算して必要なぶんだけ縮める
  * （手書き指示：2 行目にならない様に。もう少し字が小さくても可）。
  * 画面と印刷でずれないよう、実測ではなく印刷幅を基準にした固定計算にしている。
  */
-function manufactureHeaderFontPx(company: string, name: string, address: string): number {
+function manufactureHeaderFontPx(
+  company: string,
+  name: string,
+  address: string,
+  date: string,
+  arrival: string,
+): number {
   const em =
     estimateEmWidth(company || '会社名') +
     1 + // 様
@@ -101,9 +157,36 @@ function manufactureHeaderFontPx(company: string, name: string, address: string)
     estimateEmWidth(address || '現場住所') +
     0.45 // 入力 3 つぶんの右パディング
   if (em <= 0) return HEADER_FONT_PX_MAX
-  return Math.max(
-    HEADER_FONT_PX_MIN,
-    Math.min(HEADER_FONT_PX_MAX, Math.floor(HEADER_TEXT_WIDTH_PX / em)),
+  const available =
+    PRINT_CONTENT_WIDTH_PX - HEADER_NAME_GAPS_PX - HEADER_COLUMN_GAP_PX - dateBlockWidthPx(date, arrival)
+  return Math.max(HEADER_FONT_PX_MIN, Math.min(HEADER_FONT_PX_MAX, Math.floor(available / em)))
+}
+
+function InputModeToggle({
+  mode,
+  onChange,
+  label,
+}: {
+  mode: 'text' | 'calendar'
+  onChange: (mode: 'text' | 'calendar') => void
+  label: string
+}) {
+  const buttonClass = (active: boolean) =>
+    `px-1.5 py-0.5 ${active ? 'bg-primary text-white' : 'bg-white text-muted hover:text-foreground'}`
+  return (
+    <span className="inline-flex overflow-hidden rounded border border-slate-300" role="group" aria-label={label}>
+      <button type="button" className={buttonClass(mode === 'text')} aria-pressed={mode === 'text'} onClick={() => onChange('text')}>
+        手打ち
+      </button>
+      <button
+        type="button"
+        className={buttonClass(mode === 'calendar')}
+        aria-pressed={mode === 'calendar'}
+        onClick={() => onChange('calendar')}
+      >
+        カレンダー
+      </button>
+    </span>
   )
 }
 
@@ -379,7 +462,15 @@ export function ManufactureListView({
 
   // 文字サイズは行全体に inline style で当てる（Tailwind の text-* だと画面と印刷で
   // 別々の値になってしまい、1 行に収まる保証ができない）
-  const headerFontPx = manufactureHeaderFontPx(customerCompany, customerName, customerAddress)
+  const headerFontPx = manufactureHeaderFontPx(
+    customerCompany,
+    customerName,
+    customerAddress,
+    customerDate,
+    customerArrival,
+  )
+  const [loadingDateMode, setLoadingDateMode] = useState<'text' | 'calendar'>('text')
+  const [arrivalDateMode, setArrivalDateMode] = useState<'text' | 'calendar'>('text')
   const plainTextInputClass =
     'min-w-0 border-0 bg-transparent px-0 py-0 outline-none placeholder:text-muted/50 focus:underline focus:decoration-primary/40 print:border-transparent print:bg-transparent'
   const headerLabelClass = 'shrink-0 font-semibold text-foreground'
@@ -555,7 +646,7 @@ export function ManufactureListView({
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 折り返すと 2 行目ができてしまうので nowrap にし、幅は文字サイズ側で合わせる */}
           <div
-            className="flex flex-nowrap items-center gap-x-4 whitespace-nowrap"
+            className="flex max-w-full flex-nowrap items-center gap-x-4 whitespace-nowrap print:overflow-hidden"
             style={{ fontSize: headerFontPx }}
           >
             <label className="inline-flex items-center gap-0.5">
@@ -597,57 +688,94 @@ export function ManufactureListView({
         </div>
         {/* 画面では自由入力し、印刷時は入力したとおりに出す */}
         <div className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden">
-          <label className="inline-flex items-center gap-1">
+          <div className="inline-flex items-center gap-1">
             <span className="whitespace-nowrap text-muted">積み込み日:</span>
+            <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
+          </div>
+          {loadingDateMode === 'text' ? (
             <input
               type="text"
               value={customerDate}
               onChange={(e) => onCustomerDateChange(e.target.value)}
               aria-label="積み込み日"
+              placeholder="R8.11.15（月）"
               className="w-[15em] rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
-          </label>
-          <label className="inline-flex items-start gap-1">
-            <span className="whitespace-nowrap py-0.5 text-muted">到着日:</span>
-            {/* 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
-                画面でも折り返さずに見せ、どこで改行されるかを入力しながら分かるようにする */}
-            <textarea
-              value={customerArrival}
-              onChange={(e) => onCustomerArrivalChange(e.target.value)}
-              aria-label="到着日"
-              // 2 行は常に見せ、行を足すと高さも伸ばす。幅はいちばん長い行に合わせて広げる
-              // （狭いと横のスクロールバーが行に重なって読めない）
-              rows={Math.max(2, customerArrival.split('\n').length)}
-              wrap="off"
-              placeholder={'R8.11.9（月）\n8:00予定'}
-              title="Enter で改行すると、印刷も同じ所で改行します"
-              style={{
-                width: `${Math.min(
-                  ARRIVAL_INPUT_MAX_EM,
-                  Math.max(
-                    ARRIVAL_INPUT_MIN_EM,
-                    ...customerArrival.split('\n').map((line) => line.length + 1),
-                  ),
-                )}em`,
-              }}
-              className="resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
-            />
-          </label>
-          <span className="text-[11px] text-muted">到着日は Enter で改行（印刷も同じ所で改行）</span>
+          ) : (
+            <div className="flex flex-col items-end gap-0.5">
+              <CustomerDatePicker
+                plain
+                labelPrefix="積み込み日"
+                value={isoFromPrintedDate(customerDate)}
+                onChange={(iso) => onCustomerDateChange(formatPrintedDate(iso))}
+              />
+              {customerDate.trim() ? (
+                <span className="text-xs text-foreground">{customerDate.trim()}</span>
+              ) : null}
+            </div>
+          )}
+          <div className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">到着日:</span>
+            <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
+          </div>
+          {arrivalDateMode === 'text' ? (
+            <label className="inline-flex items-start gap-1">
+              {/* 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
+                  画面でも折り返さずに見せ、どこで改行されるかを入力しながら分かるようにする */}
+              <textarea
+                value={customerArrival}
+                onChange={(e) => onCustomerArrivalChange(e.target.value)}
+                aria-label="到着日"
+                // 2 行は常に見せ、行を足すと高さも伸ばす。幅はいちばん長い行に合わせて広げる
+                // （狭いと横のスクロールバーが行に重なって読めない）
+                rows={Math.max(2, customerArrival.split('\n').length)}
+                wrap="off"
+                placeholder={'R8.11.9（月）\n8:00予定'}
+                title="Enter で改行すると、印刷も同じ所で改行します"
+                style={{
+                  width: `${Math.min(
+                    ARRIVAL_INPUT_MAX_EM,
+                    Math.max(
+                      ARRIVAL_INPUT_MIN_EM,
+                      ...customerArrival.split('\n').map((line) => line.length + 1),
+                    ),
+                  )}em`,
+                }}
+                className="resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+              />
+            </label>
+          ) : (
+            <div className="flex flex-col items-end gap-0.5">
+              <CustomerDatePicker
+                plain
+                labelPrefix="到着日"
+                value={isoFromPrintedDate(customerArrival.split('\n')[0] ?? '')}
+                onChange={(iso) =>
+                  onCustomerArrivalChange(replaceFirstLine(customerArrival, formatPrintedDate(iso)))
+                }
+              />
+              {customerArrival.trim() ? (
+                <span className="whitespace-pre text-right text-xs text-foreground">
+                  {customerArrival.trim()}
+                </span>
+              ) : null}
+            </div>
+          )}
+          <span className="text-[11px] text-muted">
+            手打ちとカレンダーを切り替えられます。到着日は Enter で改行（印刷も同じ所で改行）
+          </span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
           {/* 手書き指示：予定（到着日）も積み込み日の左端にそろえる。
               改行は入力したところだけで行い、自動では折り返さない */}
           <div className="flex flex-col items-start">
             {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する。
-                「つみ込み」は別行にせず、積み込み日のすぐ右に置く */}
+                「つみ込み」は日付の右に詰めず、次の行に置く（改行してよい、との指示） */}
             {customerDate.trim() ? (
-              <div className="whitespace-nowrap text-xl leading-none">
-                <span className="font-bold">{customerDate.trim()}</span>
-                {customerArrival.trim() ? <span className="ml-1">つみ込み</span> : null}
-              </div>
-            ) : customerArrival.trim() ? (
-              <div className="whitespace-nowrap text-xl leading-none">つみ込み</div>
+              <div className="whitespace-nowrap text-xl font-bold leading-none">{customerDate.trim()}</div>
+            ) : null}
+            {customerDate.trim() || customerArrival.trim() ? (
+              <div className="mt-0.5 whitespace-nowrap text-xl leading-none">つみ込み</div>
             ) : null}
             {customerArrival.trim() ? (
               <div className="whitespace-pre text-xl font-bold">{customerArrival.trim()}</div>
