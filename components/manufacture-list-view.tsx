@@ -117,10 +117,17 @@ function isoFromPrintedDate(text: string): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-/** 到着日は 1 行目だけを日付にし、2 行目以降（時刻など）はそのまま残す */
-function replaceFirstLine(current: string, firstLine: string): string {
-  const rest = current.split('\n').slice(1)
-  return rest.length > 0 ? [firstLine, ...rest].join('\n') : firstLine
+/** 到着日の 2 行目以降（時刻など） */
+function arrivalTimeOf(value: string): string {
+  return value.split('\n').slice(1).join('\n').trim()
+}
+
+/** 到着日は 1 行目が日付、2 行目が時刻。空の行は印刷に出さない */
+function joinArrival(dateLine: string, timeLine: string): string {
+  const date = dateLine.trim()
+  const time = timeLine.trim()
+  if (date && time) return `${date}\n${time}`
+  return date || time
 }
 
 /** 画面の日付入力欄が占める幅の下限(px)。印刷の日付より広いので、名前はこの幅も空ける */
@@ -751,18 +758,30 @@ export function ManufactureListView({
                 labelPrefix="到着日"
                 value={isoFromPrintedDate(customerArrival.split('\n')[0] ?? '')}
                 onChange={(iso) =>
-                  onCustomerArrivalChange(replaceFirstLine(customerArrival, formatPrintedDate(iso)))
+                  onCustomerArrivalChange(
+                    joinArrival(formatPrintedDate(iso), arrivalTimeOf(customerArrival)),
+                  )
                 }
               />
-              {customerArrival.trim() ? (
-                <span className="whitespace-pre text-right text-xs text-foreground">
-                  {customerArrival.trim()}
-                </span>
-              ) : null}
+              <label className="inline-flex items-center gap-1">
+                <span className="whitespace-nowrap text-muted">時刻:</span>
+                <input
+                  type="text"
+                  value={arrivalTimeOf(customerArrival)}
+                  onChange={(e) =>
+                    onCustomerArrivalChange(
+                      joinArrival(customerArrival.split('\n')[0] ?? '', e.target.value),
+                    )
+                  }
+                  aria-label="到着時刻"
+                  placeholder="8:00"
+                  className="w-[8em] rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+                />
+              </label>
             </div>
           )}
           <span className="text-[11px] text-muted">
-            手打ちとカレンダーを切り替えられます。到着日は Enter で改行（印刷も同じ所で改行）
+            手打ちとカレンダーを切り替えられます。カレンダーの到着日にも時刻を入れられます。手打ちの到着日は Enter で改行（印刷も同じ所で改行）
           </span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
