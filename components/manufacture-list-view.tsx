@@ -152,8 +152,7 @@ function dateBlockWidthPx(
   reserveScreenForm: boolean,
 ): number {
   const lines = [
-    date.trim(),
-    ...(showTsumikomi ? ['つみ込み'] : []),
+    ...(showTsumikomi ? [date.trim(), 'つみ込み'] : []),
     ...arrival.split('\n').map((line) => line.trim()),
   ].filter(Boolean)
   const em = lines.reduce((max, line) => Math.max(max, estimateEmWidth(line)), 6)
@@ -451,7 +450,7 @@ export function ManufactureListView({
   onCustomerAddressChange: (value: string) => void
   customerDate: string
   onCustomerDateChange: (value: string) => void
-  /** 印刷に「つみ込み」の行を出す。積み込みのときだけ必要 */
+  /** 印刷に積み込み日と「つみ込み」を出す。積み込みのときだけ必要 */
   showTsumikomi: boolean
   onShowTsumikomiChange: (value: boolean) => void
   customerArrival: string
@@ -737,11 +736,21 @@ export function ManufactureListView({
           className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden"
           style={{ width: SCREEN_DATE_FORM_PX }}
         >
-          <div className="inline-flex items-center gap-1">
-            <span className="whitespace-nowrap text-muted">積み込み日:</span>
-            <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
-          </div>
-          {loadingDateMode === 'text' ? (
+          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
+            <input
+              type="checkbox"
+              checked={showTsumikomi}
+              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
+            />
+            つみ込み（積み込み日を印刷）
+          </label>
+          {showTsumikomi ? (
+            <div className="inline-flex items-center gap-1">
+              <span className="whitespace-nowrap text-muted">積み込み日:</span>
+              <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
+            </div>
+          ) : null}
+          {!showTsumikomi ? null : loadingDateMode === 'text' ? (
             <input
               type="text"
               value={customerDate}
@@ -763,14 +772,6 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
-          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
-            <input
-              type="checkbox"
-              checked={showTsumikomi}
-              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
-            />
-            つみ込みを表示
-          </label>
           <div className="inline-flex items-center gap-1">
             <span className="whitespace-nowrap text-muted">到着日:</span>
             <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
@@ -804,7 +805,7 @@ export function ManufactureListView({
             </div>
           )}
           <span className="text-[11px] leading-snug text-muted">
-            手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。「つみ込み」はチェックしたときだけ印刷します。手打ちは Enter で改行（印刷も同じ所で改行）
+            手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。積み込み日と「つみ込み」はチェックしたときだけ印刷します。手打ちは Enter で改行（印刷も同じ所で改行）
           </span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
@@ -813,7 +814,7 @@ export function ManufactureListView({
           <div className="flex flex-col items-start">
             {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する。
                 「つみ込み」は日付の右に詰めず、次の行に置く（改行してよい、との指示） */}
-            {customerDate.trim() ? (
+            {showTsumikomi && customerDate.trim() ? (
               <div
                 className="whitespace-nowrap font-bold leading-none"
                 style={{ fontSize: DATE_PRINT_FONT_PX }}
