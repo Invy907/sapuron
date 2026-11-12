@@ -194,6 +194,11 @@ button,
     line-height: 1.15 !important;
   }
 
+  /* 印刷の現場名は、画面の入力欄より狭い日付ブロックに合わせて大きくする */
+  .manufacture-list-names {
+    font-size: var(--manufacture-header-print-font) !important;
+  }
+
   /* 自由記入メモは表の右外に絶対配置している。途中で改ページされないようにする */
   .manufacture-memo-print {
     break-inside: avoid;

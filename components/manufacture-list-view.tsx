@@ -68,17 +68,17 @@ import {
   type SegmentColor,
 } from '@/lib/segment-colors'
 
-/** 会社名・現場名の文字サイズ(px)の上限と下限。上限は手書き指示の「大きく」に合わせた値。
+/** 会社名・現場名の文字サイズ(px)の上限と下限。上限は手書きの「文字大きく」に合わせた値。
  *  下限は、長い名前が右上の日付に重ならないところまで縮めるための値 */
-const HEADER_FONT_PX_MAX = 24
+const HEADER_FONT_PX_MAX = 32
 const HEADER_FONT_PX_MIN = 8
 /** A4 縦・左右余白 10mm で使える幅(px)。日付ブロックを除く前の値 */
 const PRINT_CONTENT_WIDTH_PX = 698
 /** 会社名・顧客名・現場住所のあいだ（gap-x-4 × 2）と、日付ブロックとのあいだ（gap-4） */
 const HEADER_NAME_GAPS_PX = 32
 const HEADER_COLUMN_GAP_PX = 16
-/** 印刷の日付は text-xl（20px） */
-const DATE_PRINT_FONT_PX = 20
+/** 印刷の日付・時刻。手書きの「多少小さくしてよい」に合わせ、以前の 20px より小さくする */
+const DATE_PRINT_FONT_PX = 16
 
 /** 全角を 1em、半角を 0.5em として文字列の概算幅を出す */
 function estimateEmWidth(text: string): number {
@@ -148,12 +148,21 @@ function printedFromDateTime(value: string): string {
 const SCREEN_DATE_FORM_PX = 250
 
 /** 右上の日付ブロックの幅(px)。いちばん長い行に合わせ、名前がこの幅へ重ならないようにする */
-function dateBlockWidthPx(date: string, arrival: string): number {
-  const lines = [date.trim(), 'つみ込み', ...arrival.split('\n').map((line) => line.trim())].filter(
-    Boolean,
-  )
+function dateBlockWidthPx(
+  date: string,
+  arrival: string,
+  showTsumikomi: boolean,
+  reserveScreenForm: boolean,
+): number {
+  const lines = [
+    date.trim(),
+    ...(showTsumikomi ? ['つみ込み'] : []),
+    ...arrival.split('\n').map((line) => line.trim()),
+  ].filter(Boolean)
   const em = lines.reduce((max, line) => Math.max(max, estimateEmWidth(line)), 6)
-  return Math.max(SCREEN_DATE_FORM_PX, Math.ceil(em * DATE_PRINT_FONT_PX))
+  const textWidth = Math.ceil(em * DATE_PRINT_FONT_PX)
+  // 画面の入力欄は印刷の日付より広い。画面用の文字サイズだけ、その幅も空ける
+  return reserveScreenForm ? Math.max(SCREEN_DATE_FORM_PX, textWidth) : textWidth
 }
 
 /**
@@ -169,6 +178,8 @@ function manufactureHeaderFontPx(
   address: string,
   date: string,
   arrival: string,
+  showTsumikomi: boolean,
+  reserveScreenForm: boolean,
 ): number {
   const em =
     estimateEmWidth(company || '会社名') +
@@ -179,7 +190,10 @@ function manufactureHeaderFontPx(
     0.45 // 入力 3 つぶんの右パディング
   if (em <= 0) return HEADER_FONT_PX_MAX
   const available =
-    PRINT_CONTENT_WIDTH_PX - HEADER_NAME_GAPS_PX - HEADER_COLUMN_GAP_PX - dateBlockWidthPx(date, arrival)
+    PRINT_CONTENT_WIDTH_PX -
+    HEADER_NAME_GAPS_PX -
+    HEADER_COLUMN_GAP_PX -
+    dateBlockWidthPx(date, arrival, showTsumikomi, reserveScreenForm)
   return Math.max(HEADER_FONT_PX_MIN, Math.min(HEADER_FONT_PX_MAX, Math.floor(available / em)))
 }
 
@@ -409,6 +423,8 @@ export function ManufactureListView({
   onCustomerAddressChange,
   customerDate,
   onCustomerDateChange,
+  showTsumikomi,
+  onShowTsumikomiChange,
   customerArrival,
   onCustomerArrivalChange,
   customerMemo,
@@ -438,6 +454,9 @@ export function ManufactureListView({
   onCustomerAddressChange: (value: string) => void
   customerDate: string
   onCustomerDateChange: (value: string) => void
+  /** 印刷に「つみ込み」の行を出す。積み込みのときだけ必要 */
+  showTsumikomi: boolean
+  onShowTsumikomiChange: (value: boolean) => void
   customerArrival: string
   onCustomerArrivalChange: (value: string) => void
   customerMemo: string
@@ -483,13 +502,16 @@ export function ManufactureListView({
 
   // 文字サイズは行全体に inline style で当てる（Tailwind の text-* だと画面と印刷で
   // 別々の値になってしまい、1 行に収まる保証ができない）
-  const headerFontPx = manufactureHeaderFontPx(
+  const headerFontArgs = [
     customerCompany,
     customerName,
     customerAddress,
     customerDate,
     customerArrival,
-  )
+    showTsumikomi,
+  ] as const
+  const screenHeaderFontPx = manufactureHeaderFontPx(...headerFontArgs, true)
+  const printHeaderFontPx = manufactureHeaderFontPx(...headerFontArgs, false)
   const [loadingDateMode, setLoadingDateMode] = useState<'text' | 'calendar'>('text')
   const [arrivalDateMode, setArrivalDateMode] = useState<'text' | 'calendar'>('text')
   const plainTextInputClass =
@@ -667,8 +689,13 @@ export function ManufactureListView({
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 折り返すと 2 行目ができてしまうので nowrap にし、幅は文字サイズ側で合わせる */}
           <div
-            className="flex max-w-full flex-nowrap items-center gap-x-4 whitespace-nowrap print:overflow-hidden"
-            style={{ fontSize: headerFontPx }}
+            className="manufacture-list-names flex max-w-full flex-nowrap items-center gap-x-4 whitespace-nowrap print:overflow-hidden"
+            style={
+              {
+                fontSize: screenHeaderFontPx,
+                '--manufacture-header-print-font': `${printHeaderFontPx}px`,
+              } as CSSProperties
+            }
           >
             <label className="inline-flex items-center gap-0.5">
               <AutoWidthInput
@@ -712,6 +739,14 @@ export function ManufactureListView({
           <div className="inline-flex items-center gap-1">
             <span className="whitespace-nowrap text-muted">積み込み日:</span>
             <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
+            <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={showTsumikomi}
+                onChange={(e) => onShowTsumikomiChange(e.target.checked)}
+              />
+              つみ込みを表示
+            </label>
           </div>
           {loadingDateMode === 'text' ? (
             <input
@@ -781,7 +816,7 @@ export function ManufactureListView({
             </div>
           )}
           <span className="text-[11px] text-muted">
-            手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。手打ちは Enter で改行（印刷も同じ所で改行）
+            手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。「つみ込み」はチェックしたときだけ印刷します。手打ちは Enter で改行（印刷も同じ所で改行）
           </span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
@@ -791,13 +826,22 @@ export function ManufactureListView({
             {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する。
                 「つみ込み」は日付の右に詰めず、次の行に置く（改行してよい、との指示） */}
             {customerDate.trim() ? (
-              <div className="whitespace-nowrap text-xl font-bold leading-none">{customerDate.trim()}</div>
+              <div
+                className="whitespace-nowrap font-bold leading-none"
+                style={{ fontSize: DATE_PRINT_FONT_PX }}
+              >
+                {customerDate.trim()}
+              </div>
             ) : null}
-            {customerDate.trim() || customerArrival.trim() ? (
-              <div className="mt-0.5 whitespace-nowrap text-xl leading-none">つみ込み</div>
+            {showTsumikomi ? (
+              <div className="mt-0.5 whitespace-nowrap leading-none" style={{ fontSize: DATE_PRINT_FONT_PX }}>
+                つみ込み
+              </div>
             ) : null}
             {customerArrival.trim() ? (
-              <div className="whitespace-pre text-xl font-bold">{customerArrival.trim()}</div>
+              <div className="whitespace-pre font-bold" style={{ fontSize: DATE_PRINT_FONT_PX }}>
+                {customerArrival.trim()}
+              </div>
             ) : null}
           </div>
         </div>
