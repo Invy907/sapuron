@@ -46,9 +46,6 @@ const COL_TATE = 54
 /** 印刷時に自由記入メモを置く、表の右外に残る余白の幅(px)。
  *  A4 縦・左右余白 10mm で使える幅は約 698px、表は 554px なので右に約 144px 残る */
 const RIGHT_COL_WIDTH = 140
-/** 到着日の入力欄の幅（em）。いちばん長い行に合わせて、この範囲で広げる */
-const ARRIVAL_INPUT_MIN_EM = 15
-const ARRIVAL_INPUT_MAX_EM = 28
 /** ヘッダー（会社名・現場名）と表のあいだに空ける距離。印刷で 5mm ほど空ける指示 */
 const HEADER_TABLE_GAP_MM = 5
 /** 自由記入メモを置く、ヘッダー上端からのオフセット(px)。
@@ -144,8 +141,8 @@ function printedFromDateTime(value: string): string {
   return joinArrival(formatPrintedDate(match[1]!), `${Number(match[2])}:${match[3]}予定`)
 }
 
-/** 画面の日付入力欄が占める幅の下限(px)。印刷の日付より広いので、名前はこの幅も空ける */
-const SCREEN_DATE_FORM_PX = 250
+/** 画面の日付入力欄の幅(px)。入力欄はこの幅に固定し、名前の文字サイズもこの幅を空けて決める */
+const SCREEN_DATE_FORM_PX = 240
 
 /** 右上の日付ブロックの幅(px)。いちばん長い行に合わせ、名前がこの幅へ重ならないようにする */
 function dateBlockWidthPx(
@@ -734,19 +731,15 @@ export function ManufactureListView({
             </label>
           </div>
         </div>
-        {/* 画面では自由入力し、印刷時は入力したとおりに出す */}
-        <div className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden">
+        {/* 画面では自由入力し、印刷時は入力したとおりに出す。
+            幅は固定にする。中身に合わせて広がると、左の会社名・現場住所の上に重なって入力できなくなる */}
+        <div
+          className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden"
+          style={{ width: SCREEN_DATE_FORM_PX }}
+        >
           <div className="inline-flex items-center gap-1">
             <span className="whitespace-nowrap text-muted">積み込み日:</span>
             <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
-            <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
-              <input
-                type="checkbox"
-                checked={showTsumikomi}
-                onChange={(e) => onShowTsumikomiChange(e.target.checked)}
-              />
-              つみ込みを表示
-            </label>
           </div>
           {loadingDateMode === 'text' ? (
             <input
@@ -755,7 +748,7 @@ export function ManufactureListView({
               onChange={(e) => onCustomerDateChange(e.target.value)}
               aria-label="積み込み日"
               placeholder="R8.11.15（月）"
-              className="w-[15em] rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+              className="w-full rounded border border-slate-300 bg-white px-1.5 py-0.5 text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
           ) : (
             <div className="flex flex-col items-end gap-0.5">
@@ -770,36 +763,31 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
+          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
+            <input
+              type="checkbox"
+              checked={showTsumikomi}
+              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
+            />
+            つみ込みを表示
+          </label>
           <div className="inline-flex items-center gap-1">
             <span className="whitespace-nowrap text-muted">到着日:</span>
             <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
           </div>
           {arrivalDateMode === 'text' ? (
-            <label className="inline-flex items-start gap-1">
-              {/* 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
-                  画面でも折り返さずに見せ、どこで改行されるかを入力しながら分かるようにする */}
-              <textarea
-                value={customerArrival}
-                onChange={(e) => onCustomerArrivalChange(e.target.value)}
-                aria-label="到着日"
-                // 2 行は常に見せ、行を足すと高さも伸ばす。幅はいちばん長い行に合わせて広げる
-                // （狭いと横のスクロールバーが行に重なって読めない）
-                rows={Math.max(2, customerArrival.split('\n').length)}
-                wrap="off"
-                placeholder={'R8.11.9（月）\n8:00予定'}
-                title="Enter で改行すると、印刷も同じ所で改行します"
-                style={{
-                  width: `${Math.min(
-                    ARRIVAL_INPUT_MAX_EM,
-                    Math.max(
-                      ARRIVAL_INPUT_MIN_EM,
-                      ...customerArrival.split('\n').map((line) => line.length + 1),
-                    ),
-                  )}em`,
-                }}
-                className="resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
-              />
-            </label>
+            // 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
+            // 画面でも折り返さずに見せ、長い行は横にスクロールする
+            <textarea
+              value={customerArrival}
+              onChange={(e) => onCustomerArrivalChange(e.target.value)}
+              aria-label="到着日"
+              rows={Math.max(2, customerArrival.split('\n').length)}
+              wrap="off"
+              placeholder={'R8.11.9（月）\n8:00予定'}
+              title="Enter で改行すると、印刷も同じ所で改行します"
+              className="w-full resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
+            />
           ) : (
             <div className="flex flex-col items-end gap-0.5">
               <CustomerDateTimePicker
@@ -815,7 +803,7 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
-          <span className="text-[11px] text-muted">
+          <span className="text-[11px] leading-snug text-muted">
             手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。「つみ込み」はチェックしたときだけ印刷します。手打ちは Enter で改行（印刷も同じ所で改行）
           </span>
         </div>
