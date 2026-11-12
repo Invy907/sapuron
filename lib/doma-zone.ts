@@ -139,7 +139,10 @@ export type DomaZoneCutPart = { lengthMm: number; bends: DomaBends }
 /** 標準筋 1 セットのうち、区域にかかる本 */
 export type DomaZoneCut = {
   zoneId: string
-  /** 区域にかかる本数（区域の幅 ÷ 標準筋のピッチ の切り上げ） */
+  /**
+   * 区域にかかる本数。標準筋を配筋範囲の端（settings.countFrom の側）からピッチごとに並べ、
+   * 区域の幅の中に来る本を数える（区域の幅 ÷ ピッチ の切り上げとは 1 本ずれることがある）
+   */
   count: number
   /** 区域の位置（標準筋の始点からの mm） */
   fromMm: number
@@ -200,6 +203,10 @@ export function domaRunZoneCuts(
         return [center - half, center + half]
       })()
 
+  // 標準筋が並ぶ向きの縮尺（配筋範囲の px ÷ mm）。寸法線があればその長さ、なければ線の縮尺と同じ
+  const crossK = rp1 > rp0 && run.span_mm > 0 ? (rp1 - rp0) / run.span_mm : k
+  const countFromHigh = run.settings.countFrom === 'high'
+
   const cuts: DomaZoneCut[] = []
   let remaining = total
   for (const zone of runs) {
@@ -240,8 +247,19 @@ export function domaRunZoneCuts(
 
     // 区域の幅が標準筋の並ぶ幅に収まっていれば入力値、はみ出していれば重なる部分を図面から測る
     const inside = zp0 >= rp0 - 1e-6 && zp1 <= rp1 + 1e-6
-    const widthMm = inside ? zoneWidthMm : Math.round(overlapPx / k / 10) * 10
-    const count = Math.min(countBars(widthMm, run.settings.pitchMm), remaining)
+    const widthMm = inside ? zoneWidthMm : Math.round(overlapPx / crossK / 10) * 10
+    // 数え始めの端から区域までの距離。端に近い（配筋範囲の 3% 以内）ときは端にそろえる
+    let zoneFromMm = countFromHigh
+      ? (rp1 - Math.min(zp1, rp1)) / crossK
+      : (Math.max(zp0, rp0) - rp0) / crossK
+    const spanSnapMm = run.span_mm * 0.03
+    if (zoneFromMm <= spanSnapMm) zoneFromMm = 0
+    else if (Math.abs(zoneFromMm + widthMm - run.span_mm) <= spanSnapMm) zoneFromMm = run.span_mm - widthMm
+    else zoneFromMm = Math.round(zoneFromMm / 10) * 10
+    const count = Math.min(
+      countBarsInRange(zoneFromMm, zoneFromMm + widthMm, run.settings.pitchMm, total),
+      remaining,
+    )
     if (count <= 0) continue
     remaining -= count
 
@@ -269,6 +287,17 @@ export function domaRunZoneCuts(
     })
   }
   return cuts
+}
+
+/**
+ * 端から 0, pitch, 2·pitch… と並べた total 本のうち、[fromMm, toMm) に来る本数。
+ * 例: 9,555 を 200 で 48 本、区域 2,275〜5,915 → 2,400〜5,800 の 18 本
+ */
+export function countBarsInRange(fromMm: number, toMm: number, pitchMm: number, total: number): number {
+  if (!(pitchMm > 0) || !(toMm > fromMm) || total <= 0) return 0
+  const first = Math.max(0, Math.ceil(fromMm / pitchMm - 1e-9))
+  const end = Math.min(total, Math.ceil(toMm / pitchMm - 1e-9))
+  return Math.max(0, end - first)
 }
 
 /** 標準筋の線を区域の中で消す範囲（図面 px）。entries は区域の辺と、そこから重ね分入った位置（線の向きの座標） */
@@ -367,7 +396,7 @@ export function splitDomaRunByZones(
         length_mm: part.lengthMm,
         span_mm: cut.count * pitch,
         bends: part.bends,
-        pieces_override: null,
+        pieces_override: run.settings.zoneCutOverrides?.[`${cut.zoneId}:${side}`] ?? null,
       })
     }
   }

@@ -122,6 +122,13 @@ export interface DrawingDomaRun {
     zone?: DomaZoneSpec
     /** 標準筋で、始点から区域の辺までの長さの手入力（区域の id ごと）。なければ図面から測る */
     zoneStarts?: Record<string, number>
+    /**
+     * 標準筋で、配筋範囲のどちら側の端からピッチごとに並べて本数を数えるか（線と直交する向きの図面座標で、
+     * low = 小さい側、high = 大きい側）。区域にかかる本は、この並びで区域の中に来る本を数える。未設定は low
+     */
+    countFrom?: 'low' | 'high'
+    /** 標準筋で、区域で切った手前・先の本の加工長さの手入力（キーは「区域の id:before / after」）。なければ自動 */
+    zoneCutOverrides?: Record<string, number[]>
   }
   /** 加工本の長さの手入力。null なら自動 */
   pieces_override: number[] | null

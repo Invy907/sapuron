@@ -8,6 +8,7 @@ import {
   domaZoneScreenSide,
   domaRunZoneCuts,
   domaZoneCutGap,
+  countBarsInRange,
   expandDomaRuns,
   splitDomaRunByZones,
   type DomaZoneSpec,
@@ -128,12 +129,13 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     y2,
   })
 
-  // 上の辺（壁）が標準筋の始点にそろう区域: 手前はなく、先は L − 区域 + 重ね、区域の側は曲げなし
+  // 上の辺（壁）が標準筋の始点にそろう区域: 手前はなく、先は L − 区域 + 重ね、区域の側は曲げなし。
+  // 本数は配筋範囲の左端（450 px）から 200 ごとに並べ、区域 500〜2000 mm に来る 600〜1800 の 7 本
   const top = zoneAt(0, 195, { walls: { top: true, bottom: false, left: false, right: false } })
   const [cut] = domaRunZoneCuts(tate, [tate, top], dims)
   assert.deepStrictEqual(cut, {
     zoneId: 'z1',
-    count: 8,
+    count: 7,
     fromMm: 0,
     toMm: 1950,
     positionSource: 'drawing',
@@ -141,15 +143,18 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     after: { lengthMm: 4110, bends: 'end' },
     crossPx: [500, 650],
   })
-  // 区域にかからない 7 本は元の L、かかる 8 本は 4110
+  // 区域にかからない 8 本は元の L、かかる 7 本は 4110
   const rows = splitDomaRunByZones(tate, [tate, top], dims)
   assert.deepStrictEqual(
     rows.map((r) => [r.length_mm, r.span_mm, r.bends]),
     [
-      [5460, 1400, 'both'],
-      [4110, 1600, 'end'],
+      [5460, 1600, 'both'],
+      [4110, 1400, 'end'],
     ],
   )
+  // 右端から数えると区域は 1000〜2500 mm で、1000〜2400 の 8 本
+  const fromRight = { ...tate, settings: { ...tate.settings, countFrom: 'high' as const } }
+  assert.strictEqual(domaRunZoneCuts(fromRight, [fromRight, top], dims)[0]!.count, 8)
 
   // 途中にある区域: 手前と先の 2 本に分かれ、どちらも区域の中へ 600 入る
   const middle = zoneAt(200, 395)
@@ -187,6 +192,30 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     expandDomaRuns([tate, top], dims).map((r) => r.id),
     ['r1', 'r1:z1:after', 'z1:tate', 'z1:yoko'],
   )
+}
+
+// 顧客の拾い（R8.11 大地様邸・福本様邸）: 標準筋を端からピッチごとに並べ、区域に来る本を数える
+{
+  // 大地 ヨコ: 9,555 を 200 で 48 本。下から 0〜2,275 が 12 本、区域 2,275〜5,915 が 18 本、残り 18 本
+  assert.strictEqual(countBarsInRange(0, 2275, 200, 48), 12)
+  assert.strictEqual(countBarsInRange(2275, 5915, 200, 48), 18)
+  assert.strictEqual(countBarsInRange(5915, 9555, 200, 48), 18)
+  // 大地 タテ: 8,190 を 200 で 41 本。左の区域 4,550 が 23 本、残り 18 本
+  assert.strictEqual(countBarsInRange(0, 4550, 200, 41), 23)
+  assert.strictEqual(countBarsInRange(4550, 8190, 200, 41), 18)
+  // 福本 タテ: 10,920 を 200 で 55 本。区域 3,640 は右から数えると 18 本、左からだと 19 本
+  assert.strictEqual(countBarsInRange(910, 4550, 200, 55), 18)
+  assert.strictEqual(countBarsInRange(6370, 10010, 200, 55), 19)
+}
+
+// 曲げのない端がある 1 本は、必要な長さより長く手入力してよい（5,400 → 6,000 から切りやすい 5,500）
+{
+  const settings = { ...DEFAULT_DOMA_BAR_SETTINGS, bendMm: 250 }
+  const longer = layoutDomaRun(5150, 3640, 'start', settings, [5500])
+  assert.deepStrictEqual([longer.source, longer.warnings], ['manual', []])
+  // 両端曲げ（伸ばす端がない）や、必要な長さより短いときは合計が合わない警告
+  assert.ok(layoutDomaRun(4900, 3640, 'both', settings, [5500]).warnings.includes('MANUAL_SUM_MISMATCH'))
+  assert.ok(layoutDomaRun(5150, 3640, 'start', settings, [5300]).warnings.includes('MANUAL_SUM_MISMATCH'))
 }
 
 console.log('doma-zone tests passed')

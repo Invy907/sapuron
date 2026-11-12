@@ -29,6 +29,7 @@ import {
   domaDiameterOptionLabel,
   domaSettingsWithDiameter,
   layoutDomaRun,
+  isLongerFreeEndPiece,
   rebalanceDomaPieces,
   type DomaBarSettings,
   type DomaBends,
@@ -473,7 +474,10 @@ function PiecesEditor({
       setEditError('長さは数字で入力してください。')
       return
     }
-    const next = rebalanceDomaPieces(layout, index, mm, run.settings.bendMm, run.settings.lapMm)
+    // 曲げのない端がある 1 本は、必要な長さより長く入力してもよい（例: 5,400 を 6,000 から切りやすい 5,500 に）
+    const next =
+      rebalanceDomaPieces(layout, index, mm, run.settings.bendMm, run.settings.lapMm) ??
+      (isLongerFreeEndPiece([mm], run.bends, layout.requiredTotalMm) && layout.pieces.length === 1 ? [mm] : null)
     if (next) {
       setEditError(null)
       onOverride(next)
@@ -609,6 +613,12 @@ function RunEditor({
   const vertical = Math.abs(run.y2 - run.y1) >= Math.abs(run.x2 - run.x1)
   const startEdge = vertical ? (run.y1 <= run.y2 ? 'top' : 'bottom') : run.x1 <= run.x2 ? 'left' : 'right'
   const startSideLabel = DOMA_ZONE_SIDE_LABEL[domaZoneScreenSide(startEdge, viewRotationSteps)]
+  // 本数を数え始める端（線と直交する向き。low = 図面座標の小さい側）を、画面で見た上下左右で出す
+  const countFromLabel = (side: 'low' | 'high') => {
+    const edge: DomaZoneEdge = vertical ? (side === 'low' ? 'left' : 'right') : side === 'low' ? 'top' : 'bottom'
+    return DOMA_ZONE_SIDE_LABEL[domaZoneScreenSide(edge, viewRotationSteps)]
+  }
+  const countFrom = run.settings.countFrom ?? 'low'
   const setZoneStart = (zoneId: string, mm: number | null) => {
     const zoneStarts = { ...run.settings.zoneStarts }
     if (mm == null) delete zoneStarts[zoneId]
@@ -676,6 +686,26 @@ function RunEditor({
           <p className="font-medium" style={{ color: DOMA_ZONE_COLOR }}>
             区域で切る本（区域の中へはみ出しの分だけ入る）
           </p>
+          {/* 標準筋を配筋範囲の端からピッチごとに並べ、区域の中に来る本を数える。どちらの端から並べるかで 1 本変わることがある */}
+          <div className="flex items-center gap-1 text-muted">
+            <span>本数の数え始め</span>
+            {(['low', 'high'] as const).map((side) => (
+              <button
+                key={side}
+                type="button"
+                aria-pressed={countFrom === side}
+                onClick={() => commit({ settings: { ...run.settings, countFrom: side } })}
+                title="この端からピッチごとに並べて、区域の中に来る本を数えます"
+                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                  countFrom === side
+                    ? 'bg-slate-700 text-white'
+                    : 'border border-border bg-white text-muted hover:bg-gray-50'
+                }`}
+              >
+                {countFromLabel(side)}から
+              </button>
+            ))}
+          </div>
           {cuts.map((cut) => (
             <div key={cut.zoneId} className="tabular-nums text-foreground">
               <p>
@@ -725,19 +755,30 @@ function RunEditor({
               ) : null}
               {(
                 [
-                  ['手前', cut.before],
-                  ['先', cut.after],
+                  ['手前', 'before', cut.before],
+                  ['先', 'after', cut.after],
                 ] as const
-              ).map(([label, part]) =>
-                part ? (
-                  <p key={label} className="pl-2">
-                    {label}{' '}
-                    {piecesSummary(
-                      layoutDomaRun(part.lengthMm, cut.count * run.settings.pitchMm, part.bends, run.settings),
-                    )}
-                  </p>
-                ) : null,
-              )}
+              ).map(([label, side, part]) => {
+                const row = part ? rows.find((r) => r.id === `${run.id}:${cut.zoneId}:${side}`) : undefined
+                if (!part || !row) return null
+                const key = `${cut.zoneId}:${side}`
+                return (
+                  <div key={label} className="mt-1 rounded border border-green-200 bg-white p-1.5">
+                    <p className="mb-1 text-muted">{label}</p>
+                    {/* 区域で切った本も、加工長さを手入力できる（6,000 から切りやすい長さにするなど） */}
+                    <PiecesEditor
+                      run={row}
+                      layout={layoutOf(row)}
+                      onOverride={(lengths) => {
+                        const zoneCutOverrides = { ...run.settings.zoneCutOverrides }
+                        if (lengths == null) delete zoneCutOverrides[key]
+                        else zoneCutOverrides[key] = lengths
+                        commit({ settings: { ...run.settings, zoneCutOverrides } })
+                      }}
+                    />
+                  </div>
+                )
+              })}
             </div>
           ))}
         </section>

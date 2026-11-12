@@ -439,6 +439,7 @@ function autoDomaPieceLengths(
  * override（加工本の長さの手入力）があればそれを使い、合計が
  * L + 端部曲げ × 曲げ数 + 重ね × (本数 − 1) と合わなければ MANUAL_SUM_MISMATCH を出す
  * （ずれを自動で直したり隠したりしない）。
+ * ただし曲げのない端がある 1 本は、長く入力してもよい（定尺から切りやすい長さにするなど。長い分はその端が伸びる）。
  * 始点側の曲げは 1 本目、終点側の曲げは最後の本に付く。
  */
 export function layoutDomaRun(
@@ -456,7 +457,8 @@ export function layoutDomaRun(
   const n = lengths.length
   const requiredTotalMm = lengthMm + bendCountOf(bends) * bendMm + lapMm * Math.max(n - 1, 0)
   const warnings: DomaRunWarning[] = []
-  if (manual && lengths.reduce((sum, v) => sum + v, 0) !== requiredTotalMm) {
+  const manualSum = lengths.reduce((sum, v) => sum + v, 0)
+  if (manual && manualSum !== requiredTotalMm && !isLongerFreeEndPiece(lengths, bends, requiredTotalMm)) {
     warnings.push('MANUAL_SUM_MISMATCH')
   }
 
@@ -496,6 +498,16 @@ export function layoutDomaRun(
     source: manual ? 'manual' : 'auto',
     warnings,
   }
+}
+
+/** 曲げのない端がある 1 本を、必要な長さ以上・定尺以下で手入力したか（長い分はその端が伸びる） */
+export function isLongerFreeEndPiece(lengths: number[], bends: DomaBends, requiredTotalMm: number): boolean {
+  return (
+    lengths.length === 1 &&
+    bends !== 'both' &&
+    lengths[0]! >= requiredTotalMm &&
+    lengths[0]! <= DOMA_STOCK_CANDIDATES_MM[0]
+  )
 }
 
 /** 1本の変更量を他の本へ移し、加工総長・重ね・最大定尺を維持する。 */
