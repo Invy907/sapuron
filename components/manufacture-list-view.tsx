@@ -804,9 +804,6 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
-          <span className="text-[11px] leading-snug text-muted">
-            手打ちとカレンダーを切り替えられます。到着日のカレンダーでは時刻も選べます。積み込み日と「つみ込み」はチェックしたときだけ印刷します。手打ちは Enter で改行（印刷も同じ所で改行）
-          </span>
         </div>
         <div className="hidden shrink-0 items-start leading-tight print:flex">
           {/* 手書き指示：予定（到着日）も積み込み日の左端にそろえる。
