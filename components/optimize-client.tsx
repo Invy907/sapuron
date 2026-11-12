@@ -185,6 +185,8 @@ export function OptimizeClient({
   const [customerName, setCustomerName] = useState('')
   /** 積み込み日（自由入力。旧データは ISO YYYY-MM-DD） */
   const [customerDate, setCustomerDate] = useState('')
+  /** 印刷に「つみ込み」行を出す。積み込みのときだけ必要 */
+  const [showTsumikomi, setShowTsumikomi] = useState(false)
   /** 到着日（自由入力。旧データは YYYY-MM-DDTHH:mm） */
   const [customerArrival, setCustomerArrival] = useState('')
   /** 予定・注意事項などの自由記入メモ（製作図リストの右側） */
@@ -827,6 +829,7 @@ export function OptimizeClient({
         address?: string
         name?: string
         date?: string
+        showTsumikomi?: boolean
         arrival?: string
         memo?: string
         memoFontPx?: number
@@ -835,6 +838,10 @@ export function OptimizeClient({
       setCustomerAddress(parsed.address ?? '')
       setCustomerName(parsed.name ?? '')
       setCustomerDate(parsed.date ?? '')
+      // 古い保存データにフラグが無いときは、積み込み日がある場合だけ「つみ込み」を出していた
+      setShowTsumikomi(
+        typeof parsed.showTsumikomi === 'boolean' ? parsed.showTsumikomi : Boolean(parsed.date?.trim()),
+      )
       setCustomerArrival(parsed.arrival ?? '')
       setCustomerMemo(parsed.memo ?? '')
       setCustomerMemoFontPx(
@@ -857,6 +864,7 @@ export function OptimizeClient({
           address: customerAddress,
           name: customerName,
           date: customerDate,
+          showTsumikomi,
           arrival: customerArrival,
           memo: customerMemo,
           memoFontPx: customerMemoFontPx,
@@ -870,6 +878,7 @@ export function OptimizeClient({
     customerArrival,
     customerCompany,
     customerDate,
+    showTsumikomi,
     customerInfoStorageKey,
     customerMemo,
     customerMemoFontPx,
@@ -985,6 +994,8 @@ export function OptimizeClient({
       onCustomerAddressChange={setCustomerAddress}
       customerDate={customerDate}
       onCustomerDateChange={setCustomerDate}
+      showTsumikomi={showTsumikomi}
+      onShowTsumikomiChange={setShowTsumikomi}
       customerArrival={customerArrival}
       onCustomerArrivalChange={setCustomerArrival}
       customerMemo={customerMemo}
