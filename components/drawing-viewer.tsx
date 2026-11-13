@@ -3098,8 +3098,6 @@ export function DrawingViewer({
           // 右パネルの一覧と同じ名前
           name: `特殊${i + 1}`,
           labelBoxes,
-          // 特殊を描いているときは、筋をピッチごとに 1 本ずつ
-          detailed: specialMode,
         })
       })
       const numberInDirection = { tate: 0, yoko: 0 }
@@ -3130,7 +3128,7 @@ export function DrawingViewer({
           zoneGapMarks: false,
         })
         if (specialMode && zoneGaps.length > 0) {
-          // 区域にかかる本は薄くせず、ピッチごとに描いて区域へ重ね分入るところを見せる
+          // 区域にかかる本は薄くせず、代表線 1 本で区域へ重ね分入るところまで描く
           ctx.globalAlpha = 1
           paintDomaZoneCutBars(ctx, bar, zoneGaps, {
             viewScale: scale,

@@ -6,7 +6,7 @@
 // 各辺は、壁なら土間筋を端部曲げで止め、壁でなければ範囲の外へ「はみ出し」（既定は重ね）だけ伸ばす。
 
 import type { DrawingDomaDimension, DrawingDomaRun } from '@/lib/types/database'
-import { countBars, type DomaBends, type SlabBarDirection } from './slab-rebar'
+import { countBars, layoutDomaRun, type DomaBends, type SlabBarDirection } from './slab-rebar'
 
 /** 範囲の辺（図面座標。top は y が小さい側、left は x が小さい側） */
 export type DomaZoneEdge = 'top' | 'bottom' | 'left' | 'right'
@@ -223,6 +223,11 @@ export function domaRunZoneCuts(
     const values = domaZoneRunValues(zone, direction)
     const zoneMm = values.sizeMm
     const zoneWidthMm = values.spanMm
+    // 標準筋の始点側にある区域の辺（線を引いた向きで入れ替わる）
+    const [nearEdge, farEdge]: DomaZoneEdge[] = vertical ? ['top', 'bottom'] : ['left', 'right']
+    const [aEdge, bEdge] = sign > 0 ? [nearEdge!, farEdge!] : [farEdge!, nearEdge!]
+    const aWall = spec.walls[aEdge]
+    const bWall = spec.walls[bEdge]
     const inputStart = run.settings.zoneStarts?.[zone.id]
     let a: number
     let b: number
@@ -234,8 +239,12 @@ export function domaRunZoneCuts(
       b = Math.max(toMm(zlo), toMm(zhi))
       const snapMm = L * 0.03
       if (Math.min(b, L) - Math.max(a, 0) <= snapMm) continue
-      if (Math.abs(a) <= snapMm) [a, b] = [0, zoneMm]
-      else if (Math.abs(b - L) <= snapMm) [a, b] = [L - zoneMm, L]
+      // 区域の辺が壁で、標準筋の端までが重ねより短いときも端にそろえる。標準筋の端の壁と区域の壁は
+      // 同じ基礎で、図面で区域の辺を少しずらして描いただけとみなす（そのまま切ると、壁と壁のあいだに
+      // 重ねも取れない短い本ができる。例: 端から 300 → 300 + 両端曲げの 600 の本）
+      const wallSnapMm = run.settings.lapMm
+      if (Math.abs(a) <= snapMm || (aWall && a > 0 && a < wallSnapMm)) [a, b] = [0, zoneMm]
+      else if (Math.abs(b - L) <= snapMm || (bWall && b < L && L - b < wallSnapMm)) [a, b] = [L - zoneMm, L]
       else {
         a = Math.round(a / 10) * 10
         b = a + zoneMm
@@ -263,12 +272,7 @@ export function domaRunZoneCuts(
     if (count <= 0) continue
     remaining -= count
 
-    // 標準筋の始点側にある区域の辺（線を引いた向きで入れ替わる）
-    const [nearEdge, farEdge]: DomaZoneEdge[] = vertical ? ['top', 'bottom'] : ['left', 'right']
-    const [aEdge, bEdge] = sign > 0 ? [nearEdge!, farEdge!] : [farEdge!, nearEdge!]
     const extendMm = domaZoneExtendMm(zone)
-    const aWall = spec.walls[aEdge]
-    const bWall = spec.walls[bEdge]
     cuts.push({
       zoneId: zone.id,
       count,
@@ -309,9 +313,12 @@ export type DomaZoneGap = {
   maxY: number
   entries: { edge: number; inner: number }[]
   lapMm: number
-  /** 区域の手前（座標の小さい側）・先の本の区域側の端（線の向きの座標）と、そこが壁（曲げ）か */
-  low: { end: number; wall: boolean } | null
-  high: { end: number; wall: boolean } | null
+  /**
+   * 区域の手前（座標の小さい側）・先の本の区域側の端（線の向きの座標）と、そこが壁（曲げ）か。
+   * piecesMm はその本の加工長さ（図面に書く。手入力があればそれ）
+   */
+  low: { end: number; wall: boolean; piecesMm: number[] } | null
+  high: { end: number; wall: boolean; piecesMm: number[] } | null
   count: number
   crossPx: [number, number]
   /** 区域を描いた縮尺（線の向きの px / mm） */
@@ -324,7 +331,7 @@ export type DomaZoneGap = {
  * 区域の手前・先に標準筋がなければ（区域が L の端にかかる）その側は区域の外まで消す
  */
 export function domaZoneCutGap(
-  run: Pick<DrawingDomaRun, 'x1' | 'y1' | 'x2' | 'y2'>,
+  run: Pick<DrawingDomaRun, 'x1' | 'y1' | 'x2' | 'y2' | 'settings'>,
   zone: DrawingDomaRun,
   cut: DomaZoneCut,
 ): DomaZoneGap | null {
@@ -341,6 +348,15 @@ export function domaZoneCutGap(
   const depthPx = (domaZoneExtendMm(zone) * (hi - lo)) / sizeMm
   const [lowEdge, highEdge]: DomaZoneEdge[] = vertical ? ['top', 'bottom'] : ['left', 'right']
   const [lowPart, highPart] = startLow ? [cut.before, cut.after] : [cut.after, cut.before]
+  const [lowSide, highSide] = startLow ? (['before', 'after'] as const) : (['after', 'before'] as const)
+  const piecesOf = (part: DomaZoneCutPart, side: 'before' | 'after') =>
+    layoutDomaRun(
+      part.lengthMm,
+      cut.count * run.settings.pitchMm,
+      part.bends,
+      run.settings,
+      run.settings.zoneCutOverrides?.[`${cut.zoneId}:${side}`] ?? null,
+    ).pieces.map((p) => p.lengthMm)
   const far = 1e7
   const entries: DomaZoneGap['entries'] = []
   let from = -far
@@ -359,8 +375,8 @@ export function domaZoneCutGap(
   const rest = {
     entries,
     lapMm: domaZoneExtendMm(zone),
-    low: lowPart ? { end: from, wall: lowWall } : null,
-    high: highPart ? { end: to, wall: highWall } : null,
+    low: lowPart ? { end: from, wall: lowWall, piecesMm: piecesOf(lowPart, lowSide) } : null,
+    high: highPart ? { end: to, wall: highWall, piecesMm: piecesOf(highPart, highSide) } : null,
     count: cut.count,
     crossPx: cut.crossPx,
     pxPerMm: (hi - lo) / sizeMm,

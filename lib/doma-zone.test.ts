@@ -164,6 +164,14 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     [2000, 3950, { lengthMm: 2600, bends: 'start' }, { lengthMm: 2110, bends: 'end' }],
   )
 
+  // 上の辺が壁の区域を、標準筋の始点から 300（30 px）ずらして描いた: 重ね 600 より短いので始点にそろえ、
+  // 壁と壁のあいだの短い本（300 + 両端曲げ）は作らない。壁でなければ図面どおり 300 のところで切る
+  const nearTop = zoneAt(30, 225, { walls: { top: true, bottom: false, left: false, right: false } })
+  const [cut5] = domaRunZoneCuts(tate, [tate, nearTop], dims)
+  assert.deepStrictEqual([cut5!.fromMm, cut5!.before, cut5!.after], [0, null, { lengthMm: 4110, bends: 'end' }])
+  const [cut6] = domaRunZoneCuts(tate, [tate, zoneAt(30, 225)], dims)
+  assert.deepStrictEqual([cut6!.fromMm, cut6!.before], [300, { lengthMm: 900, bends: 'start' }])
+
   // 区域までの長さを手入力したら、図面で測った位置より優先する（始点から 1200 → 1200〜3150）
   const typed = { ...tate, settings: { ...tate.settings, zoneStarts: { z1: 1200 } } }
   const [cut4] = domaRunZoneCuts(typed, [typed, middle], dims)

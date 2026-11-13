@@ -154,9 +154,11 @@ function dateBlockWidthPx(
   showTsumikomi: boolean,
   reserveScreenForm: boolean,
 ): number {
-  const lines = showTsumikomi
-    ? [date.trim(), 'つみ込み', ...arrival.split('\n').map((line) => line.trim())].filter(Boolean)
-    : []
+  const lines = [
+    date.trim(),
+    showTsumikomi ? 'つみ込み' : '',
+    ...arrival.split('\n').map((line) => line.trim()),
+  ].filter(Boolean)
   const em = lines.reduce((max, line) => Math.max(max, estimateEmWidth(line)), 6)
   const textWidth = lines.length > 0 ? Math.ceil(em * DATE_PRINT_FONT_PX) : 0
   // 画面の入力欄は印刷の日付より広い。画面用の文字サイズだけ、その幅も空ける
@@ -452,7 +454,7 @@ export function ManufactureListView({
   onCustomerAddressChange: (value: string) => void
   customerDate: string
   onCustomerDateChange: (value: string) => void
-  /** 積み込みがあるときだけ、積み込み日・「つみ込み」・到着日と時刻を印刷する */
+  /** 積み込みがあるときだけ「つみ込み」の文字を印刷する。日付は入力があればいつも印刷する */
   showTsumikomi: boolean
   onShowTsumikomiChange: (value: boolean) => void
   customerArrival: string
@@ -738,21 +740,11 @@ export function ManufactureListView({
           className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden"
           style={{ width: SCREEN_DATE_FORM_PX }}
         >
-          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
-            <input
-              type="checkbox"
-              checked={showTsumikomi}
-              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
-            />
-            つみ込みあり（積み込み日・到着日を印刷）
-          </label>
-          {showTsumikomi ? (
-            <div className="inline-flex items-center gap-1">
-              <span className="whitespace-nowrap text-muted">積み込み日:</span>
-              <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
-            </div>
-          ) : null}
-          {!showTsumikomi ? null : loadingDateMode === 'text' ? (
+          <div className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">積み込み日:</span>
+            <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
+          </div>
+          {loadingDateMode === 'text' ? (
             <input
               type="text"
               value={customerDate}
@@ -774,13 +766,20 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
-          {showTsumikomi ? (
-            <div className="inline-flex items-center gap-1">
-              <span className="whitespace-nowrap text-muted">到着日:</span>
-              <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
-            </div>
-          ) : null}
-          {!showTsumikomi ? null : arrivalDateMode === 'text' ? (
+          {/* 積み込みが無い図面でも日付は入れるので、チェックは「つみ込み」の文字だけを出し分ける */}
+          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
+            <input
+              type="checkbox"
+              checked={showTsumikomi}
+              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
+            />
+            「つみ込み」を印刷
+          </label>
+          <div className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">到着日:</span>
+            <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
+          </div>
+          {arrivalDateMode === 'text' ? (
             // 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
             // 画面でも折り返さずに見せ、長い行は横にスクロールする
             <textarea
@@ -815,7 +814,7 @@ export function ManufactureListView({
           <div className="flex flex-col items-start">
             {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する。
                 「つみ込み」は日付の右に詰めず、次の行に置く（改行してよい、との指示） */}
-            {showTsumikomi && customerDate.trim() ? (
+            {customerDate.trim() ? (
               <div
                 className="whitespace-nowrap font-bold leading-none"
                 style={{ fontSize: DATE_PRINT_FONT_PX }}
@@ -828,7 +827,7 @@ export function ManufactureListView({
                 つみ込み
               </div>
             ) : null}
-            {showTsumikomi && customerArrival.trim() ? (
+            {customerArrival.trim() ? (
               <div className="whitespace-pre font-bold" style={{ fontSize: DATE_PRINT_FONT_PX }}>
                 {customerArrival.trim()}
               </div>

@@ -2,7 +2,6 @@
 // 座標は図面座標（drawing_segments と同じ）。線幅・文字は viewScale で割って画面上の大きさを一定にする。
 
 import {
-  countBars,
   layoutDomaRun,
   type DomaBarSettings,
   type DomaBends,
@@ -14,7 +13,6 @@ import {
   DOMA_ZONE_COLOR,
   DOMA_ZONE_EDGES,
   domaZoneEdgeLine,
-  domaZoneExtendMm,
   domaZoneRect,
   domaZoneRuns,
   domaZoneSpecOf,
@@ -606,7 +604,7 @@ const ZONE_EDGE_OUTWARD: Record<DomaZoneEdge, Pt> = {
 
 /**
  * 特殊土間筋の範囲 1 つ: 範囲の枠（壁の辺は太線と外側の斜線）と、タテ・ヨコの代表線。
- * 代表線は範囲の中央を通り、壁でない辺は範囲の外へはみ出しの分だけ伸ばして描く（標準の土間筋と同じ描き方）
+ * 代表線は範囲の中央を通り、壁でない辺は範囲の外へはみ出しの分だけ伸ばして矢印で止める（顧客の拾い図と同じ）
  */
 export function paintDomaZone(
   ctx: CanvasRenderingContext2D,
@@ -621,8 +619,6 @@ export function paintDomaZone(
     name?: string
     /** 図面に置いた文字の枠（drawUprightLabel の placed）。図面全体で共有する */
     labelBoxes?: DomaLine[]
-    /** 区域の筋を代表線でなく、ピッチごとに 1 本ずつ描く（特殊を描いているとき） */
-    detailed?: boolean
   },
 ) {
   const s = opts.viewScale
@@ -663,24 +659,14 @@ export function paintDomaZone(
   }
   ctx.restore()
 
+  // タテ・ヨコとも区域の色の代表線 1 本（標準の赤・青と見分ける。向きは線の向きで分かる）
   const directions = opts.directions ?? ['tate', 'yoko']
   for (const run of domaZoneRuns(zone)) {
     if (!directions.includes(run.direction)) continue
-    if (opts.detailed) {
-      paintZoneRunBars(ctx, zone, run, r, {
-        viewScale: s,
-        viewRotationSteps,
-        obstacles: opts.obstacles,
-        labelBoxes: opts.labelBoxes,
-      })
-      continue
-    }
-    // 区域の中はタテ・ヨコとも区域の色（標準の赤・青と見分ける。向きは線の向きで分かる）
-    paintDomaRun(ctx, run, {
+    paintZoneRunRepresentative(ctx, run, {
       viewScale: s,
       viewRotationSteps,
       obstacles: opts.obstacles,
-      color: DOMA_ZONE_COLOR,
       labelBoxes: opts.labelBoxes,
     })
   }
@@ -725,63 +711,67 @@ type BarSetLabelOpts = {
   labelBoxes?: DomaLine[]
 }
 
-/** 筋を 1 本ずつ描くときの文字に付ける向き（右パネルの一覧と同じ） */
-const DIRECTION_TEXT: Record<SlabBarDirection, string> = { tate: 'タテ', yoko: 'ヨコ' }
-
-/** 筋を 1 本ずつ描くときの 1 セットの最大本数。多いと図面が線で埋まるので、範囲全体から何本か選んで見せる */
-const MAX_DETAIL_BARS = 6
+/** 加工長さの文字。継手で分かれるときは顧客の拾い図と同じく「5500 ✕ 4000」 */
+function piecesText(piecesMm: number[]): string {
+  return piecesMm.map((mm) => String(Math.round(mm))).join(' ✕ ')
+}
 
 /**
- * 図面の縦（vertical）か横にそった筋を、直交する範囲 cross に描く。筋の位置は実際のピッチ（pitchPx）の並びで、
- * 多ければそのうち両端を含めて MAX_DETAIL_BARS 本を範囲全体から等間隔に選ぶ
- * （区域の筋と標準筋はピッチが違うので、図面でも同じ位置に重ならない）。
- * along は筋の両端（線の向きの座標）、hooks はその端の曲げ（直交する向きの短い線）。
- * 文字を置くため、真ん中の 1 本の座標を返す
+ * 筋 1 セットを、顧客の拾い図と同じく 1 本の代表線で描く。図面の縦（vertical）か横にそった線を、
+ * 直交する向きの座標 cross に引く。along は線の両端（線の向きの座標）。
+ * 曲げのある端（hooks）は短い直交線、区域の外・中へ伸ばす曲げのない端（arrows）は矢印にする。
+ * 文字を置くため、線の真ん中の点を返す
  */
-function strokeBarSet(
+function strokeRepresentativeBar(
   ctx: CanvasRenderingContext2D,
   bar: {
     vertical: boolean
     along: [number, number]
+    cross: number
     hooks: [boolean, boolean]
+    arrows: [boolean, boolean]
     hookPx: number
   },
-  cross: [number, number],
-  count: number,
-  pitchPx: number,
   color: string,
   s: number,
-): ((along: number) => Pt) | null {
-  if (count <= 0 || !(cross[1] > cross[0]) || !(pitchPx > 0) || bar.along[0] === bar.along[1]) return null
-  const pt = (along: number, c: number): Pt => (bar.vertical ? { x: c, y: along } : { x: along, y: c })
+): Pt | null {
+  if (bar.along[0] === bar.along[1]) return null
+  const pt = (along: number): Pt => (bar.vertical ? { x: bar.cross, y: along } : { x: along, y: bar.cross })
   const hookDir: Pt = bar.vertical ? { x: 1, y: 0 } : { x: 0, y: 1 }
-  const shown = Math.min(count, MAX_DETAIL_BARS)
-  const positions = Array.from({ length: shown }, (_, j) => {
-    const i = shown > 1 ? Math.round((j * (count - 1)) / (shown - 1)) : 0
-    return Math.min(cross[0] + pitchPx * (i + 0.5), cross[1])
-  })
+  const a = pt(bar.along[0])
+  const b = pt(bar.along[1])
   ctx.save()
   ctx.strokeStyle = color
-  ctx.lineWidth = 1.4 / s
+  ctx.lineWidth = 1.8 / s
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   ctx.beginPath()
-  for (const c of positions) {
-    const a = pt(bar.along[0], c)
-    const b = pt(bar.along[1], c)
-    if (bar.hooks[0]) {
-      ctx.moveTo(a.x + hookDir.x * bar.hookPx, a.y + hookDir.y * bar.hookPx)
-      ctx.lineTo(a.x, a.y)
-    } else {
-      ctx.moveTo(a.x, a.y)
-    }
-    ctx.lineTo(b.x, b.y)
-    if (bar.hooks[1]) ctx.lineTo(b.x + hookDir.x * bar.hookPx, b.y + hookDir.y * bar.hookPx)
+  if (bar.hooks[0]) {
+    ctx.moveTo(a.x + hookDir.x * bar.hookPx, a.y + hookDir.y * bar.hookPx)
+    ctx.lineTo(a.x, a.y)
+  } else {
+    ctx.moveTo(a.x, a.y)
+  }
+  ctx.lineTo(b.x, b.y)
+  if (bar.hooks[1]) ctx.lineTo(b.x + hookDir.x * bar.hookPx, b.y + hookDir.y * bar.hookPx)
+  // 矢印: 線の向きに開いた「く」の字
+  const len = Math.hypot(b.x - a.x, b.y - a.y)
+  const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len }
+  const head = 7 / s
+  for (const [tip, dir, on] of [
+    [a, negate(u), bar.arrows[0]],
+    [b, u, bar.arrows[1]],
+  ] as const) {
+    if (!on) continue
+    const back = { x: tip.x - dir.x * head, y: tip.y - dir.y * head }
+    const n = { x: -dir.y * head * 0.55, y: dir.x * head * 0.55 }
+    ctx.moveTo(back.x + n.x, back.y + n.y)
+    ctx.lineTo(tip.x, tip.y)
+    ctx.lineTo(back.x - n.x, back.y - n.y)
   }
   ctx.stroke()
   ctx.restore()
-  const middle = positions[Math.floor((shown - 1) / 2)]!
-  return (along) => pt(along, middle)
+  return pt((bar.along[0] + bar.along[1]) / 2)
 }
 
 /** 筋の真ん中の 1 本の横に文字を置く（画面で左右のあいている側） */
@@ -806,59 +796,44 @@ function labelBarSet(
   })
 }
 
-/** 区域の 1 方向の筋を、区域の幅いっぱいにピッチごとに描く（壁の辺は曲げ、ほかははみ出し） */
-function paintZoneRunBars(
+/**
+ * 区域の 1 方向の筋（顧客の拾い図と同じ表し方）: 区域の中央に代表線 1 本。壁の辺は曲げ（短い直交線）、
+ * ほかは区域の外へはみ出した先を矢印にし、線の横に加工長さだけを書く（本数・ピッチは右パネル・集計）
+ */
+function paintZoneRunRepresentative(
   ctx: CanvasRenderingContext2D,
-  zone: DrawingDomaRun,
   run: DrawingDomaRun,
-  r: ReturnType<typeof domaZoneRect>,
   opts: BarSetLabelOpts,
 ) {
   const s = opts.viewScale
   const vertical = Math.abs(run.y2 - run.y1) >= Math.abs(run.x2 - run.x1)
   const linePx = Math.hypot(run.x2 - run.x1, run.y2 - run.y1)
   if (!(run.length_mm > 0) || !(linePx > 0)) return
-  const pitch = run.settings.pitchMm
-  const count = countBars(run.span_mm, pitch)
-  const cross: [number, number] = vertical ? [r.minX, r.maxX] : [r.minY, r.maxY]
-  const middleAt = strokeBarSet(
+  // 代表線は範囲の小さい側（上・左）から大きい側へ引いてあり、bends の start はその小さい側
+  const startBend = run.bends === 'both' || run.bends === 'start'
+  const endBend = run.bends === 'both' || run.bends === 'end'
+  const middle = strokeRepresentativeBar(
     ctx,
     {
       vertical,
       along: vertical ? [run.y1, run.y2] : [run.x1, run.x2],
-      hooks: [run.bends === 'both' || run.bends === 'start', run.bends === 'both' || run.bends === 'end'],
+      cross: vertical ? run.x1 : run.y1,
+      hooks: [startBend, endBend],
+      arrows: [!startBend, !endBend],
       hookPx: Math.max((run.settings.bendMm * linePx) / run.length_mm, 6 / s),
     },
-    cross,
-    count,
-    run.span_mm > 0 ? (pitch * (cross[1] - cross[0])) / run.span_mm : 0,
     DOMA_ZONE_COLOR,
     s,
   )
-  if (!middleAt) return
-  // 区域の中は辺の長さ、区域の外へはみ出した部分はその長さを、それぞれの部分に書く（筋 1 本の長さは右パネル・集計）
-  const [zoneLo, zoneHi] = vertical ? [r.minY, r.maxY] : [r.minX, r.maxX]
-  const sizeMm = run.direction === 'tate' ? zone.length_mm : zone.span_mm
-  labelBarSet(
-    ctx,
-    `${DIRECTION_TEXT[run.direction]} ${Math.round(sizeMm)} @${pitch} ${count}本`,
-    middleAt((zoneLo + zoneHi) / 2),
-    vertical,
-    DOMA_ZONE_COLOR,
-    opts,
-  )
-  const [lo, hi] = vertical
-    ? [Math.min(run.y1, run.y2), Math.max(run.y1, run.y2)]
-    : [Math.min(run.x1, run.x2), Math.max(run.x1, run.x2)]
-  const extendText = String(Math.round(domaZoneExtendMm(zone)))
-  const eps = 1e-6
-  if (lo < zoneLo - eps) labelBarSet(ctx, extendText, middleAt((lo + zoneLo) / 2), vertical, DOMA_ZONE_COLOR, opts)
-  if (hi > zoneHi + eps) labelBarSet(ctx, extendText, middleAt((zoneHi + hi) / 2), vertical, DOMA_ZONE_COLOR, opts)
+  if (!middle) return
+  const layout = layoutDomaRun(run.length_mm, run.span_mm, run.bends, run.settings, run.pieces_override)
+  labelBarSet(ctx, piecesText(layout.pieces.map((p) => p.lengthMm)), middle, vertical, DOMA_ZONE_COLOR, opts)
 }
 
 /**
- * 区域にかかる標準筋を、標準筋のピッチで何本か描く。区域の辺の外から重ね分の長さだけ見せ、
- * 区域の辺から重ね分入ったところ（壁の辺なら辺で曲げ）で止める。
+ * 区域にかかる標準筋（顧客の拾い図と同じ表し方）: 区域にかかる本が並ぶ幅の中央に代表線 1 本。
+ * 標準筋の端（曲げがあれば短い直交線）から、区域の辺を越えて重ね分入ったところ（矢印）まで引き、
+ * 線の横に加工長さだけを書く。区域の辺が壁なら、そこで曲げて止める
  */
 export function paintDomaZoneCutBars(
   ctx: CanvasRenderingContext2D,
@@ -879,66 +854,32 @@ export function paintDomaZoneCutBars(
     const runLo = Math.min(p1, p2)
     const runHi = Math.max(p1, p2)
     const [loBend, hiBend] = startLow ? [startBend, endBend] : [endBend, startBend]
-    // 区域の外は重ね分だけ（筋の端がそれより近ければ端まで、端の曲げも描く）
-    const outsidePx = gap.lapMm * gap.pxPerMm
-    const edgeOf = (end: number) => gap.entries.find((e) => e.inner === end)?.edge ?? end
-    const parts: { along: [number, number]; hooks: [boolean, boolean] }[] = []
+    const cross = (gap.crossPx[0] + gap.crossPx[1]) / 2
+    const parts: { along: [number, number]; hooks: [boolean, boolean]; arrows: [boolean, boolean]; piecesMm: number[] }[] = []
     if (gap.low && gap.low.end > runLo) {
-      const outer = Math.max(runLo, edgeOf(gap.low.end) - outsidePx)
       parts.push({
-        along: [outer, gap.low.end],
-        hooks: [outer === runLo && loBend, gap.low.wall],
+        along: [runLo, gap.low.end],
+        hooks: [loBend, gap.low.wall],
+        arrows: [false, !gap.low.wall],
+        piecesMm: gap.low.piecesMm,
       })
     }
     if (gap.high && runHi > gap.high.end) {
-      const outer = Math.min(runHi, edgeOf(gap.high.end) + outsidePx)
       parts.push({
-        along: [gap.high.end, outer],
-        hooks: [gap.high.wall, outer === runHi && hiBend],
+        along: [gap.high.end, runHi],
+        hooks: [gap.high.wall, hiBend],
+        arrows: [!gap.high.wall, false],
+        piecesMm: gap.high.piecesMm,
       })
     }
-    let labeled = false
     for (const part of parts) {
-      const middleAt = strokeBarSet(
+      const middle = strokeRepresentativeBar(
         ctx,
-        {
-          vertical: gap.vertical,
-          along: part.along,
-          hooks: part.hooks,
-          hookPx,
-        },
-        gap.crossPx,
-        gap.count,
-        run.settings.pitchMm * gap.pxPerMm,
+        { vertical: gap.vertical, along: part.along, cross, hooks: part.hooks, arrows: part.arrows, hookPx },
         color,
         s,
       )
-      if (!middleAt || labeled) continue
-      labeled = true
-      // 区域の外の中ほどにピッチ、区域に入った部分に重ね
-      const lowSide = gap.low != null && part.along[1] === gap.low.end
-      const zoneEnd = lowSide ? part.along[1] : part.along[0]
-      const entry = gap.entries.find((e) => e.inner === zoneEnd)
-      const outer = entry ? entry.edge : zoneEnd
-      const far = lowSide ? part.along[0] : part.along[1]
-      labelBarSet(
-        ctx,
-        `${DIRECTION_TEXT[run.direction]} @${run.settings.pitchMm} ${gap.count}本`,
-        middleAt((outer + far) / 2),
-        gap.vertical,
-        color,
-        opts,
-      )
-      if (entry) {
-        labelBarSet(
-          ctx,
-          String(Math.round(gap.lapMm)),
-          middleAt((entry.edge + entry.inner) / 2),
-          gap.vertical,
-          color,
-          opts,
-        )
-      }
+      if (middle) labelBarSet(ctx, piecesText(part.piecesMm), middle, gap.vertical, color, opts)
     }
   }
 }
