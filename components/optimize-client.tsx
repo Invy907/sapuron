@@ -172,7 +172,7 @@ export function OptimizeClient({
   const [customerName, setCustomerName] = useState('')
   /** 積み込み日（自由入力。旧データは ISO YYYY-MM-DD） */
   const [customerDate, setCustomerDate] = useState('')
-  /** 印刷に積み込み日と「つみ込み」を出す。積み込みのときだけ必要 */
+  /** 積み込みがあるときだけ、積み込み日・「つみ込み」・到着日と時刻を印刷する */
   const [showTsumikomi, setShowTsumikomi] = useState(false)
   /** 到着日（自由入力。旧データは YYYY-MM-DDTHH:mm） */
   const [customerArrival, setCustomerArrival] = useState('')
@@ -825,9 +825,11 @@ export function OptimizeClient({
       setCustomerAddress(parsed.address ?? '')
       setCustomerName(parsed.name ?? '')
       setCustomerDate(parsed.date ?? '')
-      // フラグが無い古い保存データは、積み込み日が入っていれば積み込み日と「つみ込み」を印刷していた
+      // フラグが無い古い保存データは、日付が入っていれば積み込み日・到着日を印刷していた
       setShowTsumikomi(
-        typeof parsed.showTsumikomi === 'boolean' ? parsed.showTsumikomi : Boolean(parsed.date?.trim()),
+        typeof parsed.showTsumikomi === 'boolean'
+          ? parsed.showTsumikomi
+          : Boolean(parsed.date?.trim() || parsed.arrival?.trim()),
       )
       setCustomerArrival(parsed.arrival ?? '')
       setCustomerMemo(parsed.memo ?? '')

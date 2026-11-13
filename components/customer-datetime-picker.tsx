@@ -8,29 +8,38 @@ function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
+/** 時刻の代わりに選べる「午前中」。値は "YYYY-MM-DDT午前中" */
+export const MORNING_LABEL = '午前中'
+
 type ParsedDateTime = {
   date: { y: number; m: number; d: number } | null
   hh: number
   mm: number
+  morning: boolean
 }
 
-/** datetime-local 互換の "YYYY-MM-DDTHH:mm"（時刻省略も許容） */
+/** datetime-local 互換の "YYYY-MM-DDTHH:mm"（時刻省略も許容）。時刻の代わりに "T午前中" も受け付ける */
 function parseValue(value: string): ParsedDateTime {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(value)
-  if (!m) return { date: null, hh: 0, mm: 0 }
+  if (!m) return { date: null, hh: 0, mm: 0, morning: false }
   const y = Number.parseInt(m[1]!, 10)
   const mo = Number.parseInt(m[2]!, 10)
   const d = Number.parseInt(m[3]!, 10)
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return { date: null, hh: 0, mm: 0 }
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return { date: null, hh: 0, mm: 0, morning: false }
   return {
     date: { y, m: mo, d },
     hh: m[4] != null ? Number.parseInt(m[4], 10) : 0,
     mm: m[5] != null ? Number.parseInt(m[5], 10) : 0,
+    morning: value.endsWith(`T${MORNING_LABEL}`),
   }
 }
 
 function toValue(y: number, m: number, d: number, hh: number, mm: number): string {
   return `${y}-${pad2(m)}-${pad2(d)}T${pad2(hh)}:${pad2(mm)}`
+}
+
+function toMorningValue(y: number, m: number, d: number): string {
+  return `${y}-${pad2(m)}-${pad2(d)}T${MORNING_LABEL}`
 }
 
 function toIsoDate(y: number, m: number, d: number): string {
@@ -40,10 +49,15 @@ function toIsoDate(y: number, m: number, d: number): string {
 function formatJa(value: string): string {
   const p = parseValue(value)
   if (!p.date) return ''
-  return `${p.date.y}年${p.date.m}月${p.date.d}日 ${pad2(p.hh)}:${pad2(p.mm)}`
+  const time = p.morning ? MORNING_LABEL : `${pad2(p.hh)}:${pad2(p.mm)}`
+  return `${p.date.y}年${p.date.m}月${p.date.d}日 ${time}`
 }
 
 function formatPlainDateTime(value: string): string {
+  const p = parseValue(value)
+  if (p.date && p.morning) {
+    return `${p.date.y}/${pad2(p.date.m)}/${pad2(p.date.d)} ${MORNING_LABEL}`
+  }
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value)
   if (!m) return value
   return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`
@@ -149,7 +163,7 @@ export function CustomerDateTimePicker({
     setViewMonth(m)
   }
 
-  /** 日付セル選択: 既存の時刻を維持して確定 */
+  /** 日付セル選択: 既存の時刻（午前中を含む）を維持して確定 */
   function pickDate(iso: string) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
     if (!m) return
@@ -157,10 +171,21 @@ export function CustomerDateTimePicker({
     const mo = Number.parseInt(m[2]!, 10)
     const d = Number.parseInt(m[3]!, 10)
     const cur = parseValue(value)
-    onChange(toValue(y, mo, d, cur.hh, cur.mm))
+    onChange(cur.morning ? toMorningValue(y, mo, d) : toValue(y, mo, d, cur.hh, cur.mm))
   }
 
-  /** 時・分の変更: 日付未選択なら今日を採用 */
+  /** 午前中の切り替え。外すと時・分の選択に戻る。日付未選択なら今日を採用 */
+  function toggleMorning() {
+    const cur = parseValue(value)
+    const base = cur.date ?? today
+    onChange(
+      cur.morning
+        ? toValue(base.y, base.m, base.d, cur.hh, cur.mm)
+        : toMorningValue(base.y, base.m, base.d),
+    )
+  }
+
+  /** 時・分の変更: 午前中は外れる。日付未選択なら今日を採用 */
   function setTime(part: 'hh' | 'mm', n: number) {
     const cur = parseValue(value)
     const base = cur.date ?? today
@@ -321,6 +346,20 @@ export function CustomerDateTimePicker({
               ))}
             </select>
             <span className="text-sm font-semibold text-muted">分</span>
+          </div>
+          <div className="mt-2 flex justify-center">
+            <button
+              type="button"
+              aria-pressed={parsed.morning}
+              onClick={toggleMorning}
+              className={`rounded-md border px-3 py-1 text-xs font-medium ${
+                parsed.morning
+                  ? 'border-primary bg-primary text-white'
+                  : 'border-border bg-white text-foreground hover:bg-muted/40'
+              }`}
+            >
+              {MORNING_LABEL}
+            </button>
           </div>
 
           <div className="mt-2 flex justify-between gap-2 border-t border-border pt-2">

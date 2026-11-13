@@ -22,7 +22,7 @@ import {
   type UnitShapeLegendPositions,
 } from '@/components/unit-client'
 import { CustomerDatePicker } from '@/components/customer-date-picker'
-import { CustomerDateTimePicker } from '@/components/customer-datetime-picker'
+import { CustomerDateTimePicker, MORNING_LABEL } from '@/components/customer-datetime-picker'
 import {
   getSegmentColor,
   getSegmentEffectiveLengthMm,
@@ -123,19 +123,22 @@ function joinArrival(dateLine: string, timeLine: string): string {
   return date || time
 }
 
-/** 印刷の「R8.11.16（火） / 8:00予定」を、カレンダーモーダルの日時にする */
+/** 印刷の「R8.11.16（火） / 8:00予定」「… / 午前中予定」を、カレンダーモーダルの日時にする */
 function dateTimeFromPrinted(value: string): string {
   const [dateLine = '', timeLine = ''] = value.split('\n')
   const iso = isoFromPrintedDate(dateLine)
   if (!iso) return ''
+  if (timeLine.trim().startsWith(MORNING_LABEL)) return `${iso}T${MORNING_LABEL}`
   const time = /^(\d{1,2}):(\d{2})/.exec(timeLine.trim())
   const hh = time ? time[1]!.padStart(2, '0') : '00'
   const mm = time ? time[2] : '00'
   return `${iso}T${hh}:${mm}`
 }
 
-/** カレンダーモーダルの日時を、印刷の日付と「8:00予定」の 2 行にする */
+/** カレンダーモーダルの日時を、印刷の日付と「8:00予定」（または「午前中予定」）の 2 行にする */
 function printedFromDateTime(value: string): string {
+  const morning = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})T${MORNING_LABEL}$`).exec(value)
+  if (morning) return joinArrival(formatPrintedDate(morning[1]!), `${MORNING_LABEL}予定`)
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(value)
   if (!match) return ''
   return joinArrival(formatPrintedDate(match[1]!), `${Number(match[2])}:${match[3]}予定`)
@@ -151,12 +154,11 @@ function dateBlockWidthPx(
   showTsumikomi: boolean,
   reserveScreenForm: boolean,
 ): number {
-  const lines = [
-    ...(showTsumikomi ? [date.trim(), 'つみ込み'] : []),
-    ...arrival.split('\n').map((line) => line.trim()),
-  ].filter(Boolean)
+  const lines = showTsumikomi
+    ? [date.trim(), 'つみ込み', ...arrival.split('\n').map((line) => line.trim())].filter(Boolean)
+    : []
   const em = lines.reduce((max, line) => Math.max(max, estimateEmWidth(line)), 6)
-  const textWidth = Math.ceil(em * DATE_PRINT_FONT_PX)
+  const textWidth = lines.length > 0 ? Math.ceil(em * DATE_PRINT_FONT_PX) : 0
   // 画面の入力欄は印刷の日付より広い。画面用の文字サイズだけ、その幅も空ける
   return reserveScreenForm ? Math.max(SCREEN_DATE_FORM_PX, textWidth) : textWidth
 }
@@ -450,7 +452,7 @@ export function ManufactureListView({
   onCustomerAddressChange: (value: string) => void
   customerDate: string
   onCustomerDateChange: (value: string) => void
-  /** 印刷に積み込み日と「つみ込み」を出す。積み込みのときだけ必要 */
+  /** 積み込みがあるときだけ、積み込み日・「つみ込み」・到着日と時刻を印刷する */
   showTsumikomi: boolean
   onShowTsumikomiChange: (value: boolean) => void
   customerArrival: string
@@ -742,7 +744,7 @@ export function ManufactureListView({
               checked={showTsumikomi}
               onChange={(e) => onShowTsumikomiChange(e.target.checked)}
             />
-            つみ込み（積み込み日を印刷）
+            つみ込みあり（積み込み日・到着日を印刷）
           </label>
           {showTsumikomi ? (
             <div className="inline-flex items-center gap-1">
@@ -772,11 +774,13 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
-          <div className="inline-flex items-center gap-1">
-            <span className="whitespace-nowrap text-muted">到着日:</span>
-            <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
-          </div>
-          {arrivalDateMode === 'text' ? (
+          {showTsumikomi ? (
+            <div className="inline-flex items-center gap-1">
+              <span className="whitespace-nowrap text-muted">到着日:</span>
+              <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
+            </div>
+          ) : null}
+          {!showTsumikomi ? null : arrivalDateMode === 'text' ? (
             // 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
             // 画面でも折り返さずに見せ、長い行は横にスクロールする
             <textarea
@@ -824,7 +828,7 @@ export function ManufactureListView({
                 つみ込み
               </div>
             ) : null}
-            {customerArrival.trim() ? (
+            {showTsumikomi && customerArrival.trim() ? (
               <div className="whitespace-pre font-bold" style={{ fontSize: DATE_PRINT_FONT_PX }}>
                 {customerArrival.trim()}
               </div>
