@@ -1012,9 +1012,7 @@ export function OptimizeClient({
       showTsumikomi={showTsumikomi}
       onShowTsumikomiChange={setShowTsumikomi}
       nameFontPx={nameFontPx}
-      onNameFontPxChange={setNameFontPx}
       dateFontPx={dateFontPx}
-      onDateFontPxChange={setDateFontPx}
       customerArrival={customerArrival}
       onCustomerArrivalChange={setCustomerArrival}
       customerMemo={customerMemo}
