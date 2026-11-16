@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 
 const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'] as const
 
@@ -8,59 +8,61 @@ function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-/** 時刻の代わりに選べる「午前中」。値は "YYYY-MM-DDT午前中" */
-export const MORNING_LABEL = '午前中'
+/**
+ * 時刻の部分。値の "T" より後ろに入る。
+ * - none: 日付だけ（"YYYY-MM-DD"）
+ * - clock: 時・分（"YYYY-MM-DDTHH:mm"）
+ * - preset: 「午前中」など、時刻の代わりの言葉（"YYYY-MM-DDT午前中"）
+ */
+type TimePart = { kind: 'none' } | { kind: 'clock'; hh: number; mm: number } | { kind: 'preset'; label: string }
 
 type ParsedDateTime = {
   date: { y: number; m: number; d: number } | null
-  hh: number
-  mm: number
-  morning: boolean
+  time: TimePart
 }
 
-/** datetime-local 互換の "YYYY-MM-DDTHH:mm"（時刻省略も許容）。時刻の代わりに "T午前中" も受け付ける */
-function parseValue(value: string): ParsedDateTime {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(value)
-  if (!m) return { date: null, hh: 0, mm: 0, morning: false }
+function parseValue(value: string, presets: readonly string[]): ParsedDateTime {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(.+))?$/.exec(value)
+  if (!m) return { date: null, time: { kind: 'none' } }
   const y = Number.parseInt(m[1]!, 10)
   const mo = Number.parseInt(m[2]!, 10)
   const d = Number.parseInt(m[3]!, 10)
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return { date: null, hh: 0, mm: 0, morning: false }
-  return {
-    date: { y, m: mo, d },
-    hh: m[4] != null ? Number.parseInt(m[4], 10) : 0,
-    mm: m[5] != null ? Number.parseInt(m[5], 10) : 0,
-    morning: value.endsWith(`T${MORNING_LABEL}`),
-  }
-}
-
-function toValue(y: number, m: number, d: number, hh: number, mm: number): string {
-  return `${y}-${pad2(m)}-${pad2(d)}T${pad2(hh)}:${pad2(mm)}`
-}
-
-function toMorningValue(y: number, m: number, d: number): string {
-  return `${y}-${pad2(m)}-${pad2(d)}T${MORNING_LABEL}`
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return { date: null, time: { kind: 'none' } }
+  const rest = m[4] ?? ''
+  const clock = /^(\d{2}):(\d{2})/.exec(rest)
+  const time: TimePart = clock
+    ? { kind: 'clock', hh: Number.parseInt(clock[1]!, 10), mm: Number.parseInt(clock[2]!, 10) }
+    : presets.includes(rest)
+      ? { kind: 'preset', label: rest }
+      : { kind: 'none' }
+  return { date: { y, m: mo, d }, time }
 }
 
 function toIsoDate(y: number, m: number, d: number): string {
   return `${y}-${pad2(m)}-${pad2(d)}`
 }
 
-function formatJa(value: string): string {
-  const p = parseValue(value)
-  if (!p.date) return ''
-  const time = p.morning ? MORNING_LABEL : `${pad2(p.hh)}:${pad2(p.mm)}`
-  return `${p.date.y}年${p.date.m}月${p.date.d}日 ${time}`
+function toValue(date: { y: number; m: number; d: number }, time: TimePart): string {
+  const iso = toIsoDate(date.y, date.m, date.d)
+  if (time.kind === 'clock') return `${iso}T${pad2(time.hh)}:${pad2(time.mm)}`
+  if (time.kind === 'preset') return `${iso}T${time.label}`
+  return iso
 }
 
-function formatPlainDateTime(value: string): string {
-  const p = parseValue(value)
-  if (p.date && p.morning) {
-    return `${p.date.y}/${pad2(p.date.m)}/${pad2(p.date.d)} ${MORNING_LABEL}`
-  }
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value)
-  if (!m) return value
-  return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`
+function timeText(time: TimePart): string {
+  if (time.kind === 'clock') return `${pad2(time.hh)}:${pad2(time.mm)}`
+  if (time.kind === 'preset') return time.label
+  return ''
+}
+
+function formatJa(p: ParsedDateTime): string {
+  if (!p.date) return ''
+  return `${p.date.y}年${p.date.m}月${p.date.d}日 ${timeText(p.time)}`.trim()
+}
+
+function formatPlainDateTime(p: ParsedDateTime): string {
+  if (!p.date) return ''
+  return `${p.date.y}/${pad2(p.date.m)}/${pad2(p.date.d)} ${timeText(p.time)}`.trim()
 }
 
 function monthLabelJa(year: number, month: number): string {
@@ -69,6 +71,8 @@ function monthLabelJa(year: number, month: number): string {
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const MINUTES = Array.from({ length: 60 }, (_, i) => i)
+/** 時刻指定に切り替えたときの最初の時刻 */
+const DEFAULT_CLOCK = { hh: 8, mm: 0 }
 
 const PLAIN_TRIGGER_CLASS =
   'group inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-md border border-dashed border-slate-300 bg-slate-50/80 px-2 py-1 text-sm text-muted shadow-sm outline-none transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-foreground focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/25 print:border-transparent print:bg-transparent print:px-0 print:shadow-none'
@@ -94,11 +98,18 @@ export function CustomerDateTimePicker({
   onChange,
   plain = false,
   labelPrefix,
+  timePresets = [],
+  children,
 }: {
+  /** "YYYY-MM-DD" / "YYYY-MM-DDTHH:mm" / "YYYY-MM-DDT{timePresets のどれか}" */
   value: string
   onChange: (value: string) => void
   plain?: boolean
   labelPrefix?: string
+  /** 時刻の代わりに選べる言葉（「午前中」など） */
+  timePresets?: readonly string[]
+  /** 時刻選択の下に追加で置くもの */
+  children?: ReactNode
 }) {
   const listboxId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -107,20 +118,19 @@ export function CustomerDateTimePicker({
     return { y: now.getFullYear(), m: now.getMonth() + 1, d: now.getDate() }
   }, [])
 
-  const parsed = parseValue(value)
+  const parsed = parseValue(value, timePresets)
   const initialView = parsed.date ?? today
   const [open, setOpen] = useState(false)
   const [viewYear, setViewYear] = useState(initialView.y)
   const [viewMonth, setViewMonth] = useState(initialView.m)
 
-  useEffect(() => {
-    if (!open) return
-    const p = parseValue(value)
-    if (p.date) {
-      setViewYear(p.date.y)
-      setViewMonth(p.date.m)
+  function toggleOpen() {
+    if (!open && parsed.date) {
+      setViewYear(parsed.date.y)
+      setViewMonth(parsed.date.m)
     }
-  }, [open, value])
+    setOpen(!open)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -163,51 +173,32 @@ export function CustomerDateTimePicker({
     setViewMonth(m)
   }
 
-  /** 日付セル選択: 既存の時刻（午前中を含む）を維持して確定 */
-  function pickDate(iso: string) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
-    if (!m) return
-    const y = Number.parseInt(m[1]!, 10)
-    const mo = Number.parseInt(m[2]!, 10)
-    const d = Number.parseInt(m[3]!, 10)
-    const cur = parseValue(value)
-    onChange(cur.morning ? toMorningValue(y, mo, d) : toValue(y, mo, d, cur.hh, cur.mm))
+  /** 日付セル選択: 選んである時刻はそのまま */
+  function pickDate(day: number) {
+    onChange(toValue({ y: viewYear, m: viewMonth, d: day }, parsed.time))
   }
 
-  /** 午前中の切り替え。外すと時・分の選択に戻る。日付未選択なら今日を採用 */
-  function toggleMorning() {
-    const cur = parseValue(value)
-    const base = cur.date ?? today
-    onChange(
-      cur.morning
-        ? toValue(base.y, base.m, base.d, cur.hh, cur.mm)
-        : toMorningValue(base.y, base.m, base.d),
-    )
+  /** 時刻の選択。日付が未選択なら今日にする */
+  function setTime(time: TimePart) {
+    onChange(toValue(parsed.date ?? today, time))
   }
 
-  /** 時・分の変更: 午前中は外れる。日付未選択なら今日を採用 */
-  function setTime(part: 'hh' | 'mm', n: number) {
-    const cur = parseValue(value)
-    const base = cur.date ?? today
-    const hh = part === 'hh' ? n : cur.hh
-    const mm = part === 'mm' ? n : cur.mm
-    onChange(toValue(base.y, base.m, base.d, hh, mm))
-  }
-
-  const selectedIso = parsed.date
-    ? toIsoDate(parsed.date.y, parsed.date.m, parsed.date.d)
-    : ''
+  const clock = parsed.time.kind === 'clock' ? parsed.time : null
+  const selectedIso = parsed.date ? toIsoDate(parsed.date.y, parsed.date.m, parsed.date.d) : ''
   const dateTimeValueText = value
     ? plain
-      ? formatPlainDateTime(value)
-      : formatJa(value)
+      ? formatPlainDateTime(parsed)
+      : formatJa(parsed)
     : plain
       ? '—'
       : '日時を選択'
 
-  const ariaLabel = labelPrefix
-    ? `${labelPrefix}${dateTimeValueText}`
-    : dateTimeValueText
+  const ariaLabel = labelPrefix ? `${labelPrefix}${dateTimeValueText}` : dateTimeValueText
+
+  const choiceClass = (active: boolean) =>
+    `rounded-md border px-2 py-1 text-xs font-medium ${
+      active ? 'border-primary bg-primary text-white' : 'border-border bg-white text-foreground hover:bg-muted/40'
+    }`
 
   return (
     <div ref={rootRef} className={plain ? 'relative' : 'relative mt-1'}>
@@ -217,7 +208,7 @@ export function CustomerDateTimePicker({
         aria-expanded={open}
         aria-controls={listboxId}
         aria-label={plain && labelPrefix ? ariaLabel : undefined}
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         className={
           plain
             ? PLAIN_TRIGGER_CLASS
@@ -227,20 +218,14 @@ export function CustomerDateTimePicker({
         {plain && labelPrefix ? (
           <>
             <span>{labelPrefix}</span>
-            <span
-              className={
-                value ? 'font-medium tabular-nums text-foreground' : 'text-muted/70'
-              }
-            >
+            <span className={value ? 'font-medium tabular-nums text-foreground' : 'text-muted/70'}>
               {dateTimeValueText}
             </span>
             <PlainCalendarIcon />
           </>
         ) : (
           <>
-            <span className={value || plain ? 'text-inherit' : 'text-muted/70'}>
-              {dateTimeValueText}
-            </span>
+            <span className={value || plain ? 'text-inherit' : 'text-muted/70'}>{dateTimeValueText}</span>
             {!plain && (
               <svg
                 className="h-4 w-4 shrink-0 text-muted/80 print:hidden"
@@ -274,9 +259,7 @@ export function CustomerDateTimePicker({
             >
               ‹
             </button>
-            <span className="text-sm font-semibold text-foreground">
-              {monthLabelJa(viewYear, viewMonth)}
-            </span>
+            <span className="text-sm font-semibold text-foreground">{monthLabelJa(viewYear, viewMonth)}</span>
             <button
               type="button"
               aria-label="次の月"
@@ -299,7 +282,7 @@ export function CustomerDateTimePicker({
                 <button
                   key={cell.iso}
                   type="button"
-                  onClick={() => pickDate(cell.iso)}
+                  onClick={() => pickDate(cell.day)}
                   className={[
                     'rounded-md py-1.5 text-xs font-medium tabular-nums transition-colors',
                     selectedIso === cell.iso
@@ -317,93 +300,92 @@ export function CustomerDateTimePicker({
             )}
           </div>
 
-          {/* 時刻選択 */}
-          <div className="mt-3 flex items-center justify-center gap-2 border-t border-border pt-3">
-            <span className="text-xs text-muted">時刻</span>
-            <select
-              aria-label="時"
-              value={parsed.hh}
-              onChange={(e) => setTime('hh', Number.parseInt(e.target.value, 10))}
-              className="rounded-md border border-border bg-white px-2 py-1 text-sm tabular-nums outline-none focus:border-primary"
-            >
-              {HOURS.map((h) => (
-                <option key={h} value={h}>
-                  {pad2(h)}
-                </option>
-              ))}
-            </select>
-            <span className="text-sm font-semibold text-muted">時</span>
-            <select
-              aria-label="分"
-              value={parsed.mm}
-              onChange={(e) => setTime('mm', Number.parseInt(e.target.value, 10))}
-              className="rounded-md border border-border bg-white px-2 py-1 text-sm tabular-nums outline-none focus:border-primary"
-            >
-              {MINUTES.map((mi) => (
-                <option key={mi} value={mi}>
-                  {pad2(mi)}
-                </option>
-              ))}
-            </select>
-            <span className="text-sm font-semibold text-muted">分</span>
-          </div>
-          <div className="mt-2 flex justify-center">
-            <button
-              type="button"
-              aria-pressed={parsed.morning}
-              onClick={toggleMorning}
-              className={`rounded-md border px-3 py-1 text-xs font-medium ${
-                parsed.morning
-                  ? 'border-primary bg-primary text-white'
-                  : 'border-border bg-white text-foreground hover:bg-muted/40'
-              }`}
-            >
-              {MORNING_LABEL}
-            </button>
-          </div>
-
-          <div className="mt-2 flex justify-between gap-2 border-t border-border pt-2">
-            <button
-              type="button"
-              onClick={() => {
-                const now = new Date()
-                onChange(
-                  toValue(
-                    now.getFullYear(),
-                    now.getMonth() + 1,
-                    now.getDate(),
-                    now.getHours(),
-                    now.getMinutes(),
-                  ),
-                )
-                setViewYear(now.getFullYear())
-                setViewMonth(now.getMonth() + 1)
-              }}
-              className="rounded-md px-2 py-1 text-xs text-muted hover:bg-muted/40"
-            >
-              現在
-            </button>
-            <div className="flex gap-2">
-              {value && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange('')
-                    setOpen(false)
-                  }}
-                  className="rounded-md px-2 py-1 text-xs text-muted hover:bg-muted/40"
-                >
-                  クリア
-                </button>
-              )}
+          <div className="mt-3 space-y-2 border-t border-border pt-3">
+            <div className="flex flex-wrap items-center justify-center gap-1" role="group" aria-label="時刻の指定">
               <button
                 type="button"
-                onClick={() => setOpen(false)}
-                className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover"
+                aria-pressed={clock != null}
+                onClick={() => setTime({ kind: 'clock', ...(clock ?? DEFAULT_CLOCK) })}
+                className={choiceClass(clock != null)}
               >
-                決定
+                時刻指定
+              </button>
+              {timePresets.map((label) => {
+                const active = parsed.time.kind === 'preset' && parsed.time.label === label
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setTime({ kind: 'preset', label })}
+                    className={choiceClass(active)}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+              <button
+                type="button"
+                aria-pressed={parsed.time.kind === 'none'}
+                onClick={() => setTime({ kind: 'none' })}
+                className={choiceClass(parsed.time.kind === 'none')}
+              >
+                時間指定なし
               </button>
             </div>
+            {clock ? (
+              <div className="flex items-center justify-center gap-2">
+                <select
+                  aria-label="時"
+                  value={clock.hh}
+                  onChange={(e) => setTime({ kind: 'clock', hh: Number.parseInt(e.target.value, 10), mm: clock.mm })}
+                  className="rounded-md border border-border bg-white px-2 py-1 text-sm tabular-nums outline-none focus:border-primary"
+                >
+                  {HOURS.map((h) => (
+                    <option key={h} value={h}>
+                      {pad2(h)}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-sm font-semibold text-muted">時</span>
+                <select
+                  aria-label="分"
+                  value={clock.mm}
+                  onChange={(e) => setTime({ kind: 'clock', hh: clock.hh, mm: Number.parseInt(e.target.value, 10) })}
+                  className="rounded-md border border-border bg-white px-2 py-1 text-sm tabular-nums outline-none focus:border-primary"
+                >
+                  {MINUTES.map((mi) => (
+                    <option key={mi} value={mi}>
+                      {pad2(mi)}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-sm font-semibold text-muted">分</span>
+              </div>
+            ) : null}
+            {children}
+          </div>
+
+          <div className="mt-2 flex justify-end gap-2 border-t border-border pt-2">
+            {value && (
+              <button
+                type="button"
+                onClick={() => {
+                  onChange('')
+                  setOpen(false)
+                }}
+                className="rounded-md px-2 py-1 text-xs text-muted hover:bg-muted/40"
+              >
+                クリア
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover"
+            >
+              決定
+            </button>
           </div>
         </div>
       )}

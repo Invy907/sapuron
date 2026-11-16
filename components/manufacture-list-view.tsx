@@ -22,7 +22,7 @@ import {
   type UnitShapeLegendPositions,
 } from '@/components/unit-client'
 import { CustomerDatePicker } from '@/components/customer-date-picker'
-import { CustomerDateTimePicker, MORNING_LABEL } from '@/components/customer-datetime-picker'
+import { CustomerDateTimePicker } from '@/components/customer-datetime-picker'
 import {
   getSegmentColor,
   getSegmentEffectiveLengthMm,
@@ -76,6 +76,17 @@ const HEADER_NAME_GAPS_PX = 32
 const HEADER_COLUMN_GAP_PX = 16
 /** 印刷の日付・時刻。手書きの「多少小さくしてよい」に合わせ、以前の 20px より小さくする */
 const DATE_PRINT_FONT_PX = 16
+/** お客様名・納品日の文字サイズを利用者が −/＋ で決めるときの範囲(px) */
+export const NAME_FONT_PX_MIN = 10
+export const NAME_FONT_PX_MAX = 48
+export const DATE_FONT_PX_MIN = 10
+export const DATE_FONT_PX_MAX = 32
+
+/** 保存してある文字サイズを範囲に収める。null（未設定）は自動のまま */
+export function clampOptionalFontPx(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.min(max, Math.max(min, Math.round(value)))
+}
 
 /** 全角を 1em、半角を 0.5em として文字列の概算幅を出す */
 function estimateEmWidth(text: string): number {
@@ -123,25 +134,39 @@ function joinArrival(dateLine: string, timeLine: string): string {
   return date || time
 }
 
-/** 印刷の「R8.11.16（火） / 8:00予定」「… / 午前中予定」を、カレンダーモーダルの日時にする */
-function dateTimeFromPrinted(value: string): string {
-  const [dateLine = '', timeLine = ''] = value.split('\n')
-  const iso = isoFromPrintedDate(dateLine)
-  if (!iso) return ''
-  if (timeLine.trim().startsWith(MORNING_LABEL)) return `${iso}T${MORNING_LABEL}`
-  const time = /^(\d{1,2}):(\d{2})/.exec(timeLine.trim())
-  const hh = time ? time[1]!.padStart(2, '0') : '00'
-  const mm = time ? time[2] : '00'
-  return `${iso}T${hh}:${mm}`
+/** 到着日のカレンダーで、時刻の代わりに選べる言葉 */
+const ARRIVAL_TIME_PRESETS = ['午前中', '午後'] as const
+/** 到着日の 2 行目の最後に付けられる言葉。自動では付けず、選んだときだけ付ける */
+const ARRIVAL_YOTEI = '予定'
+
+/** 到着日の 2 行目（時刻・「午前中」・「予定」など） */
+function arrivalTimeLine(value: string): string {
+  return (value.split('\n')[1] ?? '').trim()
 }
 
-/** カレンダーモーダルの日時を、印刷の日付と「8:00予定」（または「午前中予定」）の 2 行にする */
-function printedFromDateTime(value: string): string {
-  const morning = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})T${MORNING_LABEL}$`).exec(value)
-  if (morning) return joinArrival(formatPrintedDate(morning[1]!), `${MORNING_LABEL}予定`)
-  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(value)
+function arrivalHasYotei(value: string): boolean {
+  return arrivalTimeLine(value).endsWith(ARRIVAL_YOTEI)
+}
+
+/** 印刷の「R8.11.16（火） / 8:00予定」「… / 午前中」などを、カレンダーモーダルの値にする */
+function dateTimeFromPrinted(value: string): string {
+  const iso = isoFromPrintedDate(value.split('\n')[0] ?? '')
+  if (!iso) return ''
+  const time = arrivalTimeLine(value).replace(new RegExp(`${ARRIVAL_YOTEI}$`), '').trim()
+  const clock = /^(\d{1,2}):(\d{2})$/.exec(time)
+  if (clock) return `${iso}T${clock[1]!.padStart(2, '0')}:${clock[2]}`
+  if ((ARRIVAL_TIME_PRESETS as readonly string[]).includes(time)) return `${iso}T${time}`
+  return iso
+}
+
+/** カレンダーモーダルの値を、印刷の日付と「8:00」「午前中」（＋「予定」）の 2 行にする */
+function printedFromDateTime(value: string, yotei: boolean): string {
+  const match = /^(\d{4}-\d{2}-\d{2})(?:T(.+))?$/.exec(value)
   if (!match) return ''
-  return joinArrival(formatPrintedDate(match[1]!), `${Number(match[2])}:${match[3]}予定`)
+  const rest = match[2] ?? ''
+  const clock = /^(\d{2}):(\d{2})$/.exec(rest)
+  const time = clock ? `${Number(clock[1])}:${clock[2]}` : rest
+  return joinArrival(formatPrintedDate(match[1]!), `${time}${yotei ? ARRIVAL_YOTEI : ''}`)
 }
 
 /** 画面の日付入力欄の幅(px)。入力欄はこの幅に固定し、名前の文字サイズもこの幅を空けて決める */
@@ -152,13 +177,16 @@ function dateBlockWidthPx(
   date: string,
   arrival: string,
   showTsumikomi: boolean,
+  dateFontPx: number,
   reserveScreenForm: boolean,
 ): number {
-  const lines = showTsumikomi
-    ? [date.trim(), 'つみ込み', ...arrival.split('\n').map((line) => line.trim())].filter(Boolean)
-    : []
+  const lines = [
+    date.trim(),
+    showTsumikomi ? 'つみ込み' : '',
+    ...arrival.split('\n').map((line) => line.trim()),
+  ].filter(Boolean)
   const em = lines.reduce((max, line) => Math.max(max, estimateEmWidth(line)), 6)
-  const textWidth = lines.length > 0 ? Math.ceil(em * DATE_PRINT_FONT_PX) : 0
+  const textWidth = lines.length > 0 ? Math.ceil(em * dateFontPx) : 0
   // 画面の入力欄は印刷の日付より広い。画面用の文字サイズだけ、その幅も空ける
   return reserveScreenForm ? Math.max(SCREEN_DATE_FORM_PX, textWidth) : textWidth
 }
@@ -177,6 +205,7 @@ function manufactureHeaderFontPx(
   date: string,
   arrival: string,
   showTsumikomi: boolean,
+  dateFontPx: number,
   reserveScreenForm: boolean,
 ): number {
   const em =
@@ -191,7 +220,7 @@ function manufactureHeaderFontPx(
     PRINT_CONTENT_WIDTH_PX -
     HEADER_NAME_GAPS_PX -
     HEADER_COLUMN_GAP_PX -
-    dateBlockWidthPx(date, arrival, showTsumikomi, reserveScreenForm)
+    dateBlockWidthPx(date, arrival, showTsumikomi, dateFontPx, reserveScreenForm)
   return Math.max(HEADER_FONT_PX_MIN, Math.min(HEADER_FONT_PX_MAX, Math.floor(available / em)))
 }
 
@@ -218,6 +247,62 @@ function InputModeToggle({
         onClick={() => onChange('calendar')}
       >
         カレンダー
+      </button>
+    </span>
+  )
+}
+
+/** 文字サイズの −/＋。value が null のあいだは自動（autoValue を表示）で、「自動」で null に戻す */
+function FontSizeStepper({
+  label,
+  value,
+  autoValue,
+  min,
+  max,
+  onChange,
+}: {
+  label: string
+  value: number | null
+  autoValue: number
+  min: number
+  max: number
+  onChange: (value: number | null) => void
+}) {
+  const current = value ?? autoValue
+  const step = (delta: number) => onChange(Math.min(max, Math.max(min, current + delta)))
+  const buttonClass =
+    'flex h-5 w-5 items-center justify-center rounded border border-slate-300 bg-white leading-none text-foreground disabled:opacity-40'
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="whitespace-nowrap">{label}</span>
+      <button
+        type="button"
+        onClick={() => step(-1)}
+        disabled={current <= min}
+        aria-label={`${label}の文字を小さくする`}
+        className={buttonClass}
+      >
+        −
+      </button>
+      <span className="w-9 text-center tabular-nums text-foreground">{current}px</span>
+      <button
+        type="button"
+        onClick={() => step(1)}
+        disabled={current >= max}
+        aria-label={`${label}の文字を大きくする`}
+        className={buttonClass}
+      >
+        ＋
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(null)}
+        aria-pressed={value == null}
+        className={`rounded border px-1.5 py-0.5 leading-none ${
+          value == null ? 'border-primary bg-primary text-white' : 'border-slate-300 bg-white text-foreground'
+        }`}
+      >
+        自動
       </button>
     </span>
   )
@@ -423,6 +508,10 @@ export function ManufactureListView({
   onCustomerDateChange,
   showTsumikomi,
   onShowTsumikomiChange,
+  nameFontPx,
+  onNameFontPxChange,
+  dateFontPx,
+  onDateFontPxChange,
   customerArrival,
   onCustomerArrivalChange,
   customerMemo,
@@ -452,9 +541,15 @@ export function ManufactureListView({
   onCustomerAddressChange: (value: string) => void
   customerDate: string
   onCustomerDateChange: (value: string) => void
-  /** 積み込みがあるときだけ、積み込み日・「つみ込み」・到着日と時刻を印刷する */
+  /** 積み込みがあるときだけ「つみ込み」の文字を印刷する。日付は入力があればいつも印刷する */
   showTsumikomi: boolean
   onShowTsumikomiChange: (value: boolean) => void
+  /** お客様名（会社名・顧客名・現場住所）の文字サイズ(px)。null は幅に合わせた自動 */
+  nameFontPx: number | null
+  onNameFontPxChange: (value: number | null) => void
+  /** 納品日（右上の日付・時刻）の文字サイズ(px)。null は既定の 16px */
+  dateFontPx: number | null
+  onDateFontPxChange: (value: number | null) => void
   customerArrival: string
   onCustomerArrivalChange: (value: string) => void
   customerMemo: string
@@ -500,6 +595,7 @@ export function ManufactureListView({
 
   // 文字サイズは行全体に inline style で当てる（Tailwind の text-* だと画面と印刷で
   // 別々の値になってしまい、1 行に収まる保証ができない）
+  const effectiveDateFontPx = dateFontPx ?? DATE_PRINT_FONT_PX
   const headerFontArgs = [
     customerCompany,
     customerName,
@@ -507,11 +603,14 @@ export function ManufactureListView({
     customerDate,
     customerArrival,
     showTsumikomi,
+    effectiveDateFontPx,
   ] as const
-  const screenHeaderFontPx = manufactureHeaderFontPx(...headerFontArgs, true)
-  const printHeaderFontPx = manufactureHeaderFontPx(...headerFontArgs, false)
-  const [loadingDateMode, setLoadingDateMode] = useState<'text' | 'calendar'>('text')
-  const [arrivalDateMode, setArrivalDateMode] = useState<'text' | 'calendar'>('text')
+  // 利用者が文字サイズを決めたときは、画面も印刷もその大きさにする（長い名前は印刷で切れることがある）
+  const screenHeaderFontPx = nameFontPx ?? manufactureHeaderFontPx(...headerFontArgs, true)
+  const printHeaderFontPx = nameFontPx ?? manufactureHeaderFontPx(...headerFontArgs, false)
+  // 納品日時は選択式で入れたい、との要望で最初はカレンダーにする
+  const [loadingDateMode, setLoadingDateMode] = useState<'text' | 'calendar'>('calendar')
+  const [arrivalDateMode, setArrivalDateMode] = useState<'text' | 'calendar'>('calendar')
   const plainTextInputClass =
     'min-w-0 border-0 bg-transparent px-0 py-0 outline-none placeholder:text-muted/50 focus:underline focus:decoration-primary/40 print:border-transparent print:bg-transparent'
   const headerLabelClass = 'shrink-0 font-semibold text-foreground'
@@ -683,6 +782,25 @@ export function ManufactureListView({
 
   return (
     <div className="manufacture-list-root relative space-y-3 print:space-y-0.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted print:hidden">
+        <span>文字サイズ</span>
+        <FontSizeStepper
+          label="お客様名"
+          value={nameFontPx}
+          autoValue={printHeaderFontPx}
+          min={NAME_FONT_PX_MIN}
+          max={NAME_FONT_PX_MAX}
+          onChange={onNameFontPxChange}
+        />
+        <FontSizeStepper
+          label="納品日"
+          value={dateFontPx}
+          autoValue={DATE_PRINT_FONT_PX}
+          min={DATE_FONT_PX_MIN}
+          max={DATE_FONT_PX_MAX}
+          onChange={onDateFontPxChange}
+        />
+      </div>
       <div className="manufacture-list-header relative flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 折り返すと 2 行目ができてしまうので nowrap にし、幅は文字サイズ側で合わせる */}
@@ -738,21 +856,11 @@ export function ManufactureListView({
           className="flex shrink-0 flex-col items-end gap-1 text-sm print:hidden"
           style={{ width: SCREEN_DATE_FORM_PX }}
         >
-          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
-            <input
-              type="checkbox"
-              checked={showTsumikomi}
-              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
-            />
-            つみ込みあり（積み込み日・到着日を印刷）
-          </label>
-          {showTsumikomi ? (
-            <div className="inline-flex items-center gap-1">
-              <span className="whitespace-nowrap text-muted">積み込み日:</span>
-              <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
-            </div>
-          ) : null}
-          {!showTsumikomi ? null : loadingDateMode === 'text' ? (
+          <div className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">積み込み日:</span>
+            <InputModeToggle mode={loadingDateMode} onChange={setLoadingDateMode} label="積み込み日の入力方法" />
+          </div>
+          {loadingDateMode === 'text' ? (
             <input
               type="text"
               value={customerDate}
@@ -774,13 +882,20 @@ export function ManufactureListView({
               ) : null}
             </div>
           )}
-          {showTsumikomi ? (
-            <div className="inline-flex items-center gap-1">
-              <span className="whitespace-nowrap text-muted">到着日:</span>
-              <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
-            </div>
-          ) : null}
-          {!showTsumikomi ? null : arrivalDateMode === 'text' ? (
+          {/* 積み込みが無い図面でも日付は入れるので、チェックは「つみ込み」の文字だけを出し分ける */}
+          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-foreground">
+            <input
+              type="checkbox"
+              checked={showTsumikomi}
+              onChange={(e) => onShowTsumikomiChange(e.target.checked)}
+            />
+            「つみ込み」を印刷
+          </label>
+          <div className="inline-flex items-center gap-1">
+            <span className="whitespace-nowrap text-muted">到着日:</span>
+            <InputModeToggle mode={arrivalDateMode} onChange={setArrivalDateMode} label="到着日の入力方法" />
+          </div>
+          {arrivalDateMode === 'text' ? (
             // 印刷では入力した改行の位置でそのまま改行する（自動では折り返さない）。
             // 画面でも折り返さずに見せ、長い行は横にスクロールする
             <textarea
@@ -789,7 +904,7 @@ export function ManufactureListView({
               aria-label="到着日"
               rows={Math.max(2, customerArrival.split('\n').length)}
               wrap="off"
-              placeholder={'R8.11.9（月）\n8:00予定'}
+              placeholder={'R8.11.9（月）\n8:00'}
               title="Enter で改行すると、印刷も同じ所で改行します"
               className="w-full resize-none overflow-x-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 leading-snug text-foreground outline-none placeholder:text-muted/50 focus:border-primary/60"
             />
@@ -799,8 +914,25 @@ export function ManufactureListView({
                 plain
                 labelPrefix="到着日"
                 value={dateTimeFromPrinted(customerArrival)}
-                onChange={(value) => onCustomerArrivalChange(printedFromDateTime(value))}
-              />
+                onChange={(value) =>
+                  onCustomerArrivalChange(printedFromDateTime(value, arrivalHasYotei(customerArrival)))
+                }
+                timePresets={ARRIVAL_TIME_PRESETS}
+              >
+                <label className="flex items-center justify-center gap-1 text-xs text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={arrivalHasYotei(customerArrival)}
+                    disabled={!dateTimeFromPrinted(customerArrival)}
+                    onChange={(e) =>
+                      onCustomerArrivalChange(
+                        printedFromDateTime(dateTimeFromPrinted(customerArrival), e.target.checked),
+                      )
+                    }
+                  />
+                  「{ARRIVAL_YOTEI}」を付ける
+                </label>
+              </CustomerDateTimePicker>
               {customerArrival.trim() ? (
                 <span className="whitespace-pre text-right text-xs text-foreground">
                   {customerArrival.trim()}
@@ -815,21 +947,21 @@ export function ManufactureListView({
           <div className="flex flex-col items-start">
             {/* 積み込み日・到着日は書式を変えず、入力したとおりに印刷する。
                 「つみ込み」は日付の右に詰めず、次の行に置く（改行してよい、との指示） */}
-            {showTsumikomi && customerDate.trim() ? (
+            {customerDate.trim() ? (
               <div
                 className="whitespace-nowrap font-bold leading-none"
-                style={{ fontSize: DATE_PRINT_FONT_PX }}
+                style={{ fontSize: effectiveDateFontPx }}
               >
                 {customerDate.trim()}
               </div>
             ) : null}
             {showTsumikomi ? (
-              <div className="mt-0.5 whitespace-nowrap leading-none" style={{ fontSize: DATE_PRINT_FONT_PX }}>
+              <div className="mt-0.5 whitespace-nowrap leading-none" style={{ fontSize: effectiveDateFontPx }}>
                 つみ込み
               </div>
             ) : null}
-            {showTsumikomi && customerArrival.trim() ? (
-              <div className="whitespace-pre font-bold" style={{ fontSize: DATE_PRINT_FONT_PX }}>
+            {customerArrival.trim() ? (
+              <div className="whitespace-pre font-bold" style={{ fontSize: effectiveDateFontPx }}>
                 {customerArrival.trim()}
               </div>
             ) : null}
