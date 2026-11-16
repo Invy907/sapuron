@@ -309,7 +309,7 @@ function FontSizeStepper({
 }
 
 /**
- * お客様名・納品日の文字サイズの −/＋。結果ページと印刷レイアウト画面の両方に置く。
+ * お客様名・納品日の文字サイズの −/＋。印刷レイアウト画面の上のバーに置く。
  * 「自動」のときに表示するお客様名の大きさは、印刷で使う自動の値
  */
 export function ManufactureHeaderFontControls({
@@ -571,9 +571,7 @@ export function ManufactureListView({
   showTsumikomi,
   onShowTsumikomiChange,
   nameFontPx,
-  onNameFontPxChange,
   dateFontPx,
-  onDateFontPxChange,
   customerArrival,
   onCustomerArrivalChange,
   customerMemo,
@@ -606,12 +604,10 @@ export function ManufactureListView({
   /** 積み込みがあるときだけ「つみ込み」の文字を印刷する。日付は入力があればいつも印刷する */
   showTsumikomi: boolean
   onShowTsumikomiChange: (value: boolean) => void
-  /** お客様名（会社名・顧客名・現場住所）の文字サイズ(px)。null は幅に合わせた自動 */
+  /** お客様名（会社名・顧客名・現場住所）の文字サイズ(px)。null は幅に合わせた自動。印刷レイアウト画面で決める */
   nameFontPx: number | null
-  onNameFontPxChange: (value: number | null) => void
-  /** 納品日（右上の日付・時刻）の文字サイズ(px)。null は既定の 16px */
+  /** 納品日（右上の日付・時刻）の文字サイズ(px)。null は既定の 16px。印刷レイアウト画面で決める */
   dateFontPx: number | null
-  onDateFontPxChange: (value: number | null) => void
   customerArrival: string
   onCustomerArrivalChange: (value: string) => void
   customerMemo: string
@@ -844,19 +840,6 @@ export function ManufactureListView({
 
   return (
     <div className="manufacture-list-root relative space-y-3 print:space-y-0.5">
-      <ManufactureHeaderFontControls
-        company={customerCompany}
-        name={customerName}
-        address={customerAddress}
-        date={customerDate}
-        arrival={customerArrival}
-        showTsumikomi={showTsumikomi}
-        nameFontPx={nameFontPx}
-        onNameFontPxChange={onNameFontPxChange}
-        dateFontPx={dateFontPx}
-        onDateFontPxChange={onDateFontPxChange}
-        className="print:hidden"
-      />
       <div className="manufacture-list-header relative flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 折り返すと 2 行目ができてしまうので nowrap にし、幅は文字サイズ側で合わせる */}
