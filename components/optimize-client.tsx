@@ -20,6 +20,11 @@ import {
   ManufactureListView,
   buildManufactureUnitTotals,
   clampMemoFontPx,
+  clampOptionalFontPx,
+  DATE_FONT_PX_MAX,
+  DATE_FONT_PX_MIN,
+  NAME_FONT_PX_MAX,
+  NAME_FONT_PX_MIN,
   MEMO_BOX_TOP,
   MEMO_FONT_PX_DEFAULT,
   MEMO_TABLE_GAP_PX,
@@ -187,6 +192,9 @@ export function OptimizeClient({
   const [customerDate, setCustomerDate] = useState('')
   /** 積み込みがあるときだけ「つみ込み」の文字を印刷する */
   const [showTsumikomi, setShowTsumikomi] = useState(false)
+  /** お客様名・納品日の文字サイズ(px)。null は自動 */
+  const [nameFontPx, setNameFontPx] = useState<number | null>(null)
+  const [dateFontPx, setDateFontPx] = useState<number | null>(null)
   /** 到着日（自由入力。旧データは YYYY-MM-DDTHH:mm） */
   const [customerArrival, setCustomerArrival] = useState('')
   /** 予定・注意事項などの自由記入メモ（製作図リストの右側） */
@@ -830,6 +838,8 @@ export function OptimizeClient({
         name?: string
         date?: string
         showTsumikomi?: boolean
+        nameFontPx?: number | null
+        dateFontPx?: number | null
         arrival?: string
         memo?: string
         memoFontPx?: number
@@ -840,6 +850,8 @@ export function OptimizeClient({
       setCustomerDate(parsed.date ?? '')
       // 積み込みが必要な図面は一部だけなので、明示的にチェックしていない現場は出さない
       setShowTsumikomi(parsed.showTsumikomi === true)
+      setNameFontPx(clampOptionalFontPx(parsed.nameFontPx, NAME_FONT_PX_MIN, NAME_FONT_PX_MAX))
+      setDateFontPx(clampOptionalFontPx(parsed.dateFontPx, DATE_FONT_PX_MIN, DATE_FONT_PX_MAX))
       setCustomerArrival(parsed.arrival ?? '')
       setCustomerMemo(parsed.memo ?? '')
       setCustomerMemoFontPx(
@@ -863,6 +875,8 @@ export function OptimizeClient({
           name: customerName,
           date: customerDate,
           showTsumikomi,
+          nameFontPx,
+          dateFontPx,
           arrival: customerArrival,
           memo: customerMemo,
           memoFontPx: customerMemoFontPx,
@@ -877,6 +891,8 @@ export function OptimizeClient({
     customerCompany,
     customerDate,
     showTsumikomi,
+    nameFontPx,
+    dateFontPx,
     customerInfoStorageKey,
     customerMemo,
     customerMemoFontPx,
@@ -994,6 +1010,10 @@ export function OptimizeClient({
       onCustomerDateChange={setCustomerDate}
       showTsumikomi={showTsumikomi}
       onShowTsumikomiChange={setShowTsumikomi}
+      nameFontPx={nameFontPx}
+      onNameFontPxChange={setNameFontPx}
+      dateFontPx={dateFontPx}
+      onDateFontPxChange={setDateFontPx}
       customerArrival={customerArrival}
       onCustomerArrivalChange={setCustomerArrival}
       customerMemo={customerMemo}
