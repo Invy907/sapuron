@@ -16,6 +16,7 @@ import {
   clampOptionalFontPx,
   DATE_FONT_PX_MAX,
   DATE_FONT_PX_MIN,
+  ManufactureHeaderFontControls,
   NAME_FONT_PX_MAX,
   NAME_FONT_PX_MIN,
   MEMO_BOX_TOP,
@@ -1215,6 +1216,21 @@ export function OptimizeClient({
           ruleSettings={printRuleSettings}
           onRuleSettingsChange={handlePrintRuleSettingsChange}
           onManufactureOverflow={setManufactureOverflowIndex}
+          toolbarStart={
+            <ManufactureHeaderFontControls
+              company={customerCompany}
+              name={customerName}
+              address={customerAddress}
+              date={customerDate}
+              arrival={customerArrival}
+              showTsumikomi={showTsumikomi}
+              nameFontPx={nameFontPx}
+              onNameFontPxChange={setNameFontPx}
+              dateFontPx={dateFontPx}
+              onDateFontPxChange={setDateFontPx}
+              className="text-sm"
+            />
+          }
         />
       )}
     </div>
