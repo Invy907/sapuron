@@ -308,6 +308,68 @@ function FontSizeStepper({
   )
 }
 
+/**
+ * お客様名・納品日の文字サイズの −/＋。結果ページと印刷レイアウト画面の両方に置く。
+ * 「自動」のときに表示するお客様名の大きさは、印刷で使う自動の値
+ */
+export function ManufactureHeaderFontControls({
+  company,
+  name,
+  address,
+  date,
+  arrival,
+  showTsumikomi,
+  nameFontPx,
+  onNameFontPxChange,
+  dateFontPx,
+  onDateFontPxChange,
+  className = '',
+}: {
+  company: string
+  name: string
+  address: string
+  date: string
+  arrival: string
+  showTsumikomi: boolean
+  nameFontPx: number | null
+  onNameFontPxChange: (value: number | null) => void
+  dateFontPx: number | null
+  onDateFontPxChange: (value: number | null) => void
+  className?: string
+}) {
+  const autoNameFontPx = manufactureHeaderFontPx(
+    company,
+    name,
+    address,
+    date,
+    arrival,
+    showTsumikomi,
+    dateFontPx ?? DATE_PRINT_FONT_PX,
+    false,
+  )
+  return (
+    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted ${className}`}>
+      <span className="whitespace-nowrap">文字サイズ</span>
+      <FontSizeStepper
+        label="お客様名"
+        value={nameFontPx}
+        autoValue={autoNameFontPx}
+        min={NAME_FONT_PX_MIN}
+        max={NAME_FONT_PX_MAX}
+        onChange={onNameFontPxChange}
+      />
+      <FontSizeStepper
+        label="納品日"
+        value={dateFontPx}
+        autoValue={DATE_PRINT_FONT_PX}
+        min={DATE_FONT_PX_MIN}
+        max={DATE_FONT_PX_MAX}
+        onChange={onDateFontPxChange}
+      />
+    </div>
+  )
+}
+
 export function clampMemoFontPx(value: number): number {
   if (!Number.isFinite(value)) return MEMO_FONT_PX_DEFAULT
   return Math.min(MEMO_FONT_PX_MAX, Math.max(MEMO_FONT_PX_MIN, Math.round(value)))
@@ -782,25 +844,19 @@ export function ManufactureListView({
 
   return (
     <div className="manufacture-list-root relative space-y-3 print:space-y-0.5">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted print:hidden">
-        <span>文字サイズ</span>
-        <FontSizeStepper
-          label="お客様名"
-          value={nameFontPx}
-          autoValue={printHeaderFontPx}
-          min={NAME_FONT_PX_MIN}
-          max={NAME_FONT_PX_MAX}
-          onChange={onNameFontPxChange}
-        />
-        <FontSizeStepper
-          label="納品日"
-          value={dateFontPx}
-          autoValue={DATE_PRINT_FONT_PX}
-          min={DATE_FONT_PX_MIN}
-          max={DATE_FONT_PX_MAX}
-          onChange={onDateFontPxChange}
-        />
-      </div>
+      <ManufactureHeaderFontControls
+        company={customerCompany}
+        name={customerName}
+        address={customerAddress}
+        date={customerDate}
+        arrival={customerArrival}
+        showTsumikomi={showTsumikomi}
+        nameFontPx={nameFontPx}
+        onNameFontPxChange={onNameFontPxChange}
+        dateFontPx={dateFontPx}
+        onDateFontPxChange={onDateFontPxChange}
+        className="print:hidden"
+      />
       <div className="manufacture-list-header relative flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 折り返すと 2 行目ができてしまうので nowrap にし、幅は文字サイズ側で合わせる */}

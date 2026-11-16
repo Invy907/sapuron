@@ -407,6 +407,7 @@ export function PrintLayoutModal({
   ruleSettings,
   onRuleSettingsChange,
   onManufactureOverflow,
+  toolbarStart,
 }: {
   onClose: () => void
   onPrint: () => void
@@ -441,6 +442,8 @@ export function PrintLayoutModal({
   /** 余白全体に引く罫線の設定 */
   ruleSettings: PrintRuleSettings
   onRuleSettingsChange: (settings: PrintRuleSettings) => void
+  /** 上のバーの見出しの右に置くもの（お客様名・納品日の文字サイズなど） */
+  toolbarStart?: ReactNode
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const sheet1Ref = useRef<HTMLDivElement | null>(null)
@@ -991,8 +994,9 @@ export function PrintLayoutModal({
       aria-label="印刷レイアウト"
     >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-white px-5 py-3 print:hidden">
-        <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-2">
           <h2 className="text-base font-semibold">印刷レイアウト</h2>
+          {toolbarStart}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <div className="flex items-center gap-1 text-sm">
