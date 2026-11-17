@@ -31,6 +31,7 @@ import {
   layoutDomaRun,
   isLongerFreeEndPiece,
   rebalanceDomaPieces,
+  domaPieceCombinations,
   type DomaBarSettings,
   type DomaBends,
   type DomaRunLayout,
@@ -459,14 +460,22 @@ function PiecesEditor({
   run,
   layout,
   onOverride,
+  manual = layout.source === 'manual',
+  autoLabel = '自動選択',
 }: {
   run: DrawingDomaRun
   layout: DomaRunLayout
   onOverride: (lengths: number[] | null) => void
+  /** 手入力したか（区域で切った本は、同じセットに合わせた長さも manual の並びで渡すので別に指定する） */
+  manual?: boolean
+  /** 手入力でないときの見出し */
+  autoLabel?: string
 }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({})
   const lengths = layout.pieces.map((p) => p.lengthMm)
   const sum = lengths.reduce((a, b) => a + b, 0)
+  // 2 本に分けたときに選べる組合せ（4,500 ＋ 3,220、5,000 ＋ 2,720 …）
+  const combinations = domaPieceCombinations(layout, run.settings.bendMm, run.settings.lapMm)
   const [editError, setEditError] = useState<string | null>(null)
   const apply = (index: number, raw: string) => {
     const mm = parseMm(raw)
@@ -500,12 +509,35 @@ function PiecesEditor({
         <span className="text-[11px] font-medium text-foreground">加工長さ (mm)</span>
         <span
           className={`rounded px-1.5 py-0.5 text-[10px] ${
-            layout.source === 'manual' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
+            manual ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
           }`}
         >
-          {layout.source === 'manual' ? '調整済み' : '自動選択'}
+          {manual ? '調整済み' : autoLabel}
         </span>
       </div>
+      {combinations.length > 1 ? (
+        <label className="flex flex-col gap-0.5 text-[11px] text-muted">
+          組合せ（重ね {run.settings.lapMm.toLocaleString()}）
+          <select
+            aria-label="加工長さの組合せ"
+            value={lengths.join(',')}
+            onChange={(e) => {
+              setEditError(null)
+              onOverride(e.target.value.split(',').map(Number))
+            }}
+            className="w-full rounded border border-border bg-white px-2 py-1 text-xs tabular-nums text-foreground"
+          >
+            {combinations.some((c) => c.join(',') === lengths.join(',')) ? null : (
+              <option value={lengths.join(',')}>{lengths.map((mm) => mm.toLocaleString()).join(' ＋ ')}</option>
+            )}
+            {combinations.map((c) => (
+              <option key={c.join(',')} value={c.join(',')}>
+                {c.map((mm) => mm.toLocaleString()).join(' ＋ ')}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <table className="w-full text-xs">
         <tbody>
           {layout.pieces.map((p) => (
@@ -564,7 +596,7 @@ function PiecesEditor({
         >
           ＋ 本を追加
         </button>
-        {layout.source === 'manual' ? (
+        {manual ? (
           <button type="button" onClick={() => onOverride(null)} className="text-primary hover:underline">
             自動に戻す
           </button>
@@ -609,6 +641,7 @@ function RunEditor({
   const rows = splitDomaRunByZones(run, runs, dimensions)
   const zones = runs.filter((r) => r.kind === 'special')
   const [zoneStartDrafts, setZoneStartDrafts] = useState<Record<string, string>>({})
+  const [zoneCrossDrafts, setZoneCrossDrafts] = useState<Record<string, string>>({})
   // 始点（線を引き始めた端）が画面で上下左右のどれか
   const vertical = Math.abs(run.y2 - run.y1) >= Math.abs(run.x2 - run.x1)
   const startEdge = vertical ? (run.y1 <= run.y2 ? 'top' : 'bottom') : run.x1 <= run.x2 ? 'left' : 'right'
@@ -619,11 +652,12 @@ function RunEditor({
     return DOMA_ZONE_SIDE_LABEL[domaZoneScreenSide(edge, viewRotationSteps)]
   }
   const countFrom = run.settings.countFrom ?? 'low'
-  const setZoneStart = (zoneId: string, mm: number | null) => {
-    const zoneStarts = { ...run.settings.zoneStarts }
-    if (mm == null) delete zoneStarts[zoneId]
-    else zoneStarts[zoneId] = mm
-    commit({ settings: { ...run.settings, zoneStarts } })
+  /** 区域までの長さ（key = zoneStarts: L の向き、zoneCrossStarts: 配筋範囲の向き）を保存する。空欄なら消す */
+  const setZoneDistance = (key: 'zoneStarts' | 'zoneCrossStarts', zoneId: string, mm: number | null) => {
+    const values = { ...run.settings[key] }
+    if (mm == null) delete values[zoneId]
+    else values[zoneId] = mm
+    commit({ settings: { ...run.settings, [key]: values } })
   }
 
   const commit = (patch: Partial<RunPatch>) =>
@@ -709,49 +743,67 @@ function RunEditor({
           {cuts.map((cut) => (
             <div key={cut.zoneId} className="tabular-nums text-foreground">
               <p>
-                特殊{zones.findIndex((z) => z.id === cut.zoneId) + 1} にかかる {cut.count}本（区域{' '}
-                {cut.fromMm.toLocaleString()}〜{cut.toMm.toLocaleString()}）
+                特殊{zones.findIndex((z) => z.id === cut.zoneId) + 1}
+                {cut.complete
+                  ? ` にかかる ${cut.count}本（区域 ${cut.fromMm.toLocaleString()}〜${cut.toMm.toLocaleString()}）`
+                  : ' にかかる本'}
               </p>
-              <div className="my-1 flex items-end gap-2">
-                <div className="flex-1">
-                  <NumField
-                    label={`${startSideLabel}端から区域まで (mm)`}
-                    value={zoneStartDrafts[cut.zoneId] ?? String(cut.fromMm)}
-                    onChange={(v) => {
-                      setZoneStartDrafts((prev) => ({ ...prev, [cut.zoneId]: v }))
-                      const mm = parseMm(v)
-                      if (Number.isFinite(mm) && mm >= 0 && mm < run.length_mm) setZoneStart(cut.zoneId, mm)
-                    }}
-                    onBlur={() =>
-                      setZoneStartDrafts((prev) => {
-                        const next = { ...prev }
-                        delete next[cut.zoneId]
-                        return next
-                      })
-                    }
-                  />
-                </div>
-                <span
-                  className={`mb-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
-                    cut.positionSource === 'input' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
-                  }`}
-                  title={
-                    cut.positionSource === 'input'
-                      ? '入力した長さで計算しています'
-                      : '図面から測った長さです（区域が端に近いときは端にそろえます）'
-                  }
-                >
-                  {cut.positionSource === 'input' ? '入力' : '図面から'}
-                </span>
-              </div>
-              {cut.positionSource === 'input' ? (
-                <button
-                  type="button"
-                  onClick={() => setZoneStart(cut.zoneId, null)}
-                  className="mb-1 text-[11px] text-primary hover:underline"
-                >
-                  図面から測り直す
-                </button>
+              {/* 区域の位置は図面から測らない。L の向き・配筋範囲の向きとも、区域の辺までの長さを入力してもらう */}
+              {(
+                [
+                  ['zoneStarts', `${startSideLabel}端から区域まで (mm)`, run.length_mm, zoneStartDrafts, setZoneStartDrafts],
+                  [
+                    'zoneCrossStarts',
+                    `配筋範囲の${countFromLabel(countFrom)}端から区域まで (mm)`,
+                    run.span_mm,
+                    zoneCrossDrafts,
+                    setZoneCrossDrafts,
+                  ],
+                ] as const
+              ).map(([key, label, maxMm, drafts, setDrafts]) => {
+                const saved = run.settings[key]?.[cut.zoneId]
+                // 手入力がなければ、端から区域までつながる寸法線の値の合計が入る（空欄にすると寸法線の値に戻る）
+                const autoSource = key === 'zoneStarts' ? cut.startSource : cut.crossSource
+                const autoMm = key === 'zoneStarts' ? cut.startMm : cut.crossMm
+                const fromDims = saved == null && autoSource != null && autoSource !== 'input'
+                return (
+                  <div key={key} className="my-1">
+                    {fromDims ? (
+                      <p className="mb-0.5 text-[10px] text-amber-700">
+                        {autoSource === 'edge' ? '区域が筋の端にそろう' : '寸法線から'}（入力すると上書き）
+                      </p>
+                    ) : null}
+                    <NumField
+                      label={label}
+                      value={
+                        drafts[cut.zoneId] ??
+                        (saved != null ? String(saved) : fromDims && autoMm != null ? String(autoMm) : '')
+                      }
+                      onChange={(v) => {
+                        setDrafts((prev) => ({ ...prev, [cut.zoneId]: v }))
+                        if (v.trim() === '') {
+                          setZoneDistance(key, cut.zoneId, null)
+                          return
+                        }
+                        const mm = parseMm(v)
+                        if (Number.isFinite(mm) && mm >= 0 && mm < maxMm) setZoneDistance(key, cut.zoneId, mm)
+                      }}
+                      onBlur={() =>
+                        setDrafts((prev) => {
+                          const next = { ...prev }
+                          delete next[cut.zoneId]
+                          return next
+                        })
+                      }
+                    />
+                  </div>
+                )
+              })}
+              {!cut.complete ? (
+                <p className="text-[11px] text-red-600">
+                  区域までの長さを 2 つとも入力してください（端から区域の辺まで寸法線がつながっていれば自動で入ります）。
+                  決まるまでこの区域では切らずに計算します。
+                </p>
               ) : null}
               {(
                 [
@@ -769,6 +821,9 @@ function RunEditor({
                     <PiecesEditor
                       run={row}
                       layout={layoutOf(row)}
+                      manual={run.settings.zoneCutOverrides?.[key] != null}
+                      // 手入力がなければ、同じセット（区域にかからない本）の継手の位置に合わせた長さ
+                      autoLabel={row.pieces_override ? 'セットに合わせる' : '自動選択'}
                       onOverride={(lengths) => {
                         const zoneCutOverrides = { ...run.settings.zoneCutOverrides }
                         if (lengths == null) delete zoneCutOverrides[key]
@@ -1018,22 +1073,20 @@ function ZoneEditor({
               key={run.id}
               type="button"
               onClick={() => onSelectRun(run.id)}
-              title="押すとこの標準筋を選び、区域までの長さを直せます"
+              title="押すとこの標準筋を選び、区域までの長さを入力できます"
               className="flex w-full items-center justify-between gap-2 rounded px-1 py-0.5 text-left tabular-nums hover:bg-green-100/70"
             >
               <span>
                 <span className="font-semibold" style={{ color: DOMA_DIRECTION_COLORS[run.direction] }}>
                   {name}
                 </span>{' '}
-                {cut.count}本・区域 {cut.fromMm.toLocaleString()}〜{cut.toMm.toLocaleString()}
+                {cut.complete
+                  ? `${cut.count}本・区域 ${cut.fromMm.toLocaleString()}〜${cut.toMm.toLocaleString()}`
+                  : ''}
               </span>
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
-                  cut.positionSource === 'input' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-muted'
-                }`}
-              >
-                {cut.positionSource === 'input' ? '入力' : '図面から'}
-              </span>
+              {!cut.complete ? (
+                <span className="shrink-0 rounded bg-red-100 px-1.5 py-0.5 text-[10px] text-red-700">未入力</span>
+              ) : null}
             </button>
           ))
         )}

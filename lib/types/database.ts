@@ -120,8 +120,13 @@ export interface DrawingDomaRun {
   /** 特殊（kind = 'special'）は範囲の条件を zone に持つ（lib/doma-zone.ts） */
   settings: DomaBarSettings & {
     zone?: DomaZoneSpec
-    /** 標準筋で、始点から区域の辺までの長さの手入力（区域の id ごと）。なければ図面から測る */
+    /** 標準筋で、始点から区域の辺までの長さ（区域の id ごと）。入力がなければその区域では切らない */
     zoneStarts?: Record<string, number>
+    /**
+     * 標準筋で、配筋範囲の数え始めの端（countFrom）から区域の辺までの長さ（区域の id ごと）。
+     * 入力がなければその区域では切らない
+     */
+    zoneCrossStarts?: Record<string, number>
     /**
      * 標準筋で、配筋範囲のどちら側の端からピッチごとに並べて本数を数えるか（線と直交する向きの図面座標で、
      * low = 小さい側、high = 大きい側）。区域にかかる本は、この並びで区域の中に来る本を数える。未設定は low

@@ -55,6 +55,8 @@ import {
   domaRunZoneCuts,
   domaZoneCutGap,
   domaZoneSpecOf,
+  domaZoneDistanceDimIds,
+  DEFAULT_DOMA_ZONE_WALLS,
   type DomaZoneEdge,
 } from '@/lib/doma-zone'
 import {
@@ -510,6 +512,69 @@ function matchDomaRunDimensions(line: DomaLine, dims: DrawingDomaDimension[], vi
     length: pickDomaDimension(lengthCandidates),
     span: pickDomaDimension(spanCandidates),
   }
+}
+
+/**
+ * 囲んだ特殊範囲の辺に両端がそろう寸法線（タテ・ヨコの大きさの候補）。
+ * タテ＝画面の縦。図面を 90° 回転表示しているときは図面座標の x の向き
+ */
+function matchDomaZoneDimensions(
+  line: DomaLine,
+  dims: DrawingDomaDimension[],
+  viewScale: number,
+  rotationSteps: number,
+) {
+  const r = domaZoneRect(line)
+  const tateAlongY = rotationSteps % 2 === 0
+  const alongY: DomaLine = { x1: r.minX, y1: r.minY, x2: r.minX, y2: r.maxY }
+  const alongX: DomaLine = { x1: r.minX, y1: r.minY, x2: r.maxX, y2: r.minY }
+  const tol = 10 / viewScale
+  const tateCandidates = findDomaRunLengthCandidates(tateAlongY ? alongY : alongX, dims, tol)
+  const yokoCandidates = findDomaRunLengthCandidates(tateAlongY ? alongX : alongY, dims, tol)
+  return {
+    tateAlongY,
+    tateCandidates,
+    yokoCandidates,
+    tate: pickDomaDimension(tateCandidates),
+    yoko: pickDomaDimension(yokoCandidates),
+  }
+}
+
+/**
+ * 囲んでいる途中の区域を作ったとしたら、かかる標準筋の端から区域までの長さを読むのに使う寸法線。
+ * 区域の大きさは辺にそろう寸法線で決まればその値（使う寸法線を選ぶだけなので、決まらなくてもよい）
+ */
+function draftZoneDistanceDimIds(
+  line: DomaLine,
+  runs: DrawingDomaRun[],
+  dims: DrawingDomaDimension[],
+  viewScale: number,
+  rotationSteps: number,
+): string[] {
+  const standard = runs.find((r) => r.kind !== 'special')
+  if (!standard) return []
+  const m = matchDomaZoneDimensions(line, dims, viewScale, rotationSteps)
+  const r = domaZoneRect(line)
+  const zone: DrawingDomaRun = {
+    id: '__draft-zone',
+    drawing_id: standard.drawing_id,
+    page_no: standard.page_no,
+    kind: 'special',
+    direction: 'tate',
+    x1: r.minX,
+    y1: r.minY,
+    x2: r.maxX,
+    y2: r.maxY,
+    length_mm: m.tate?.length_mm ?? 0,
+    span_mm: m.yoko?.length_mm ?? 0,
+    bends: 'none',
+    settings: { ...DEFAULT_DOMA_BAR_SETTINGS, zone: { tateAlongY: m.tateAlongY, walls: DEFAULT_DOMA_ZONE_WALLS } },
+    pieces_override: null,
+    length_dim_id: null,
+    span_dim_id: null,
+    created_at: '',
+  }
+  return domaZoneDistanceDimIds(zone, runs, dims)
 }
 
 type DomaDragState = {
@@ -1994,25 +2059,16 @@ export function DrawingViewer({
       return
     }
     setDomaDraftLine(line)
-    // タテ＝画面の縦。図面を 90° 回転表示しているときは図面座標の x の向き
-    const tateAlongY = rotationSteps % 2 === 0
-    const alongY: DomaLine = { x1: r.minX, y1: r.minY, x2: r.minX, y2: r.maxY }
-    const alongX: DomaLine = { x1: r.minX, y1: r.minY, x2: r.maxX, y2: r.minY }
-    const tol = 10 / scale
-    const candidatesOf = (edge: DomaLine) => findDomaRunLengthCandidates(edge, domaDimensions, tol)
-    const tateDims = candidatesOf(tateAlongY ? alongY : alongX)
-    const yokoDims = candidatesOf(tateAlongY ? alongX : alongY)
+    const m = matchDomaZoneDimensions(line, domaDimensions, scale, rotationSteps)
     const toChoice = (d: DrawingDomaDimension) => ({ id: d.id, mm: d.length_mm })
-    const tatePick = pickDomaDimension(tateDims)
-    const yokoPick = pickDomaDimension(yokoDims)
     setDomaInputModal({
       type: 'zone',
       line: { x1: r.minX, y1: r.minY, x2: r.maxX, y2: r.maxY },
-      tateAlongY,
-      tateCandidates: tateDims.map(toChoice),
-      yokoCandidates: yokoDims.map(toChoice),
-      defaultTate: tatePick ? toChoice(tatePick) : null,
-      defaultYoko: yokoPick ? toChoice(yokoPick) : null,
+      tateAlongY: m.tateAlongY,
+      tateCandidates: m.tateCandidates.map(toChoice),
+      yokoCandidates: m.yokoCandidates.map(toChoice),
+      defaultTate: m.tate ? toChoice(m.tate) : null,
+      defaultYoko: m.yoko ? toChoice(m.yoko) : null,
     })
   }
 
@@ -3029,6 +3085,8 @@ export function DrawingViewer({
       const visibleBars = domaBars.filter((bar) => bar.kind !== 'special' && directions.includes(bar.direction))
       // 画面では、いま編集していない方（標準／特殊）を薄く描く。印刷は両方そのまま
       const standardAlpha = specialMode ? REFERENCE_LAYER_ALPHA : 1
+      // 区域で切った形（区域へ入る筋）は、特殊を描いているときと印刷のとき。標準の画面では元の線のまま
+      const showZoneCuts = specialMode || !options.interactiveHighlight
       const zoneAlpha = options.interactiveHighlight && !specialMode ? REFERENCE_LAYER_ALPHA : 1
       // 寸法の文字が他の線にかかるときは反対側へ逃がす。自分自身の線は判定から外す
       const barLinesById = new Map([
@@ -3051,6 +3109,18 @@ export function DrawingViewer({
           for (const c of [...domaInputModal.tateCandidates, ...domaInputModal.yokoCandidates]) {
             linkedDimIds.add(c.id)
           }
+          for (const id of draftZoneDistanceDimIds(domaInputModal.line, domaBars, domaDimensions, scale, rotationSteps)) linkedDimIds.add(id)
+        } else if (domaDraftLine && domaTool === 'bar' && domaBarKind === 'special') {
+          // 区域を囲んでいる途中も、辺にそろう寸法線（タテ・ヨコの大きさになるもの）と、
+          // かかる標準筋の端から区域までの長さを読む寸法線を強調する
+          const m = matchDomaZoneDimensions(domaDraftLine, domaDimensions, scale, rotationSteps)
+          for (const d of [
+            ...(m.tate ? [m.tate] : m.tateCandidates),
+            ...(m.yoko ? [m.yoko] : m.yokoCandidates),
+          ]) {
+            linkedDimIds.add(d.id)
+          }
+          for (const id of draftZoneDistanceDimIds(domaDraftLine, domaBars, domaDimensions, scale, rotationSteps)) linkedDimIds.add(id)
         } else if (domaDraftLine && domaTool === 'bar' && domaBarKind === 'standard') {
           const m = matchDomaRunDimensions(domaDraftLine, domaDimensions, scale)
           for (const d of [
@@ -3062,16 +3132,16 @@ export function DrawingViewer({
         } else if (domaSelection?.type === 'bar') {
           const run = domaBars.find((b) => b.id === domaSelection.id)
           if (run?.kind === 'special') {
-            // 区域は、その区域で切る標準筋の L の寸法線（区域がどの寸法の中で切っているか）
-            for (const b of domaBars) {
-              if (b.kind === 'special' || !b.length_dim_id) continue
-              if (domaRunZoneCuts(b, domaBars, domaDimensions).some((c) => c.zoneId === run.id)) {
-                linkedDimIds.add(b.length_dim_id)
-              }
-            }
+            // 区域は、かかる標準筋の端から区域までの長さを読んだ寸法線だけ（標準筋の L の寸法線は、
+            // その標準筋を選んだときに出るので、ここでは出さない）
+            for (const id of domaZoneDistanceDimIds(run, domaBars, domaDimensions)) linkedDimIds.add(id)
           } else if (run) {
             if (run.length_dim_id) linkedDimIds.add(run.length_dim_id)
             if (run.span_dim_id) linkedDimIds.add(run.span_dim_id)
+            // 区域までの長さを寸法線から読んだときは、その寸法線も
+            for (const cut of domaRunZoneCuts(run, domaBars, domaDimensions)) {
+              for (const id of cut.dimIds) linkedDimIds.add(id)
+            }
           }
         }
       }
@@ -3109,9 +3179,11 @@ export function DrawingViewer({
         // 区域のパネルから選んだ標準筋は、特殊を描いているときも薄くしない
         const selected = isSelected('bar', bar.id)
         ctx.globalAlpha = selected ? 1 : standardAlpha
-        // 区域で切った形は特殊を描いているときだけ。標準では元の線のまま
-        const zoneGaps = specialMode
+        // 区域で切った形は特殊を描いているときと印刷（showZoneCuts）。区域までの長さが決まらない区域では
+        // 切らないので、線もそのまま
+        const zoneGaps = showZoneCuts
           ? domaRunZoneCuts(bar, domaBars, domaDimensions).flatMap((cut) => {
+              if (!cut.complete) return []
               const zone = zones.find((z) => z.id === cut.zoneId)
               const gap = zone ? domaZoneCutGap(bar, zone, cut) : null
               return gap ? [gap] : []
@@ -3127,7 +3199,7 @@ export function DrawingViewer({
           zoneGaps,
           zoneGapMarks: false,
         })
-        if (specialMode && zoneGaps.length > 0) {
+        if (showZoneCuts && zoneGaps.length > 0) {
           // 区域にかかる本は薄くせず、代表線 1 本で区域へ重ね分入るところまで描く
           ctx.globalAlpha = 1
           paintDomaZoneCutBars(ctx, bar, zoneGaps, {

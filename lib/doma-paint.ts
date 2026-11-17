@@ -711,11 +711,6 @@ type BarSetLabelOpts = {
   labelBoxes?: DomaLine[]
 }
 
-/** 加工長さの文字。継手で分かれるときは顧客の拾い図と同じく「5500 ✕ 4000」 */
-function piecesText(piecesMm: number[]): string {
-  return piecesMm.map((mm) => String(Math.round(mm))).join(' ✕ ')
-}
-
 /**
  * 筋 1 セットを、顧客の拾い図と同じく 1 本の代表線で描く。図面の縦（vertical）か横にそった線を、
  * 直交する向きの座標 cross に引く。along は線の両端（線の向きの座標）。
@@ -796,6 +791,126 @@ function labelBarSet(
   })
 }
 
+/** 図面に描く筋 1 セットの加工本の並び（mm は start の端から） */
+type BarSetPieces = {
+  lengthMm: number
+  pieces: { lengthMm: number; fromMm: number; toMm: number; bendStart: boolean; bendEnd: boolean }[]
+  laps: { fromMm: number; toMm: number; mm: number }[]
+}
+
+/**
+ * 筋 1 セットを代表線で描き、加工長さを書く。startPx・endPx は線の向きの座標で、mm 0 が startPx。
+ * 継手で 2 本以上に分かれるときは、標準の土間筋と同じく加工本ごとの線を 1 本おきに少しずらして重ねて描き、
+ * 加工本ごとの長さと「重ね」を書く。arrows は start・end の端の矢印（区域の外・中へ伸ばす曲げのない端）
+ */
+function paintBarSet(
+  ctx: CanvasRenderingContext2D,
+  bar: {
+    vertical: boolean
+    cross: number
+    startPx: number
+    endPx: number
+    arrows: [boolean, boolean]
+    hookPx: number
+    /**
+     * 標準の土間筋と同じ書き方にするときの端部曲げ（mm）。加工本の長さは曲げを除いた直線部で書き、
+     * 曲げの値は曲げの線の先に別に書く。未指定なら加工長さ（曲げ込み）を書く
+     */
+    bendMm?: number
+  },
+  set: BarSetPieces,
+  color: string,
+  opts: BarSetLabelOpts,
+) {
+  const s = opts.viewScale
+  const span = bar.endPx - bar.startPx
+  if (span === 0 || !(set.lengthMm > 0) || set.pieces.length === 0) return
+  const clamp = (mm: number) => Math.min(Math.max(mm, 0), set.lengthMm)
+  const at = (mm: number) => bar.startPx + (span * clamp(mm)) / set.lengthMm
+  const last = set.pieces.length - 1
+  const separateBends = bar.bendMm != null
+  const lengthText = (piece: BarSetPieces['pieces'][number]) =>
+    String(Math.round(separateBends ? piece.toMm - piece.fromMm : piece.lengthMm))
+  // 1 本おきにずらす向き（曲げと同じ側）と、長さの文字を置く反対側
+  const shiftDir: Pt = bar.vertical ? { x: 1, y: 0 } : { x: 0, y: 1 }
+  const lane = last === 0 ? 0 : 4 / s
+  const pt = (along: number, off: number): Pt =>
+    bar.vertical ? { x: bar.cross + off, y: along } : { x: along, y: bar.cross + off }
+  const labelOpts = {
+    fontPx: 10 / s,
+    color,
+    viewScale: s,
+    viewRotationSteps: opts.viewRotationSteps,
+    obstacles: opts.obstacles,
+    placed: opts.labelBoxes,
+  }
+  // 端部曲げの値: 曲げの線の中ほどから、線の向きの外側（標準の土間筋と同じ）
+  const paintBendLabels = (piece: BarSetPieces['pieces'][number], off: number) => {
+    if (!separateBends) return
+    const runDir: Pt = bar.vertical ? { x: 0, y: Math.sign(span) } : { x: Math.sign(span), y: 0 }
+    for (const [on, mm, outward] of [
+      [piece.bendStart, piece.fromMm, negate(runDir)],
+      [piece.bendEnd, piece.toMm, runDir],
+    ] as const) {
+      if (!on) continue
+      const p = pt(at(mm), off)
+      const mid = { x: p.x + shiftDir.x * (bar.hookPx / 2), y: p.y + shiftDir.y * (bar.hookPx / 2) }
+      drawUprightLabel(ctx, String(bar.bendMm), mid, [outward], { ...labelOpts, obstacles: undefined })
+    }
+  }
+  if (last === 0) {
+    const piece = set.pieces[0]!
+    const middle = strokeRepresentativeBar(
+      ctx,
+      {
+        vertical: bar.vertical,
+        along: [bar.startPx, bar.endPx],
+        cross: bar.cross,
+        hooks: [piece.bendStart, piece.bendEnd],
+        arrows: bar.arrows,
+        hookPx: bar.hookPx,
+      },
+      color,
+      s,
+    )
+    if (middle) labelBarSet(ctx, lengthText(piece), middle, bar.vertical, color, opts)
+    paintBendLabels(piece, 0)
+    return
+  }
+  set.pieces.forEach((piece, i) => {
+    const off = i % 2 === 1 ? lane : 0
+    strokeRepresentativeBar(
+      ctx,
+      {
+        vertical: bar.vertical,
+        along: [at(piece.fromMm), at(piece.toMm)],
+        cross: bar.cross + off,
+        hooks: [piece.bendStart, piece.bendEnd],
+        arrows: [i === 0 && bar.arrows[0], i === last && bar.arrows[1]],
+        hookPx: bar.hookPx,
+      },
+      color,
+      s,
+    )
+    // 加工長さ: 重なっていないところの中ほど、ずらす向きと反対側
+    const from = i > 0 ? set.laps[i - 1]!.toMm : piece.fromMm
+    const to = i < set.laps.length ? set.laps[i]!.fromMm : piece.toMm
+    drawUprightLabel(ctx, lengthText(piece), pt(at((from + to) / 2), off), [negate(shiftDir)], {
+      ...labelOpts,
+      obstacles: undefined,
+    })
+    paintBendLabels(piece, off)
+  })
+  // 重ね: 重なっている 2 本の外側（ずらした側）
+  for (const lap of set.laps) {
+    drawUprightLabel(ctx, `重ね${Math.round(lap.mm)}`, pt(at((lap.fromMm + lap.toMm) / 2), lane), [shiftDir], {
+      ...labelOpts,
+      obstacles: undefined,
+      fontPx: 9 / s,
+    })
+  }
+}
+
 /**
  * 区域の 1 方向の筋（顧客の拾い図と同じ表し方）: 区域の中央に代表線 1 本。壁の辺は曲げ（短い直交線）、
  * ほかは区域の外へはみ出した先を矢印にし、線の横に加工長さだけを書く（本数・ピッチは右パネル・集計）
@@ -812,28 +927,28 @@ function paintZoneRunRepresentative(
   // 代表線は範囲の小さい側（上・左）から大きい側へ引いてあり、bends の start はその小さい側
   const startBend = run.bends === 'both' || run.bends === 'start'
   const endBend = run.bends === 'both' || run.bends === 'end'
-  const middle = strokeRepresentativeBar(
+  const [startPx, endPx] = vertical ? [run.y1, run.y2] : [run.x1, run.x2]
+  const layout = layoutDomaRun(run.length_mm, run.span_mm, run.bends, run.settings, run.pieces_override)
+  paintBarSet(
     ctx,
     {
       vertical,
-      along: vertical ? [run.y1, run.y2] : [run.x1, run.x2],
       cross: vertical ? run.x1 : run.y1,
-      hooks: [startBend, endBend],
+      startPx,
+      endPx,
       arrows: [!startBend, !endBend],
       hookPx: Math.max((run.settings.bendMm * linePx) / run.length_mm, 6 / s),
     },
+    { lengthMm: run.length_mm, pieces: layout.pieces, laps: layout.laps },
     DOMA_ZONE_COLOR,
-    s,
+    opts,
   )
-  if (!middle) return
-  const layout = layoutDomaRun(run.length_mm, run.span_mm, run.bends, run.settings, run.pieces_override)
-  labelBarSet(ctx, piecesText(layout.pieces.map((p) => p.lengthMm)), middle, vertical, DOMA_ZONE_COLOR, opts)
 }
 
 /**
  * 区域にかかる標準筋（顧客の拾い図と同じ表し方）: 区域にかかる本が並ぶ幅の中央に代表線 1 本。
  * 標準筋の端（曲げがあれば短い直交線）から、区域の辺を越えて重ね分入ったところ（矢印）まで引き、
- * 線の横に加工長さだけを書く。区域の辺が壁なら、そこで曲げて止める
+ * 線の横に加工長さを書く（継手で分かれるときは加工本ごとに重ねて描く）。区域の辺が壁なら、そこで曲げて止める
  */
 export function paintDomaZoneCutBars(
   ctx: CanvasRenderingContext2D,
@@ -846,40 +961,31 @@ export function paintDomaZoneCutBars(
   const linePx = Math.hypot(run.x2 - run.x1, run.y2 - run.y1)
   if (!(run.length_mm > 0) || !(linePx > 0)) return
   const hookPx = Math.max((run.settings.bendMm * linePx) / run.length_mm, 6 / s)
-  const startBend = run.bends === 'both' || run.bends === 'start'
-  const endBend = run.bends === 'both' || run.bends === 'end'
   for (const gap of gaps) {
-    const [p1, p2] = gap.vertical ? [run.y1, run.y2] : [run.x1, run.x2]
-    const startLow = p2 >= p1
-    const runLo = Math.min(p1, p2)
-    const runHi = Math.max(p1, p2)
-    const [loBend, hiBend] = startLow ? [startBend, endBend] : [endBend, startBend]
+    // 線の向きの座標で、標準筋の始点・終点
+    const [runStart, runEnd] = gap.vertical ? [run.y1, run.y2] : [run.x1, run.x2]
     const cross = (gap.crossPx[0] + gap.crossPx[1]) / 2
-    const parts: { along: [number, number]; hooks: [boolean, boolean]; arrows: [boolean, boolean]; piecesMm: number[] }[] = []
-    if (gap.low && gap.low.end > runLo) {
-      parts.push({
-        along: [runLo, gap.low.end],
-        hooks: [loBend, gap.low.wall],
-        arrows: [false, !gap.low.wall],
-        piecesMm: gap.low.piecesMm,
-      })
-    }
-    if (gap.high && runHi > gap.high.end) {
-      parts.push({
-        along: [gap.high.end, runHi],
-        hooks: [gap.high.wall, hiBend],
-        arrows: [!gap.high.wall, false],
-        piecesMm: gap.high.piecesMm,
-      })
-    }
-    for (const part of parts) {
-      const middle = strokeRepresentativeBar(
+    for (const side of [gap.low, gap.high]) {
+      if (!side) continue
+      // 手前の本は標準筋の始点から区域へ、先の本は区域から標準筋の終点へ（どちらも mm は標準筋の向き）
+      const before = side.part.side === 'before'
+      const [startPx, endPx] = before ? [runStart, side.end] : [side.end, runEnd]
+      paintBarSet(
         ctx,
-        { vertical: gap.vertical, along: part.along, cross, hooks: part.hooks, arrows: part.arrows, hookPx },
+        {
+          vertical: gap.vertical,
+          cross,
+          startPx,
+          endPx,
+          arrows: before ? [false, !side.wall] : [!side.wall, false],
+          hookPx,
+          // 標準の土間筋と同じく、長さは直線部で書き、曲げの値は別に書く
+          bendMm: run.settings.bendMm,
+        },
+        side.part,
         color,
-        s,
+        opts,
       )
-      if (middle) labelBarSet(ctx, piecesText(part.piecesMm), middle, gap.vertical, color, opts)
     }
   }
 }

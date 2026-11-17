@@ -540,6 +540,32 @@ export function rebalanceDomaPieces(
   return lengths
 }
 
+/**
+ * 2 本に分けた土間筋で選べる加工長さの組合せ（定尺を 1 本に使い、残りをもう 1 本）。
+ * どれも rebalanceDomaPieces で作れるもの（重ね・定尺・長さの差の条件を満たす）。1 本目の長い順
+ */
+export function domaPieceCombinations(layout: DomaRunLayout, bendMm: number, lapMm: number): number[][] {
+  if (layout.pieces.length !== 2) return []
+  const collect = (candidates: readonly number[]) => {
+    const seen = new Set<string>()
+    const out: number[][] = []
+    for (const mm of candidates) {
+      for (const index of [0, 1]) {
+        const lengths = rebalanceDomaPieces(layout, index, mm, bendMm, lapMm)
+        if (!lengths) continue
+        const key = lengths.join(',')
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push(lengths)
+      }
+    }
+    return out.sort((a, b) => b[0]! - a[0]!)
+  }
+  // 定尺で作れる組合せがあればそれだけ。短い区間で作れないときは短い区間用の長さも使う
+  const stock = collect(DOMA_STOCK_CANDIDATES_MM)
+  return stock.length > 0 ? stock : collect(DOMA_SHORT_PIECE_CANDIDATES_MM)
+}
+
 export function aggregateSchedule(
   items: Array<{ diameter: string; runs: Array<Pick<BarRun, 'count' | 'pieces'>> }>
 ): ScheduleRow[] {

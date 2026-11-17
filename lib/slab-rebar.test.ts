@@ -1,6 +1,7 @@
 import assert from 'node:assert'
 import {
   DEFAULT_DOMA_BAR_SETTINGS,
+  domaPieceCombinations,
   domaDiameterOptionLabel,
   domaSettingsWithDiameter,
   DEFAULT_SLAB_REBAR_SETTINGS,
@@ -246,3 +247,17 @@ test('rebalanceDomaPieces: 手入力では直線部 = 重ね の本も選べる�
   assert.deepStrictEqual(rebalanceDomaPieces(layout, 0, 1970, 150, 600), [1970, 750])
   assert.deepStrictEqual(rebalanceDomaPieces(layout, 1, 750, 150, 600), [1970, 750])
 })
+
+// 2 本に分けた土間筋で選べる組合せ: 区域の先の 6,970（終点曲げ）→ 7,720 を定尺 1 本 + 残りで
+{
+  const settings = { ...DEFAULT_DOMA_BAR_SETTINGS, bendMm: 150, lapMm: 600 }
+  const layout = layoutDomaRun(6970, 3000, 'end', settings, null)
+  assert.deepStrictEqual(layout.pieces.map((p) => p.lengthMm), [4500, 3220])
+  const combos = domaPieceCombinations(layout, 150, 600)
+  assert.ok(combos.some((c) => c.join() === '4500,3220'))
+  assert.ok(combos.some((c) => c.join() === '6000,1720'))
+  assert.ok(combos.some((c) => c.join() === '3220,4500'))
+  assert.ok(combos.every((c) => c[0]! + c[1]! === 7720 && Math.abs(c[0]! - c[1]!) >= 1000))
+  // 1 本で収まる区間は組合せなし
+  assert.deepStrictEqual(domaPieceCombinations(layoutDomaRun(3000, 3000, 'end', settings, null), 150, 600), [])
+}
