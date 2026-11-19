@@ -1,9 +1,13 @@
 import assert from 'node:assert'
-import { DEFAULT_DOMA_BAR_SETTINGS, layoutDomaRun } from './slab-rebar'
+import { domaPrintGroupsOf, domaResultGroupsOf, buildDomaPrintSummaryInnerHtml } from '../components/doma-summary-view'
+import { DEFAULT_DOMA_BAR_SETTINGS, countBars, layoutDomaRun } from './slab-rebar'
 import type { DrawingDomaRun } from './types/database'
 import {
+  DEFAULT_DOMA_ZONE_WALLS,
   domaZoneEdgeAtScreenSide,
   domaZoneRunValues,
+  domaZoneDirectionSettings,
+  domaZonePitchValid,
   domaZoneRuns,
   domaZoneScreenSide,
   domaRunZoneCuts,
@@ -68,9 +72,9 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
     ],
   )
   const [tateRun, yokoRun] = runs
-  // 本数は配筋範囲 ÷ ピッチ 150 の切り上げ
-  assert.strictEqual(layoutDomaRun(tateRun!.length_mm, tateRun!.span_mm, tateRun!.bends, tateRun!.settings).count, 10)
-  assert.strictEqual(layoutDomaRun(yokoRun!.length_mm, yokoRun!.span_mm, yokoRun!.bends, yokoRun!.settings).count, 13)
+  // 本数は配筋範囲 ÷ ピッチ 150 の切り上げ + 両端分の 1 本
+  assert.strictEqual(layoutDomaRun(tateRun!.length_mm, tateRun!.span_mm, tateRun!.bends, tateRun!.settings).count, 11)
+  assert.strictEqual(layoutDomaRun(yokoRun!.length_mm, yokoRun!.span_mm, yokoRun!.bends, yokoRun!.settings).count, 14)
   // 代表線: タテは範囲の中央の x、上の辺（壁）から始まり、下へはみ出しの分だけ伸びる
   const k = (440 - 50) / 1950
   assert.strictEqual(tateRun!.x1, 250)
@@ -329,6 +333,109 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
   // 継手のない標準筋は合わせるものがない
   const short = { ...set, length_mm: 4000, bends: 'end' as const, pieces_override: null }
   assert.strictEqual(domaZoneCutSetPieces(short, { lengthMm: 6970, bends: 'end' }, 'after', 20), null)
+}
+
+
+// 特殊範囲は両端を必ず含める。最後の間隔が小さくても端の 1 本を省かない。
+{
+  for (const [span, pitch, expected] of [[100, 10, 11], [100, 11, 11], [100, 100, 2]]) {
+    const z = zone(span, span)
+    z.settings.pitchMm = pitch
+    for (const run of expandDomaRuns([z])) {
+      assert.strictEqual(run.span_mm, span)
+      assert.strictEqual(layoutDomaRun(run.length_mm, run.span_mm, run.bends, run.settings).count, expected)
+    }
+  }
+  assert.strictEqual(countBars(10, 11, true), 0)
+  assert.strictEqual(countBars(0, 10, true), 0)
+  assert.strictEqual(countBars(100, 0, true), 0)
+  assert.strictEqual(countBars(100, 1.5, true), 0)
+  // 標準筋の本数は従来どおり。
+  assert.strictEqual(countBars(100, 10), 10)
+  const z = zone(100, 10)
+  z.settings.pitchMm = 11
+  const tate = domaZoneRuns(z)[0]!
+  assert.strictEqual(layoutDomaRun(tate.length_mm, tate.span_mm, tate.bends, tate.settings).count, 0)
+}
+
+// 集計・印刷でも、タテはヨコ幅、ヨコはタテ幅の両端を含めて数える。
+{
+  const z = zone(100, 99)
+  z.settings = { ...z.settings, pitchMm: 11, zone: { ...z.settings.zone!, extendMm: 0 } }
+  const groups = domaPrintGroupsOf([z])
+  assert.deepStrictEqual(groups.map(g => [g.direction, g.rows]), [
+    ['tate', [{ lengthMm: 100, quantity: 10 }]],
+    ['yoko', [{ lengthMm: 99, quantity: 11 }]],
+  ])
+  const rotated = { ...z, settings: { ...z.settings, zone: { ...z.settings.zone!, tateAlongY: false } } }
+  assert.deepStrictEqual(domaPrintGroupsOf([rotated]), groups)
+}
+
+// タテ・ヨコの鉄筋種類・ピッチ・曲げ・重ねを独立して保存し、集計まで反映する。
+{
+  const z = zone(3000, 4000, {
+    walls: { top: true, bottom: true, left: true, right: true },
+    settingsByDirection: {
+      tate: { ...DEFAULT_DOMA_BAR_SETTINGS, diameter: 'D10', pitchMm: 100, bendMm: 100, lapMm: 450 },
+      yoko: { ...DEFAULT_DOMA_BAR_SETTINGS, diameter: 'D16', pitchMm: 200, bendMm: 200, lapMm: 750 },
+    },
+  })
+  const restored: DrawingDomaRun = JSON.parse(JSON.stringify(z))
+  const [tate, yoko] = domaZoneRuns(restored)
+  assert.strictEqual(tate!.settings.diameter, 'D10')
+  assert.strictEqual(yoko!.settings.diameter, 'D16')
+  assert.strictEqual(layoutDomaRun(tate!.length_mm, tate!.span_mm, tate!.bends, tate!.settings).count, 41)
+  assert.strictEqual(layoutDomaRun(yoko!.length_mm, yoko!.span_mm, yoko!.bends, yoko!.settings).count, 16)
+  assert.deepStrictEqual(domaPrintGroupsOf([restored]).map(g => [g.direction, g.diameter, g.bendMm, g.rows]), [
+    ['tate', 'D10', 100, [{ lengthMm: 2750, quantity: 41 }, { lengthMm: 900, quantity: 41 }]],
+    ['yoko', 'D16', 200, [{ lengthMm: 4000, quantity: 16 }, { lengthMm: 1150, quantity: 16 }]],
+  ])
+  // トマリのない辺は方向ごとの重ねで伸ばす。共通の手入力があればそちらを優先。
+  const open = { ...restored, settings: { ...restored.settings, zone: { ...restored.settings.zone!, walls: { ...DEFAULT_DOMA_ZONE_WALLS } } } }
+  assert.strictEqual(domaZoneRunValues(open, 'tate').lengthMm, 3900)
+  assert.strictEqual(domaZoneRunValues(open, 'yoko').lengthMm, 5500)
+  open.settings.zone!.extendMm = 300
+  assert.strictEqual(domaZoneRunValues(open, 'tate').lengthMm, 3600)
+  assert.strictEqual(domaZoneRunValues(open, 'yoko').lengthMm, 4600)
+  // 各方向のピッチはその配筋幅と比較する（タテはヨコ幅、ヨコはタテ幅）。
+  assert.strictEqual(domaZonePitchValid(restored.settings, 200, 100), true)
+  assert.strictEqual(domaZonePitchValid(restored.settings, 199, 100), false)
+  assert.strictEqual(domaZonePitchValid(restored.settings, 200, 99), false)
+  const tateOnly = { ...restored.settings, zone: { ...restored.settings.zone!, directions: { yoko: false } } }
+  assert.strictEqual(domaZonePitchValid(tateOnly, 50, 100), true)
+  // 旧データと、片方向だけ変更したデータは共通条件へフォールバック。
+  assert.strictEqual(domaZoneDirectionSettings(zone(3000, 4000).settings, 'yoko').pitchMm, 150)
+  delete restored.settings.zone!.settingsByDirection!.yoko
+  assert.strictEqual(domaZoneDirectionSettings(restored.settings, 'yoko').diameter, 'D13')
+  assert.strictEqual(domaZoneDirectionSettings(restored.settings, 'tate').diameter, 'D10')
+}
+
+// 結果ページだけは方向・標準／特殊を合算し、加工条件の違いは分ける。
+{
+  const base = zone(3000, 3000)
+  const settings = { ...DEFAULT_DOMA_BAR_SETTINGS, pitchMm: 200, bendMm: 100 }
+  const tate: DrawingDomaRun = { ...base, id: 'result-t', kind: 'standard', direction: 'tate',
+    x1: 10000, y1: 10000, x2: 10000, y2: 13000,
+    span_mm: 3200, bends: 'both', settings, pieces_override: [3200] }
+  const yoko: DrawingDomaRun = { ...tate, id: 'result-y', direction: 'yoko',
+    x1: 20000, y1: 20000, x2: 23000, y2: 20000 }
+  assert.deepStrictEqual(domaResultGroupsOf([tate, yoko]), [
+    { diameter: 'D13', bends: 2, bendMm: 100, rows: [{ lengthMm: 3200, quantity: 32 }] },
+  ])
+  const special = { ...base, settings: { ...settings, zone: {
+    tateAlongY: true, walls: { top: true, bottom: true, left: true, right: true },
+    overrides: { tate: [3200], yoko: [3200] },
+  } } }
+  const merged = domaResultGroupsOf([tate, yoko, special])
+  assert.deepStrictEqual(merged[0]!.rows, [{ lengthMm: 3200, quantity: 64 }])
+  assert.strictEqual(domaPrintGroupsOf([tate, yoko, special]).length, 4)
+  const otherDiameter = { ...yoko, settings: { ...settings, diameter: 'D10' } }
+  const otherBend = { ...yoko, settings: { ...settings, bendMm: 150 } }
+  const straight = { ...yoko, bends: 'none' as const }
+  assert.strictEqual(domaResultGroupsOf([tate, otherDiameter, otherBend, straight]).length, 4)
+  const html = buildDomaPrintSummaryInnerHtml(merged)
+  assert.ok(!/タテ|ヨコ|特殊/.test(html))
+  assert.ok(html.includes('stroke="#0f172a"'))
 }
 
 console.log('doma-zone tests passed')

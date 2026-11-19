@@ -31,6 +31,8 @@ export type SlabRebarSettings = {
 export type DomaBarSettings = {
   diameter: string
   pitchMm: number
+  /** 特殊範囲を展開した行だけ、配筋範囲の両端を含める。 */
+  includeRangeEnds?: boolean
   bendMm: number
   stockMm: number
   lapMm: number
@@ -249,12 +251,13 @@ export function decomposeBands(outline: SlabPoint[], direction: SlabBarDirection
 /**
  * 本数 = 配筋範囲 ÷ ピッチ の切り上げ。寸法・ピッチは整数 mm で扱う。
  * 0 以下・整数でない値は計算しない（0 本）。画面を落とさないよう例外にはしない。
- * 端の鉄筋を別に足すか（+1）は現場の規則が確認できるまで入れない（Phase3 仕様 §7.1）。
+ * 特殊範囲は両端を含めて +1 本。ピッチが配筋範囲を超える場合は計算しない。
  */
-export function countBars(spanMm: number, pitchMm: number): number {
+export function countBars(spanMm: number, pitchMm: number, includeRangeEnds = false): number {
   if (!Number.isSafeInteger(spanMm) || !Number.isSafeInteger(pitchMm)) return 0
   if (spanMm <= 0 || pitchMm <= 0) return 0
-  return Math.ceil(spanMm / pitchMm)
+  if (includeRangeEnds && pitchMm > spanMm) return 0
+  return Math.ceil(spanMm / pitchMm) + (includeRangeEnds ? 1 : 0)
 }
 
 /**
@@ -493,7 +496,7 @@ export function layoutDomaRun(
   return {
     pieces,
     laps,
-    count: countBars(spanMm, settings.pitchMm),
+    count: countBars(spanMm, settings.pitchMm, settings.includeRangeEnds),
     requiredTotalMm,
     source: manual ? 'manual' : 'auto',
     warnings,

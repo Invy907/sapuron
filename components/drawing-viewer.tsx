@@ -51,6 +51,7 @@ import {
 } from '@/lib/doma-paint'
 import {
   DEFAULT_DOMA_ZONE_PITCH_MM,
+  type DomaZoneSettings,
   domaZoneRect,
   domaRunZoneCuts,
   domaZoneCutGap,
@@ -926,17 +927,17 @@ export function DrawingViewer({
   }
   /** これから描く特殊範囲の設定（localStorage に保存）。ピッチの既定は標準より細かい */
   const domaZoneSettingsStorageKey = `project:${projectId}:domaZoneSettings:v1`
-  const [domaZoneSettings, setDomaZoneSettings] = useState<DomaBarSettings>(() => {
+  const [domaZoneSettings, setDomaZoneSettings] = useState<DomaZoneSettings>(() => {
     const defaults = { ...DEFAULT_DOMA_BAR_SETTINGS, pitchMm: DEFAULT_DOMA_ZONE_PITCH_MM }
     if (typeof window === 'undefined') return defaults
     try {
       const raw = window.localStorage.getItem(domaZoneSettingsStorageKey)
-      return raw ? { ...defaults, ...(JSON.parse(raw) as Partial<DomaBarSettings>) } : defaults
+      return raw ? { ...defaults, ...(JSON.parse(raw) as Partial<DomaZoneSettings>) } : defaults
     } catch {
       return defaults
     }
   })
-  function changeDomaZoneSettings(next: DomaBarSettings) {
+  function changeDomaZoneSettings(next: DomaZoneSettings) {
     setDomaZoneSettings(next)
     try {
       window.localStorage.setItem(domaZoneSettingsStorageKey, JSON.stringify(next))
@@ -2084,7 +2085,7 @@ export function DrawingViewer({
         length_mm: values.tateMm,
         span_mm: values.yokoMm,
         bends: 'none',
-        settings: { ...values.settings, zone: { tateAlongY, walls: values.walls } },
+        settings: { ...values.settings, zone: { settingsByDirection: values.settings.zone?.settingsByDirection, tateAlongY, walls: values.walls } },
         pieces_override: null,
         length_dim_id: values.tateDimId,
         span_dim_id: values.yokoDimId,
@@ -6355,11 +6356,11 @@ export function DrawingViewer({
                 className={toolButtonClass(domaTool === 'bar')}
                 title={
                   domaBarKind === 'special'
-                    ? 'ドラッグで区域を囲む (D)'
+                    ? 'ドラッグで範囲を囲む (D)'
                     : `${domaBarDirection === 'tate' ? 'タテ' : 'ヨコ'}筋を描く (D)`
                 }
               >
-                {domaBarKind === 'special' ? '区域' : domaBarDirection === 'tate' ? 'タテ筋' : 'ヨコ筋'}
+                {domaBarKind === 'special' ? '範囲' : domaBarDirection === 'tate' ? 'タテ筋' : 'ヨコ筋'}
               </button>
             </>
           ) : (

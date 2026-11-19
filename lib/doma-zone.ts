@@ -10,6 +10,7 @@ import {
   DOMA_MIN_LAP_PROTRUSION_MM,
   countBars,
   layoutDomaRun,
+  type DomaBarSettings,
   type DomaBends,
   type DomaRunLap,
   type DomaRunPiece,
@@ -28,6 +29,8 @@ export type DomaZoneSpec = {
   walls: Record<DomaZoneEdge, boolean>
   /** 壁でない辺から範囲の外へ伸ばす長さ。未設定なら重ね */
   extendMm?: number
+  /** 方向ごとの配筋条件。未設定の方向は従来の共通条件を使う。 */
+  settingsByDirection?: Partial<Record<SlabBarDirection, DomaBarSettings>>
   /** 入れる向き。未設定なら両方 */
   directions?: Partial<Record<SlabBarDirection, boolean>>
   /** 向きごとの加工本の長さの手入力。null・未設定なら自動 */
@@ -50,8 +53,24 @@ export function domaZoneSpecOf(zone: Pick<DrawingDomaRun, 'settings'>): DomaZone
   return zone.settings.zone ?? { tateAlongY: true, walls: DEFAULT_DOMA_ZONE_WALLS }
 }
 
-export function domaZoneExtendMm(zone: Pick<DrawingDomaRun, 'settings'>): number {
-  return domaZoneSpecOf(zone).extendMm ?? zone.settings.lapMm
+export type DomaZoneSettings = DomaBarSettings & { zone?: DomaZoneSpec }
+
+export function domaZoneDirectionSettings(settings: DomaZoneSettings, direction: SlabBarDirection): DomaBarSettings {
+  const { zone, ...base } = settings
+  return { ...base, ...zone?.settingsByDirection?.[direction] }
+}
+
+export function domaZonePitchValid(settings: DomaZoneSettings, tateMm: number, yokoMm: number): boolean {
+  return (['tate', 'yoko'] as const).every((direction) => {
+    if (settings.zone?.directions?.[direction] === false) return true
+    const pitch = domaZoneDirectionSettings(settings, direction).pitchMm
+    const span = direction === 'tate' ? yokoMm : tateMm
+    return Number.isSafeInteger(pitch) && pitch > 0 && Number.isSafeInteger(span) && span >= pitch
+  })
+}
+
+export function domaZoneExtendMm(zone: Pick<DrawingDomaRun, 'settings'>, direction: SlabBarDirection = 'tate'): number {
+  return domaZoneSpecOf(zone).extendMm ?? domaZoneDirectionSettings(zone.settings, direction).lapMm
 }
 
 export function domaZoneHasDirection(zone: Pick<DrawingDomaRun, 'settings'>, direction: SlabBarDirection) {
@@ -93,7 +112,7 @@ export function domaZoneRunValues(
   const [startEdge, endEdge] = domaZoneEndEdges(spec, direction)
   const startWall = spec.walls[startEdge]
   const endWall = spec.walls[endEdge]
-  const extendMm = domaZoneExtendMm(zone)
+  const extendMm = domaZoneExtendMm(zone, direction)
   const sizeMm = direction === 'tate' ? zone.length_mm : zone.span_mm
   return {
     sizeMm,
@@ -133,6 +152,7 @@ export function domaZoneRuns(zone: DrawingDomaRun): DrawingDomaRun[] {
         ...line,
         length_mm: v.lengthMm,
         span_mm: v.spanMm,
+        settings: { ...zone.settings, ...domaZoneDirectionSettings(zone.settings, direction), includeRangeEnds: true },
         bends: v.bends,
         pieces_override: v.override,
       }
@@ -498,7 +518,7 @@ export function domaRunZoneCuts(
     if (count <= 0) continue
     remaining -= count
 
-    const extendMm = domaZoneExtendMm(zone)
+    const extendMm = domaZoneExtendMm(zone, direction)
     cuts.push({
       zoneId: zone.id,
       count,
@@ -583,7 +603,7 @@ export function domaZoneCutGap(
   const [lo, hi] = vertical ? [r.minY, r.maxY] : [r.minX, r.maxX]
   const sizeMm = domaZoneRunValues(zone, direction).sizeMm
   if (!(sizeMm > 0) || !(hi > lo)) return null
-  const depthPx = (domaZoneExtendMm(zone) * (hi - lo)) / sizeMm
+  const depthPx = (domaZoneExtendMm(zone, direction) * (hi - lo)) / sizeMm
   const [lowEdge, highEdge]: DomaZoneEdge[] = vertical ? ['top', 'bottom'] : ['left', 'right']
   const [lowPart, highPart] = startLow ? [cut.before, cut.after] : [cut.after, cut.before]
   const [lowSide, highSide] = startLow ? (['before', 'after'] as const) : (['after', 'before'] as const)
@@ -626,7 +646,7 @@ export function domaZoneCutGap(
   if (!(to > from)) return null
   const rest = {
     entries,
-    lapMm: domaZoneExtendMm(zone),
+    lapMm: domaZoneExtendMm(zone, direction),
     low: lowPart ? { end: from, wall: lowWall, part: piecesOf(lowPart, lowSide) } : null,
     high: highPart ? { end: to, wall: highWall, part: piecesOf(highPart, highSide) } : null,
     count: cut.count,
