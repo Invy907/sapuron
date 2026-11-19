@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { DrawingDomaDimension, DrawingDomaRun } from '@/lib/types/database'
 import { DOMA_DIRECTION_COLORS } from '@/lib/doma-paint'
+import { buildDomaPrintSummaryInnerHtml, domaPrintGroupsOf } from '@/components/doma-summary-view'
 import {
   DEFAULT_DOMA_ZONE_WALLS,
   DOMA_ZONE_COLOR,
@@ -190,19 +191,14 @@ function DomaSummary({
   /** 結果ページへ（付加筋の「結果ページを見る」と同じ） */
   onGoToSummary?: () => void
 }) {
-  const { counts, schedule } = useMemo(() => domaSummaryOf(bars, dimensions), [bars, dimensions])
+  const { counts } = useMemo(() => domaSummaryOf(bars, dimensions), [bars, dimensions])
+  const summaryHtml = useMemo(
+    () => buildDomaPrintSummaryInnerHtml(domaPrintGroupsOf(bars, dimensions)),
+    [bars, dimensions],
+  )
 
   return (
     <div className="space-y-2 border-t border-border px-4 py-3">
-      {onGoToSummary ? (
-        <button
-          type="button"
-          onClick={onGoToSummary}
-          className="block w-full rounded-md bg-primary px-2 py-1.5 text-center text-[11px] font-medium text-white hover:bg-primary-hover"
-        >
-          結果ページを見る
-        </button>
-      ) : null}
       <div className="flex flex-wrap gap-1">
         {(['tate', 'yoko'] as const).map((d) => {
           const count = counts[d]
@@ -218,19 +214,22 @@ function DomaSummary({
           )
         })}
       </div>
-      <div className="space-y-0.5 border-t border-border pt-1.5">
-        {schedule.map((row) => (
-          <div
-            key={`${row.diameter}-${row.kind}-${row.lengthMm}`}
-            className="flex items-center justify-between gap-2 text-[10px] text-muted"
-          >
-            <span className="tabular-nums">
-              {row.diameter} {row.kind === 'BENT' ? '曲' : '直'} {row.lengthMm.toLocaleString()}
-            </span>
-            <span className="shrink-0 tabular-nums text-foreground">{row.quantity} 本</span>
-          </div>
-        ))}
-      </div>
+      {/* 結果ページ・印刷と同じ形（タテ・ヨコ・特殊ごとに、径と形の図 → 「長さ mm ― 本数」）。表示中の向きに関係なく全部 */}
+      <div
+        className="border-t border-border pt-2 font-semibold text-slate-900"
+        style={{ '--sum-scale': 1 } as CSSProperties}
+        dangerouslySetInnerHTML={{ __html: summaryHtml }}
+      />
+      {/* 集計を見てから結果ページへ進むので、ボタンは集計の下 */}
+      {onGoToSummary ? (
+        <button
+          type="button"
+          onClick={onGoToSummary}
+          className="mt-2 block w-full rounded-md bg-primary px-2 py-1.5 text-center text-[11px] font-medium text-white hover:bg-primary-hover"
+        >
+          結果ページを見る
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -1175,6 +1174,8 @@ export type DomaRunInput = {
 
 /** 特殊範囲の入力窓で確定した値 */
 export type DomaZoneInput = {
+  /** 入力窓で決めた配筋条件（鉄筋種類・ピッチ・端部曲げ） */
+  settings: DomaBarSettings
   tateMm: number
   tateDimId: string | null
   yokoMm: number
@@ -1186,14 +1187,12 @@ export type DomaZoneInput = {
 export function DomaZoneInputModal({
   state,
   settings,
-  dimensionChoices,
   viewRotationSteps,
   onCancel,
   onConfirm,
 }: {
   state: Extract<DomaInputModalState, { type: 'zone' }>
   settings: DomaBarSettings
-  dimensionChoices: DomaDimensionChoice[]
   viewRotationSteps: number
   onCancel: () => void
   onConfirm: (values: DomaZoneInput) => void
@@ -1201,9 +1200,12 @@ export function DomaZoneInputModal({
   const inputRef = useRef<HTMLInputElement>(null)
   const [tate, setTate] = useState(state.defaultTate ? String(state.defaultTate.mm) : '')
   const [yoko, setYoko] = useState(state.defaultYoko ? String(state.defaultYoko.mm) : '')
-  const [tateChoice, setTateChoice] = useState<DomaDimensionChoice | null>(state.defaultTate)
-  const [yokoChoice, setYokoChoice] = useState<DomaDimensionChoice | null>(state.defaultYoko)
+  // 寸法線の値のまま（入力し直していない）なら、その寸法線と結びつけて保存する
+  const tateChoice = state.defaultTate
+  const yokoChoice = state.defaultYoko
   const [walls, setWalls] = useState<Record<DomaZoneEdge, boolean>>(DEFAULT_DOMA_ZONE_WALLS)
+  // 配筋条件はこの入力窓で決める（初期値は前に使った条件）
+  const [condition, setCondition] = useState<DomaBarSettings>(settings)
   useEffect(() => {
     inputRef.current?.focus()
     inputRef.current?.select()
@@ -1212,10 +1214,11 @@ export function DomaZoneInputModal({
   const tateMm = parseMm(tate)
   const yokoMm = parseMm(yoko)
   const valid = tateMm > 0 && yokoMm > 0
-  const preview = valid ? draftZone(tateMm, yokoMm, settings, { tateAlongY: state.tateAlongY, walls }) : null
+  const preview = valid ? draftZone(tateMm, yokoMm, condition, { tateAlongY: state.tateAlongY, walls }) : null
   const confirm = () => {
     if (!valid) return
     onConfirm({
+      settings: condition,
       tateMm,
       tateDimId: tateChoice?.mm === tateMm ? tateChoice.id : null,
       yokoMm,
@@ -1242,33 +1245,17 @@ export function DomaZoneInputModal({
             inputRef={inputRef}
             onEnter={confirm}
           />
-          <DimensionChips
-            choices={dimensionChoices}
-            candidates={state.tateCandidates}
-            onPick={(c) => {
-              setTate(String(c.mm))
-              setTateChoice(c)
-            }}
-          />
           <NumField label="ヨコの辺の長さ (mm)" value={yoko} onChange={setYoko} onEnter={confirm} />
-          <DimensionChips
-            choices={dimensionChoices}
-            candidates={state.yokoCandidates}
-            onPick={(c) => {
-              setYoko(String(c.mm))
-              setYokoChoice(c)
-            }}
-          />
           <WallToggles
             walls={walls}
             viewRotationSteps={viewRotationSteps}
             onChange={setWalls}
             hint="壁の辺は端部曲げで止め、壁でない辺は重ねの分だけ外へはみ出します。"
           />
-          <p className="text-[11px] tabular-nums text-muted">
-            条件 {settings.diameter} / ピッチ {settings.pitchMm} / 曲げ {settings.bendMm} / 重ね {settings.lapMm}
-            （右パネルの「条件」で変更）
-          </p>
+          <div className="mt-1 border-t border-border pt-2">
+            <p className="mb-2 text-xs font-medium text-foreground">配筋条件</p>
+            <SettingsFields settings={condition} onChange={setCondition} />
+          </div>
           {preview ? (
             <div className="space-y-1 rounded-md bg-gray-50 px-2 py-1.5 text-[11px]">
               {domaZoneRuns(preview).map((run) => {
@@ -1502,7 +1489,6 @@ export function DomaPanel({
 }) {
   const standardBars = bars.filter((b) => b.kind !== 'special')
   const zones = bars.filter((b) => b.kind === 'special')
-  const directionBars = standardBars.filter((b) => b.direction === direction)
   const selectedDim =
     selection?.type === 'dimension' ? dimensions.find((d) => d.id === selection.id) ?? null : null
   const selectedBar = selection?.type === 'bar' ? bars.find((b) => b.id === selection.id) ?? null : null
@@ -1688,52 +1674,33 @@ export function DomaPanel({
                   ))}
                 </ul>
               )
-            ) : directionBars.length === 0 ? (
+            ) : standardBars.length === 0 ? (
               <p className="px-4 py-3 text-[11px] leading-relaxed text-muted">まだ配置されていません。</p>
             ) : (
-              <ul className="space-y-1 px-4 py-3">
-                {directionBars.map((b, i) => {
-                  const layout = layoutOf(b)
-                  // 区域で切った本は、区域にかからない本と分けて出す
-                  const rows = splitDomaRunByZones(b, bars, dimensions)
-                  return (
-                    <li key={b.id}>
-                      <button
-                        type="button"
-                        onClick={() => onSelect({ type: 'bar', id: b.id })}
-                        className="w-full rounded px-1 py-0.5 text-left hover:bg-gray-50"
-                      >
-                        <span className="flex items-center justify-between text-[11px] font-semibold text-muted">
-                          <span>
-                            {dirLabel}
-                            {i + 1}
-                            <span className="ml-1.5 font-normal tabular-nums">L {b.length_mm.toLocaleString()}</span>
-                          </span>
-                          {layout.warnings.length > 0 ? <span className="text-amber-700">⚠</span> : null}
-                        </span>
-                        {/* 加工本ごとに 1 行。下の集計と同じく曲／直を前に付ける */}
-                        {rows.map((row) => {
-                          const rowLayout = layoutOf(row)
-                          const cut = row.id !== b.id
-                          return rowLayout.pieces.map((p) => (
-                            <span
-                              key={`${row.id}-${p.index}`}
-                              className="block font-mono text-[13px] font-semibold"
-                              style={{ color: DOMA_DIRECTION_COLORS[b.direction] }}
-                            >
-                              <span className="mr-1.5 font-sans text-[11px] font-medium">
-                                {cut ? <span style={{ color: DOMA_ZONE_COLOR }}>区域 </span> : null}
-                                {p.kind === 'BENT' ? '曲' : '直'}
-                              </span>
-                              {p.lengthMm.toLocaleString()} × {rowLayout.count}
-                            </span>
-                          ))
-                        })}
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
+              // 一覧は下の集計（結果ページと同じ形）で見る。ここでは確かめが要る土間筋だけを出して選べるようにする
+              (() => {
+                const warned = standardBars.filter((b) => layoutOf(b).warnings.length > 0)
+                if (warned.length === 0) return null
+                return (
+                  <div className="space-y-1 px-4 py-3">
+                    <p className="text-[11px] font-medium text-amber-800">⚠ 確かめが必要な土間筋</p>
+                    <div className="flex flex-wrap gap-1">
+                      {warned.map((b) => (
+                        <button
+                          key={b.id}
+                          type="button"
+                          onClick={() => onSelect({ type: 'bar', id: b.id })}
+                          className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold hover:bg-amber-100"
+                          style={{ color: DOMA_DIRECTION_COLORS[b.direction] }}
+                        >
+                          {DIRECTION_LABEL[b.direction]}
+                          {standardBars.filter((o) => o.direction === b.direction).indexOf(b) + 1}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()
             )}
 
           </>

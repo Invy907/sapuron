@@ -2084,7 +2084,7 @@ export function DrawingViewer({
         length_mm: values.tateMm,
         span_mm: values.yokoMm,
         bends: 'none',
-        settings: { ...domaZoneSettings, zone: { tateAlongY, walls: values.walls } },
+        settings: { ...values.settings, zone: { tateAlongY, walls: values.walls } },
         pieces_override: null,
         length_dim_id: values.tateDimId,
         span_dim_id: values.yokoDimId,
@@ -6595,12 +6595,13 @@ export function DrawingViewer({
         <DomaZoneInputModal
           state={domaInputModal}
           settings={domaZoneSettings}
-          dimensionChoices={domaDimensionChoices(domaDimensions)}
           viewRotationSteps={rotationSteps}
           onCancel={closeDomaInputModal}
           onConfirm={(values) => {
             const { line, tateAlongY } = domaInputModal
             closeDomaInputModal()
+            // 入力窓で決めた条件を、次に描く区域の初期値として覚える
+            changeDomaZoneSettings(values.settings)
             void insertDomaZone(line, tateAlongY, values)
           }}
         />

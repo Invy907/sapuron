@@ -838,16 +838,6 @@ export function CornerBarPanel({
           </p>
         ) : (
           <div className="border-t border-border px-4 py-3 space-y-2">
-            <Link
-              href={summaryHref}
-              onClick={(e) => {
-                e.preventDefault()
-                onGoToSummary(summaryHref)
-              }}
-              className="block rounded-md bg-primary px-2 py-1.5 text-center text-[11px] font-medium text-white hover:bg-primary-hover"
-            >
-              結果ページを見る
-            </Link>
             <div className="flex flex-wrap gap-1">
               {printSummary.categoryCounts.map((c) => (
                 <span
@@ -885,6 +875,17 @@ export function CornerBarPanel({
                 </div>
               ))}
             </div>
+            {/* 一覧を見てから結果ページへ進むので、ボタンは一覧の下（土間筋と同じ） */}
+            <Link
+              href={summaryHref}
+              onClick={(e) => {
+                e.preventDefault()
+                onGoToSummary(summaryHref)
+              }}
+              className="mt-2 block rounded-md bg-primary px-2 py-1.5 text-center text-[11px] font-medium text-white hover:bg-primary-hover"
+            >
+              結果ページを見る
+            </Link>
           </div>
         )}
       </div>
