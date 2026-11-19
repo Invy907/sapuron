@@ -25,6 +25,7 @@ export type DomaPrintGroup = {
   diameter: string
   bends: 0 | 1 | 2
   bendMm: number
+  pitches: number[]
   rows: Array<{ lengthMm: number; quantity: number }>
 }
 
@@ -50,17 +51,20 @@ export function domaPrintGroupsOf(runs: DrawingDomaRun[], dims: DrawingDomaDimen
           diameter: bar.settings.diameter,
           bends,
           bendMm,
+          pitches: [],
           rows: [],
           byLength: new Map(),
         }
         groups.set(key, group)
       }
+      if (!group.pitches.includes(bar.settings.pitchMm)) group.pitches.push(bar.settings.pitchMm)
       group.byLength.set(piece.lengthMm, (group.byLength.get(piece.lengthMm) ?? 0) + layout.count)
     }
   }
   return Array.from(groups.values())
     .map(({ byLength, ...group }) => ({
       ...group,
+      pitches: [...group.pitches].sort((a, b) => a - b),
       rows: Array.from(byLength, ([lengthMm, quantity]) => ({ lengthMm, quantity })).sort(
         (a, b) => b.lengthMm - a.lengthMm,
       ),
@@ -84,9 +88,10 @@ export function domaResultGroupsOf(runs: DrawingDomaRun[], dims: DrawingDomaDime
     const key = `${group.diameter}|${group.bends}|${group.bendMm}`
     let result = merged.get(key)
     if (!result) {
-      result = { diameter: group.diameter, bends: group.bends, bendMm: group.bendMm, rows: [], byLength: new Map() }
+      result = { diameter: group.diameter, bends: group.bends, bendMm: group.bendMm, pitches: [], rows: [], byLength: new Map() }
       merged.set(key, result)
     }
+    result.pitches = Array.from(new Set([...result.pitches, ...group.pitches])).sort((a, b) => a - b)
     for (const row of group.rows) {
       result.byLength.set(row.lengthMm, (result.byLength.get(row.lengthMm) ?? 0) + row.quantity)
     }
@@ -110,7 +115,7 @@ function domaSumPx(px: number): string {
  * タテ・ヨコ（特殊は「特殊タテ」「特殊ヨコ」）は見出しを付けて分ける。プレビューと印刷で同じ HTML を使う
  */
 export function buildDomaPrintSummaryInnerHtml(groups: DomaSummaryGroup[]): string {
-  const figure = (group: DomaSummaryGroup): string => {
+  const shape = (group: DomaSummaryGroup): string => {
     const ink = group.kind === 'standard' && group.direction ? DOMA_DIRECTION_COLORS[group.direction] : '#0f172a'
     if (group.bends === 0) {
       return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${domaSumPx(26)};height:${domaSumPx(26)};border:1.5px solid ${ink};border-radius:50%;font-size:${domaSumPx(15)};">直</span>`
@@ -122,6 +127,10 @@ export function buildDomaPrintSummaryInnerHtml(groups: DomaSummaryGroup[]): stri
       group.bends === 2 ? 'M30 22 L30 4 L102 4 L102 22' : 'M30 22 L30 4 L124 4'
     const svg = `<svg viewBox="0 0 132 26" width="132" height="26" style="width:${domaSumPx(132)};height:${domaSumPx(26)};overflow:visible;"><path d="${path}" fill="none" stroke="${ink}" stroke-width="1.8" stroke-linejoin="round"/>${label(26, 'end')}${group.bends === 2 ? label(106, 'start') : ''}</svg>`
     return svg
+  }
+  const figure = (group: DomaSummaryGroup): string => {
+    const pitch = group.pitches.map((mm) => `@${mm}`).join(' / ')
+    return `<span style="display:inline-flex;flex-direction:column;align-items:center;gap:${domaSumPx(2)};"><span style="font-size:${domaSumPx(12)};line-height:1.2;">${escapeHtml(pitch)}</span>${shape(group)}</span>`
   }
   return groups
     .map((group, i) => {

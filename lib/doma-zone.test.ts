@@ -420,7 +420,7 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
   const yoko: DrawingDomaRun = { ...tate, id: 'result-y', direction: 'yoko',
     x1: 20000, y1: 20000, x2: 23000, y2: 20000 }
   assert.deepStrictEqual(domaResultGroupsOf([tate, yoko]), [
-    { diameter: 'D13', bends: 2, bendMm: 100, rows: [{ lengthMm: 3200, quantity: 32 }] },
+    { diameter: 'D13', bends: 2, bendMm: 100, pitches: [200], rows: [{ lengthMm: 3200, quantity: 32 }] },
   ])
   const special = { ...base, settings: { ...settings, zone: {
     tateAlongY: true, walls: { top: true, bottom: true, left: true, right: true },
@@ -436,6 +436,15 @@ function zone(tateMm: number, yokoMm: number, spec: Partial<DomaZoneSpec> = {}):
   const html = buildDomaPrintSummaryInnerHtml(merged)
   assert.ok(!/タテ|ヨコ|特殊/.test(html))
   assert.ok(html.includes('stroke="#0f172a"'))
+  assert.ok(html.includes('@200'))
+  // ピッチが違っても合算は維持し、図の上には実際のピッチを重複なくすべて出す。
+  const dense = { ...yoko, settings: { ...settings, pitchMm: 100 } }
+  const mixed = domaResultGroupsOf([tate, dense])
+  assert.strictEqual(mixed.length, 1)
+  assert.deepStrictEqual(mixed[0]!.pitches, [100, 200])
+  assert.deepStrictEqual(mixed[0]!.rows, [{ lengthMm: 3200, quantity: 48 }])
+  assert.ok(buildDomaPrintSummaryInnerHtml(mixed).includes('@100 / @200'))
+  assert.deepStrictEqual(domaPrintGroupsOf([tate, dense]).map(g => g.pitches), [[200], [100]])
 }
 
 console.log('doma-zone tests passed')
