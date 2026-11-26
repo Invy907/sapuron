@@ -2,6 +2,8 @@ import {
   CORNER_BAR_CATEGORIES,
   CORNER_BAR_DIAMETERS,
   cornerBarCategoryLabel,
+  cornerBarDisplayLabel,
+  cornerBarNameKind,
   cornerBarSegmentSumMm,
   cornerBarShapeLabel,
   cornerBarBendAngles,
@@ -206,6 +208,7 @@ function specKeyOf(
   bendAnglesDeg: number[] | undefined,
   layer: CornerBarLayer | undefined,
   heightMm: number | undefined,
+  nameKind: string | null = null,
 ): string {
   const dims = segments
     .map((s) => `${s.lengthMm ?? ''}@${s.measurementType ?? ''}`)
@@ -217,7 +220,9 @@ function specKeyOf(
     // 上と下は別の鉄筋。なしのときは付けず、上下を入れる前と同じ key のまま
     (layer ? `|layer:${layer}` : '') +
     // 高さが違えば図が違うので別の行にする（未入力のときは付けない）
-    (heightMm != null ? `|height:${heightMm}` : '')
+    (heightMm != null ? `|height:${heightMm}` : '') +
+    // 名前（主筋補強）が違えば別の行。既定の特殊コーナー筋は付けず、前と同じ key のまま
+    (nameKind ? `|name:${nameKind}` : '')
   // 減りが違えば加工長も違うので別の行にする。0 のときは付けず、
   // 減りを入れる前と同じ key のまま（結果ページの手入力が外れないように）
   if (deductionTotalMm != null) {
@@ -265,6 +270,9 @@ export function aggregateAdditionalRebars(
     const adjustableAngle = shapeDef?.adjustableAngle === true
     const defaultAngles = shapeDef ? cornerBarDefaultBendAngles(shapeDef) : []
     const hasHeight = getCornerBarShape(shapeType)?.hasHeight === true
+    const placementBars = flattenPlacementBars(placement)
+    // 名前は配置で 1 つ（先頭の鉄筋を代表にする）。特殊コーナー筋だけ
+    const nameKind = category === 'SPECIAL_CORNER' ? cornerBarNameKind(placementBars) : null
 
     let group = groups.get(category)
     if (!group) {
@@ -277,7 +285,7 @@ export function aggregateAdditionalRebars(
       groups.set(category, group)
     }
 
-    for (const bar of flattenPlacementBars(placement)) {
+    for (const bar of placementBars) {
       if (bar.quantity <= 0) continue
       const diameter = bar.barType.trim().toUpperCase()
 
@@ -307,6 +315,7 @@ export function aggregateAdditionalRebars(
         bendAnglesDeg,
         bar.layer,
         heightMm,
+        nameKind,
       )
       const existing = group.specs.get(key)
       if (existing) {
@@ -321,7 +330,7 @@ export function aggregateAdditionalRebars(
       group.specs.set(key, {
         key,
         category,
-        categoryLabel: cornerBarCategoryLabel(category),
+        categoryLabel: cornerBarDisplayLabel(category, nameKind),
         shapeType,
         shapeLabel: cornerBarShapeLabel(shapeType),
         diameter,

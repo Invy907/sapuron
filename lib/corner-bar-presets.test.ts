@@ -1,5 +1,10 @@
 import assert from 'node:assert'
 import {
+  cornerBarDraggableEnds,
+  resizeCornerBarEdgeToPoint,
+  cornerBarCanvasGeometry,
+  setCornerBarNameKind,
+  remapCornerBarBarsToShape,
   applyCornerBarOrientation,
   applyStandardSegmentLengths,
   DEFAULT_CORNER_BAR_DIAMETER,
@@ -338,4 +343,30 @@ test('height and total deduction accept decimals', () => {
   const bar = makeCornerBarBar(crank, 'OPENING', 'D10', { id: 'b1', heightMm: 320.5, deductionTotalMm: 12.5 })
   assert.equal(bar.heightMm, 320.5)
   assert.equal(bar.deductionTotalMm, 12.5)
+})
+
+test('ストレートは両端とも掴んで図面上の長さを変えられ、反対の端は動かない', () => {
+  const straight = getCornerBarShape('STRAIGHT')!
+  assert.deepEqual(cornerBarDraggableEnds(straight), [
+    { edgeIndex: 0, vertexIndex: 0 },
+    { edgeIndex: 0, vertexIndex: 1 },
+  ])
+  const segments = makeCornerBarSegments(straight)
+  const origin = { x: 500, y: 500 }
+  const before = cornerBarCanvasGeometry(straight, segments, origin.x, origin.y, 0, 100, false).points
+  // 終点を右へ 100 引くと、始点はそのままで長くなる
+  const end = before[1]!
+  const resized = resizeCornerBarEdgeToPoint(straight, segments, origin, 0, 100, false, 0, { x: end.x + 100, y: end.y }, 1)!
+  const after = cornerBarCanvasGeometry(straight, resized.segments, resized.origin.x, resized.origin.y, 0, 100, false).points
+  assert.ok(Math.abs(after[0]!.x - before[0]!.x) < 0.5)
+  assert.ok(Math.abs(after[1]!.x - (end.x + 100)) < 1)
+})
+
+test('特殊コーナー筋の名前（主筋補強）は形状を変えても残り、ほかの筋種類にすると外れる', () => {
+  const straight = getCornerBarShape('STRAIGHT')!
+  const l = getCornerBarShape('L_LONG')!
+  const bars = setCornerBarNameKind([makeCornerBarBar(straight, 'SPECIAL_CORNER', 'D13')], 'MAIN_REINFORCE')
+  assert.equal(remapCornerBarBarsToShape(l, 'SPECIAL_CORNER', bars)[0]!.nameKind, 'MAIN_REINFORCE')
+  assert.equal(remapCornerBarBarsToShape(straight, 'SOE', bars)[0]!.nameKind, undefined)
+  assert.equal(setCornerBarNameKind(bars, null)[0]!.nameKind, undefined)
 })

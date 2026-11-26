@@ -3,6 +3,7 @@ import {
   aggregateAdditionalRebars,
   type AdditionalRebarPlacementLike,
 } from './corner-bar-summary'
+import { buildCornerBarPrintSummary } from './corner-bar-presets'
 import { cornerBarKakouchouMm } from './corner-bar-kakouchou'
 import type {
   CornerBarSegment,
@@ -329,6 +330,30 @@ test('開口補強筋: 資料の加工長と、加工長に入らない高さ', 
   assert.equal(byShape.OPENING_SLANT!.heightMm, 425)
   assert.equal(byShape.OPENING_BRACKET!.kakouchouMm, 560)
   assert.equal(byShape.OPENING_BRACKET!.heightMm, undefined)
+})
+
+test('特殊コーナー筋は配置ごとに「主筋補強」と出せ、同じ寸法でも別の行になる', () => {
+  const bar = (nameKind?: 'MAIN_REINFORCE') => ({
+    id: 'b1',
+    barType: 'D13',
+    quantity: 2,
+    segments: segs([3640], 'SHIN_SHIN'),
+    ...(nameKind ? { nameKind } : {}),
+  })
+  const placements = [
+    { category: 'SPECIAL_CORNER', shape_type: 'STRAIGHT', bars: [bar()] },
+    { category: 'SPECIAL_CORNER', shape_type: 'STRAIGHT', bars: [bar('MAIN_REINFORCE')] },
+  ]
+  const rows = aggregateAdditionalRebars(placements).groups[0]!.specRows
+  assert.deepEqual(rows.map((r) => [r.categoryLabel, r.quantity]).sort(), [
+    ['主筋補強', 2],
+    ['特殊コーナー筋', 2],
+  ])
+  // 既定（特殊コーナー筋）の行は名前を入れる前と同じ key（結果ページの手入力が外れない）
+  assert.ok(rows.some((r) => !r.key.includes('|name:')))
+  // 図面の印刷の一覧も名前ごとに分ける
+  const print = buildCornerBarPrintSummary(placements.map((p) => ({ ...p, color: 'red' })))
+  assert.deepEqual(print.detailRows.map((r) => r.label).sort(), ['主筋補強', '特殊コーナー筋'])
 })
 
 console.log('\nすべてのテストが通りました')
