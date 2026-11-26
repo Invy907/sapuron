@@ -249,7 +249,7 @@ function buildCornerBarPrintSummaryHtml(
   const rows = summary.detailRows
     .map((row) => {
       const color = getSegmentStrokeHex(normalizeSegmentColor(row.color), false)
-      const label = `${cornerBarCategoryLabel(row.category)} ${cornerBarLayerMark(row.layer)}${row.diameter}`
+      const label = `${row.label} ${cornerBarLayerMark(row.layer)}${row.diameter}`
       return `<div class="corner-summary-row"><span class="corner-summary-label-wrap"><span class="corner-summary-chip" style="background:${color};"></span><span class="corner-summary-label">${escapeHtml(label)}</span></span><span class="corner-summary-qty">${row.qty} 本</span></div>`
     })
     .join('')
@@ -606,6 +606,8 @@ type CornerBarDragState = {
 type CornerBarEdgeDragState = {
   id: string
   edgeIndex: number
+  /** 掴んだ端点（ストレートは両端とも掴めるので、どちらの端かを持つ） */
+  vertexIndex: number
   snapshot: DrawingCornerBar
 }
 
@@ -1885,7 +1887,7 @@ export function DrawingViewer({
       pt: Point,
       radius: number,
       anyCornerBar = false,
-    ): { cornerBar: DrawingCornerBar; edgeIndex: number; cursor: string } | null => {
+    ): { cornerBar: DrawingCornerBar; edgeIndex: number; vertexIndex: number; cursor: string } | null => {
       const selected = cornerBars.find((c) => c.id === selectedCornerBarId)
       const candidates = anyCornerBar
         ? [
@@ -1902,7 +1904,9 @@ export function DrawingViewer({
         if (!shape || !geometry) continue
         for (const end of cornerBarDraggableEnds(shape)) {
           const p = geometry.points[end.vertexIndex]
-          const neighbor = geometry.points[end.edgeIndex === 0 ? 1 : end.edgeIndex]
+          // 掴んだ辺の反対側の端（ストレートの終点なら始点）
+          const neighbor =
+            geometry.points[end.vertexIndex === end.edgeIndex ? end.edgeIndex + 1 : end.edgeIndex]
           if (!p || !neighbor || Math.hypot(pt.x - p.x, pt.y - p.y) > radius) continue
           // 図面の表示回転が 90°/270° なら画面上では縦横が入れ替わる
           const horizontalOnCanvas = Math.abs(p.x - neighbor.x) >= Math.abs(p.y - neighbor.y)
@@ -1911,6 +1915,7 @@ export function DrawingViewer({
           return {
             cornerBar: cb,
             edgeIndex: end.edgeIndex,
+            vertexIndex: end.vertexIndex,
             cursor: horizontalOnScreen ? 'ew-resize' : 'ns-resize',
           }
         }
@@ -2719,6 +2724,7 @@ export function DrawingViewer({
         normalizeCornerBarFlip(drag.snapshot.flipped),
         drag.edgeIndex,
         clientPointToCanvas(clientX, clientY),
+        drag.vertexIndex,
       )
       if (!resized) return null
       const drawScale = resized.segments[drag.edgeIndex]?.drawScale
@@ -4023,6 +4029,7 @@ export function DrawingViewer({
         setCornerBarEdgeDrag({
           id: end.cornerBar.id,
           edgeIndex: end.edgeIndex,
+          vertexIndex: end.vertexIndex,
           snapshot: end.cornerBar,
         })
         setCornerBarEndHoverCursor(end.cursor)
@@ -6885,7 +6892,7 @@ export function DrawingViewer({
                                 }}
                               />
                               <span className="truncate">
-                                {cornerBarCategoryLabel(row.category)}{' '}
+                                {row.label}{' '}
                                 {cornerBarLayerMark(row.layer)}
                                 {row.diameter}
                               </span>

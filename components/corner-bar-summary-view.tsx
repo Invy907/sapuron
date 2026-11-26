@@ -406,7 +406,8 @@ function buildSheetRows(
       block.rows.forEach((row, i) => {
         rows.push({
           key: row.key,
-          label: labelFor(row.key, block.heading),
+          // 特殊コーナー筋は配置ごとに「主筋補強」と出せるので、行の名前を使う
+          label: labelFor(row.key, row.categoryLabel),
           isGroupStart: i === 0,
           spec: (
             <SpecWithKakouchou

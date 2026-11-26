@@ -13,7 +13,11 @@ import {
   CORNER_BAR_LAYERS,
   cornerBarSupportsLayer,
   cornerBarLayerMark,
-  cornerBarCategoryLabel,
+  CORNER_BAR_NAME_OPTIONS,
+  cornerBarNameKind,
+  cornerBarSupportsName,
+  setCornerBarNameKind,
+  type CornerBarNameKind,
   cornerBarDiameterOptionLabel,
   cornerBarFixedVertexForEdge,
   cornerBarLegacyFieldsFromBars,
@@ -340,8 +344,13 @@ export function CornerBarPanel({
         deductionTotalMm: bars[0]?.deductionTotalMm,
         bendAnglesDeg: bars[0]?.bendAnglesDeg,
         heightMm: bars[0]?.heightMm,
+        nameKind: bars[0]?.nameKind,
       }),
     ])
+  }
+
+  function handleSelectedNameChange(nameKind: CornerBarNameKind | null) {
+    commitSelectedBars((bars) => setCornerBarNameKind(bars, nameKind))
   }
 
   function handleSelectedHeightChange(heightMm: number | null) {
@@ -433,8 +442,14 @@ export function CornerBarPanel({
         deductionTotalMm: placementDraft.bars[0]?.deductionTotalMm,
         bendAnglesDeg: placementDraft.bars[0]?.bendAnglesDeg,
         heightMm: placementDraft.bars[0]?.heightMm,
+        nameKind: placementDraft.bars[0]?.nameKind,
       }),
     ])
+  }
+
+  function handlePlacementNameChange(nameKind: CornerBarNameKind | null) {
+    if (!placementDraft) return
+    commitPlacementBars(setCornerBarNameKind(placementDraft.bars, nameKind))
   }
 
   function handlePlacementHeightChange(heightMm: number | null) {
@@ -517,6 +532,13 @@ export function CornerBarPanel({
                 ))}
               </select>
             </label>
+
+            {cornerBarSupportsName(selected.category) ? (
+              <CornerBarNameSelect
+                value={cornerBarNameKind(selectedBars)}
+                onChange={handleSelectedNameChange}
+              />
+            ) : null}
 
             {/* 向き・反転（特殊コーナー）・図面上の大きさ */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
@@ -658,6 +680,13 @@ export function CornerBarPanel({
                 ))}
               </select>
             </label>
+
+            {cornerBarSupportsName(placementCategory) && placementDraft ? (
+              <CornerBarNameSelect
+                value={cornerBarNameKind(placementDraft.bars)}
+                onChange={handlePlacementNameChange}
+              />
+            ) : null}
 
             {/* 添え筋＝ストレート、コーナー筋＝L形 4 向き。それ以外は全形状 */}
             <div>
@@ -867,7 +896,7 @@ export function CornerBarPanel({
                       }}
                     />
                     <span className="truncate">
-                      {cornerBarCategoryLabel(row.category)} {cornerBarLayerMark(row.layer)}
+                      {row.label} {cornerBarLayerMark(row.layer)}
                       {row.diameter}
                     </span>
                   </span>
@@ -890,6 +919,32 @@ export function CornerBarPanel({
         )}
       </div>
     </div>
+  )
+}
+
+/** 特殊コーナー筋の名前（特殊コーナー筋 / 主筋補強）。結果ページ・印刷にこの名前で出す */
+function CornerBarNameSelect({
+  value,
+  onChange,
+}: {
+  value: CornerBarNameKind | null
+  onChange: (value: CornerBarNameKind | null) => void
+}) {
+  return (
+    <label className="block text-[10px] text-muted">
+      名称（結果ページ・印刷に出す名前）
+      <select
+        value={value ?? ''}
+        onChange={(e) => onChange((e.target.value || null) as CornerBarNameKind | null)}
+        className="mt-0.5 w-full rounded border border-border bg-white px-1.5 py-1 text-xs outline-none focus:border-primary"
+      >
+        {CORNER_BAR_NAME_OPTIONS.map((o) => (
+          <option key={o.id ?? ''} value={o.id ?? ''}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
 

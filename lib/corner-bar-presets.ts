@@ -75,6 +75,58 @@ export function cornerBarCategoryLabel(category: string): string {
   )
 }
 
+/**
+ * 特殊コーナー筋の名前。客先によって「主筋補強」と呼ぶので、配置ごとに選べるようにする。
+ * 主筋補強のときだけ bars に nameKind を書き、無い（既定）ときは「特殊コーナー筋」
+ */
+export type CornerBarNameKind = 'MAIN_REINFORCE'
+
+export const CORNER_BAR_NAME_OPTIONS: Array<{ id: CornerBarNameKind | null; label: string }> = [
+  { id: null, label: '特殊コーナー筋' },
+  { id: 'MAIN_REINFORCE', label: '主筋補強' },
+]
+
+/** 名前を選べる筋種類か（特殊コーナー筋だけ） */
+export function cornerBarSupportsName(category: string): boolean {
+  return category === 'SPECIAL_CORNER'
+}
+
+export function normalizeCornerBarNameKind(value: unknown): CornerBarNameKind | null {
+  return value === 'MAIN_REINFORCE' ? value : null
+}
+
+/** 結果ページ・印刷・一覧に出す名前。特殊コーナー筋で主筋補強を選んだときは「主筋補強」 */
+export function cornerBarDisplayLabel(category: string, nameKind?: unknown): string {
+  if (cornerBarSupportsName(category) && normalizeCornerBarNameKind(nameKind) === 'MAIN_REINFORCE') {
+    return '主筋補強'
+  }
+  return cornerBarCategoryLabel(category)
+}
+
+/** 配置の名前（先頭の鉄筋を代表にする） */
+export function cornerBarNameKind(bars: unknown): CornerBarNameKind | null {
+  const first = Array.isArray(bars) ? (bars[0] as { nameKind?: unknown } | undefined) : undefined
+  return normalizeCornerBarNameKind(first?.nameKind)
+}
+
+/** 配置の名前を全ての鉄筋に書く（既定の特殊コーナー筋に戻すときは消す） */
+export function setCornerBarNameKind<T extends { nameKind?: CornerBarNameKind }>(
+  bars: T[],
+  nameKind: CornerBarNameKind | null,
+): T[] {
+  return bars.map((bar) => {
+    const next = { ...bar }
+    if (nameKind) next.nameKind = nameKind
+    else delete next.nameKind
+    return next
+  })
+}
+
+function withNameKind(value: unknown): { nameKind?: CornerBarNameKind } {
+  const n = normalizeCornerBarNameKind(value)
+  return n ? { nameKind: n } : {}
+}
+
 export const CORNER_BAR_DIAMETERS = ['D10', 'D13', 'D16', 'D19', 'D22', 'D25'] as const
 
 /** 形状トポロジー */
@@ -980,6 +1032,10 @@ export interface CornerBarBarItem {
    * ドラッグで動かしたときだけ入り、配置ごとに 1 つで全ての bars に同じ値を書く
    */
   calloutOffset?: { x: number; y: number }
+  /**
+   * 特殊コーナー筋の名前（主筋補強のときだけ）。配置ごとに 1 つで、全ての bars に同じ値を書く
+   */
+  nameKind?: CornerBarNameKind
 }
 
 /** 特殊コーナー筋の上筋・下筋 */
@@ -1192,6 +1248,7 @@ export function makeCornerBarBar(
       | 'heightMm'
       | 'layer'
       | 'calloutOffset'
+      | 'nameKind'
     >
   >,
 ): CornerBarBarItem {
@@ -1207,6 +1264,8 @@ export function makeCornerBarBar(
     // 上・下は特殊コーナー筋の L 形・ストレートだけ。ほかの形状・筋種類に変えたら外す
     ...(cornerBarSupportsLayer(category, shape.id) ? withLayer(base?.layer) : {}),
     ...withCalloutOffset(base?.calloutOffset),
+    // 名前は特殊コーナー筋だけ。ほかの筋種類に変えたら外す
+    ...(cornerBarSupportsName(category) ? withNameKind(base?.nameKind) : {}),
   }
 }
 
@@ -1283,6 +1342,7 @@ export function normalizeCornerBarBars(
         ...withHeight(shape, rec.heightMm),
         ...withLayer(rec.layer),
         ...withCalloutOffset(rec.calloutOffset),
+        ...withNameKind(rec.nameKind),
       }
     })
     .filter((bar): bar is CornerBarBarItem => bar != null)
@@ -1328,6 +1388,7 @@ export function remapCornerBarBarsToShape(
       heightMm: bar.heightMm,
       layer: bar.layer,
       calloutOffset: bar.calloutOffset,
+      nameKind: bar.nameKind,
     }),
   )
 }
@@ -1714,12 +1775,19 @@ export function cornerBarOriginKeepingVertex(
  * 図面上でドラッグして伸び縮みできる辺と、掴む端点。
  * 掴めるのは形状の両端（先頭の辺の始点と最後の辺の終点）だけで、
  * 反対側の端は cornerBarFixedVertexForEdge の頂点として止まる。
+ * ストレート（辺 1 本）は両端とも掴め、掴んだのと反対の端が止まる。
  */
 export function cornerBarDraggableEnds(
   shape: CornerBarShapeDef,
 ): Array<{ edgeIndex: number; vertexIndex: number }> {
   const last = shape.directions.length - 1
-  if (last < 1) return []
+  if (last < 0) return []
+  if (last === 0) {
+    return [
+      { edgeIndex: 0, vertexIndex: 0 },
+      { edgeIndex: 0, vertexIndex: 1 },
+    ]
+  }
   return [
     { edgeIndex: 0, vertexIndex: 0 },
     { edgeIndex: last, vertexIndex: last + 1 },
@@ -1742,9 +1810,12 @@ export function resizeCornerBarEdgeToPoint(
   flipped: boolean,
   edgeIndex: number,
   point: { x: number; y: number },
+  /** 掴んだ端点（cornerBarDraggableEnds の vertexIndex）。無ければ形状の端の側 */
+  vertexIndex?: number,
 ): { segments: CornerBarSegment[]; origin: { x: number; y: number } } | null {
-  const fixedIndex = cornerBarFixedVertexForEdge(edgeIndex)
-  const movingIndex = edgeIndex === 0 ? 0 : edgeIndex + 1
+  const movingIndex = vertexIndex ?? (edgeIndex === 0 ? 0 : edgeIndex + 1)
+  // 辺の反対側の端を止める（ストレートの終点を掴んだら始点が止まる）
+  const fixedIndex = movingIndex === edgeIndex ? edgeIndex + 1 : edgeIndex
   const geometryOf = (segs: CornerBarSegment[]) =>
     cornerBarCanvasGeometry(shape, segs, origin.x, origin.y, rotationSteps, sizePx, flipped)
   const edgeLength = (segs: CornerBarSegment[]) => {
@@ -2126,6 +2197,8 @@ export type CornerBarPrintSummaryCategoryCount = {
 
 export type CornerBarPrintSummaryDetailRow = {
   category: string
+  /** 出す名前（特殊コーナー筋で主筋補強を選んだときは「主筋補強」） */
+  label: string
   diameter: string
   /** 特殊コーナー筋の上・下。なしは undefined */
   layer?: CornerBarLayer
@@ -2157,15 +2230,17 @@ export function buildCornerBarPrintSummary(
   const detailMap = new Map<string, CornerBarPrintSummaryDetailRow>()
   for (const cb of cornerBars) {
     const color = normalizeColor(cb.color ?? 'red')
+    const label = cornerBarDisplayLabel(cb.category, cornerBarNameKind(cb.bars))
     for (const bar of cornerBarBarQuantities(cb)) {
       countByCategory.set(cb.category, (countByCategory.get(cb.category) ?? 0) + bar.quantity)
-      // 上と下は別の鉄筋なので別の行にする
-      const key = `${cb.category}/${bar.barType}/${bar.layer ?? ''}/${color}`
+      // 上と下・名前（特殊コーナー筋 / 主筋補強）が違えば別の行にする
+      const key = `${cb.category}/${label}/${bar.barType}/${bar.layer ?? ''}/${color}`
       const prev = detailMap.get(key)
       if (prev) prev.qty += bar.quantity
       else
         detailMap.set(key, {
           category: cb.category,
+          label,
           diameter: bar.barType,
           ...(bar.layer ? { layer: bar.layer } : {}),
           color,
@@ -2183,6 +2258,7 @@ export function buildCornerBarPrintSummary(
   const detailRows = [...detailMap.values()].sort(
     (a, b) =>
       a.category.localeCompare(b.category) ||
+      a.label.localeCompare(b.label) ||
       a.diameter.localeCompare(b.diameter) ||
       (a.layer ?? '').localeCompare(b.layer ?? '') ||
       a.color.localeCompare(b.color),
