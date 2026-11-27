@@ -364,11 +364,11 @@ test('ストレートは両端とも掴んで図面上の長さを変えられ�
   assert.ok(Math.abs(after[1]!.x - (end.x + 100)) < 1)
 })
 
-test('特殊コーナー筋の名前（主筋補強）は形状を変えても残り、ほかの筋種類にすると外れる', () => {
+test('名前の選択は外したので、主筋補強で保存した配置も形状を変えると名前が外れる', () => {
   const straight = getCornerBarShape('STRAIGHT')!
   const l = getCornerBarShape('L_LONG')!
   const bars = setCornerBarNameKind([makeCornerBarBar(straight, 'SPECIAL_CORNER', 'D13')], 'MAIN_REINFORCE')
-  assert.equal(remapCornerBarBarsToShape(l, 'SPECIAL_CORNER', bars)[0]!.nameKind, 'MAIN_REINFORCE')
+  assert.equal(remapCornerBarBarsToShape(l, 'SPECIAL_CORNER', bars)[0]!.nameKind, undefined)
   assert.equal(remapCornerBarBarsToShape(straight, 'SOE', bars)[0]!.nameKind, undefined)
   assert.equal(setCornerBarNameKind(bars, null)[0]!.nameKind, undefined)
 })

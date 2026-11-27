@@ -86,9 +86,14 @@ export const CORNER_BAR_NAME_OPTIONS: Array<{ id: CornerBarNameKind | null; labe
   { id: 'MAIN_REINFORCE', label: '主筋補強' },
 ]
 
-/** 名前を選べる筋種類か（特殊コーナー筋だけ） */
+/**
+ * 名前を選べる筋種類か。名前の選択は外した（結果ページの名称の手入力と補足で書く）ので、どれも選べない。
+ * すでに主筋補強を選んで保存した配置も、名前は特殊コーナー筋として出し、同じ寸法なら同じ行にまとめる。
+ * 戻すときは `category === 'SPECIAL_CORNER'` にする
+ */
 export function cornerBarSupportsName(category: string): boolean {
-  return category === 'SPECIAL_CORNER'
+  void category
+  return false
 }
 
 export function normalizeCornerBarNameKind(value: unknown): CornerBarNameKind | null {
