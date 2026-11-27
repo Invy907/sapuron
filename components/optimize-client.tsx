@@ -4,7 +4,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import type { DrawingCornerBar, DrawingSegment, Unit } from '@/lib/types/database'
-import { CornerBarSummarySections } from '@/components/corner-bar-summary-view'
+import {
+  CornerBarSummarySections,
+  DIM_FONT_SCALE_MAX,
+  DIM_FONT_SCALE_MIN,
+  normalizeCornerBarRowStyle,
+  parseCornerBarRowStyles,
+  type CornerBarRowStyle,
+} from '@/components/corner-bar-summary-view'
 import { createClient } from '@/lib/supabase/client'
 import { getSegmentLabelMap } from '@/lib/segment-labels'
 import { optimize, type PieceInput, type OptimizationOutput } from '@/lib/optimizer'
@@ -34,6 +41,8 @@ import {
   printCardPlacementStorageKey,
   printCardPage2PlacementStorageKey,
   printCornerRowHeightStorageKey,
+  cornerBarRowStyleStorageKey,
+  printCornerDimFontStorageKey,
   printCardZoomStorageKey,
   printLineStorageKey,
   printRuleStorageKey,
@@ -535,12 +544,111 @@ export function OptimizeClient({
     [printCornerRowHeightKey, printPage2StorageKey, printPlacementStorageKey],
   )
 
+  // 印刷レイアウトのカードごとの、形状図の寸法の文字の倍率（客先の指示: 文字の大きさ調整）
+  const printCornerDimFontKey = useMemo(() => printCornerDimFontStorageKey(projectId), [projectId])
+  const [printCornerDimFontState, setPrintCornerDimFontState] = useState<{
+    storageKey: string | null
+    scales: Partial<Record<PrintCardId, number>>
+  }>({ storageKey: null, scales: {} })
+  const printCornerDimFontScales =
+    printCornerDimFontState.storageKey === printCornerDimFontKey ? printCornerDimFontState.scales : {}
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const scales: Partial<Record<PrintCardId, number>> = {}
+    try {
+      const raw = window.localStorage.getItem(printCornerDimFontKey)
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            scales[key as PrintCardId] = Math.min(DIM_FONT_SCALE_MAX, Math.max(DIM_FONT_SCALE_MIN, value))
+          }
+        }
+      }
+    } catch {
+      // 読めなければ既定の大きさ
+    }
+    setPrintCornerDimFontState({ storageKey: printCornerDimFontKey, scales })
+  }, [printCornerDimFontKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || printCornerDimFontState.storageKey !== printCornerDimFontKey) {
+      return
+    }
+    try {
+      window.localStorage.setItem(printCornerDimFontKey, JSON.stringify(printCornerDimFontState.scales))
+    } catch {
+      // Ignore storage write errors so the setting remains usable.
+    }
+  }, [printCornerDimFontState, printCornerDimFontKey])
+
+  const handlePrintCornerDimFontChange = useCallback(
+    (cardId: PrintCardId, scale: number | null) => {
+      setPrintCornerDimFontState((current) => {
+        const scales = { ...(current.storageKey === printCornerDimFontKey ? current.scales : {}) }
+        if (scale == null) delete scales[cardId]
+        else scales[cardId] = scale
+        return { storageKey: printCornerDimFontKey, scales }
+      })
+    },
+    [printCornerDimFontKey],
+  )
+
   const handleResetPrintCardPlacements = useCallback(() => {
     setPrintPlacementState({ storageKey: printPlacementStorageKey, placements: {} })
     setPrintZoomState({ storageKey: printZoomStorageKey, zooms: {} })
     setPrintPage2State({ storageKey: printPage2StorageKey, placements: {} })
     setPrintCornerRowHeightState({ storageKey: printCornerRowHeightKey, heights: {} })
-  }, [printCornerRowHeightKey, printPage2StorageKey, printPlacementStorageKey, printZoomStorageKey])
+    setPrintCornerDimFontState({ storageKey: printCornerDimFontKey, scales: {} })
+  }, [
+    printCornerDimFontKey,
+    printCornerRowHeightKey,
+    printPage2StorageKey,
+    printPlacementStorageKey,
+    printZoomStorageKey,
+  ])
+
+  // 付加筋の加工表の行ごとの補足・図の向き・伸び縮み（結果ページで決め、印刷にもそのまま出る）
+  const cornerBarRowStyleKey = useMemo(() => cornerBarRowStyleStorageKey(projectId), [projectId])
+  const [cornerBarRowStyleState, setCornerBarRowStyleState] = useState<{
+    storageKey: string | null
+    styles: Record<string, CornerBarRowStyle>
+  }>({ storageKey: null, styles: {} })
+  const cornerBarRowStyles =
+    cornerBarRowStyleState.storageKey === cornerBarRowStyleKey ? cornerBarRowStyleState.styles : {}
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setCornerBarRowStyleState({
+      storageKey: cornerBarRowStyleKey,
+      styles: parseCornerBarRowStyles(window.localStorage.getItem(cornerBarRowStyleKey)),
+    })
+  }, [cornerBarRowStyleKey])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || cornerBarRowStyleState.storageKey !== cornerBarRowStyleKey) {
+      return
+    }
+    try {
+      window.localStorage.setItem(cornerBarRowStyleKey, JSON.stringify(cornerBarRowStyleState.styles))
+    } catch {
+      // Ignore storage write errors so editing remains usable.
+    }
+  }, [cornerBarRowStyleState, cornerBarRowStyleKey])
+
+  const handleCornerBarRowStyleChange = useCallback(
+    (rowKey: string, style: CornerBarRowStyle) => {
+      setCornerBarRowStyleState((current) => {
+        const styles = { ...(current.storageKey === cornerBarRowStyleKey ? current.styles : {}) }
+        const normalized = normalizeCornerBarRowStyle(style)
+        if (normalized) styles[rowKey] = normalized
+        else delete styles[rowKey]
+        return { storageKey: cornerBarRowStyleKey, styles }
+      })
+    },
+    [cornerBarRowStyleKey],
+  )
 
   const adjustmentStorageKey = useMemo(
     () => pieceAdjustmentStorageKey(projectId),
@@ -1059,6 +1167,13 @@ export function OptimizeClient({
             ? (rowKey, height) => handlePrintCornerRowHeightChange(printCardId, rowKey, height)
             : undefined
         }
+        rowStyles={cornerBarRowStyles}
+        onRowStyleChange={handleCornerBarRowStyleChange}
+        // 寸法の文字の大きさは印刷レイアウトのカードだけで決める（結果ページの画面の図は変えない）
+        dimFontScale={printCardId ? (printCornerDimFontScales[printCardId] ?? 1) : 1}
+        onDimFontScaleChange={
+          printCardId ? (scale) => handlePrintCornerDimFontChange(printCardId, scale) : undefined
+        }
       />
     ) : null
 
@@ -1195,7 +1310,10 @@ export function OptimizeClient({
           page2Placements={printCardPage2Placements}
           onPage2PlacementChange={handlePrintCardPage2PlacementChange}
           onResetPlacements={handleResetPrintCardPlacements}
-          hasOtherLayoutChanges={Object.keys(printCornerRowHeights).length > 0}
+          hasOtherLayoutChanges={
+            Object.keys(printCornerRowHeights).length > 0 ||
+            Object.keys(printCornerDimFontScales).length > 0
+          }
           renderPage1={(overlay, layeredIds) => (
             <section className="optimize-print-manufacture">
               {/* 既定位置を測る前（Ctrl+P で直接印刷したときなど）は元のメモを出す */}

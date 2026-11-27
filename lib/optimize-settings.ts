@@ -52,6 +52,16 @@ export function printCornerRowHeightStorageKey(projectId: string) {
   return `optimize-print-corner-row-heights:${projectId}`
 }
 
+/** 付加筋の加工表の行ごとの補足・図の向き・伸び縮み（結果ページで決める） */
+export function cornerBarRowStyleStorageKey(projectId: string) {
+  return `optimize-corner-bar-row-styles:${projectId}`
+}
+
+/** 印刷レイアウトのカードごとの、形状図の寸法の文字の倍率 */
+export function printCornerDimFontStorageKey(projectId: string) {
+  return `optimize-print-corner-dim-font:${projectId}`
+}
+
 export function parsePieceLengthAdjustment(
   value: string | undefined | null,
 ): number {
