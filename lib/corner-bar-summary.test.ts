@@ -332,7 +332,7 @@ test('開口補強筋: 資料の加工長と、加工長に入らない高さ', 
   assert.equal(byShape.OPENING_BRACKET!.heightMm, undefined)
 })
 
-test('特殊コーナー筋は配置ごとに「主筋補強」と出せ、同じ寸法でも別の行になる', () => {
+test('名前の選択は外したので、主筋補強で保存した配置も特殊コーナー筋として同じ寸法の行にまとめる', () => {
   const bar = (nameKind?: 'MAIN_REINFORCE') => ({
     id: 'b1',
     barType: 'D13',
@@ -345,15 +345,12 @@ test('特殊コーナー筋は配置ごとに「主筋補強」と出せ、同�
     { category: 'SPECIAL_CORNER', shape_type: 'STRAIGHT', bars: [bar('MAIN_REINFORCE')] },
   ]
   const rows = aggregateAdditionalRebars(placements).groups[0]!.specRows
-  assert.deepEqual(rows.map((r) => [r.categoryLabel, r.quantity]).sort(), [
-    ['主筋補強', 2],
-    ['特殊コーナー筋', 2],
-  ])
-  // 既定（特殊コーナー筋）の行は名前を入れる前と同じ key（結果ページの手入力が外れない）
-  assert.ok(rows.some((r) => !r.key.includes('|name:')))
-  // 図面の印刷の一覧も名前ごとに分ける
+  assert.deepEqual(rows.map((r) => [r.categoryLabel, r.quantity]), [['特殊コーナー筋', 4]])
+  // 行の key は名前を入れる前と同じ（結果ページの手入力が外れない）
+  assert.ok(!rows[0]!.key.includes('|name:'))
+  // 図面の印刷の一覧も 1 行
   const print = buildCornerBarPrintSummary(placements.map((p) => ({ ...p, color: 'red' })))
-  assert.deepEqual(print.detailRows.map((r) => r.label).sort(), ['主筋補強', '特殊コーナー筋'])
+  assert.deepEqual(print.detailRows.map((r) => [r.label, r.qty]), [['特殊コーナー筋', 4]])
 })
 
 console.log('\nすべてのテストが通りました')

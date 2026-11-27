@@ -4,6 +4,7 @@ import {
   cornerBarCategoryLabel,
   cornerBarDisplayLabel,
   cornerBarNameKind,
+  cornerBarSupportsName,
   cornerBarSegmentSumMm,
   cornerBarShapeLabel,
   cornerBarBendAngles,
@@ -272,7 +273,7 @@ export function aggregateAdditionalRebars(
     const hasHeight = getCornerBarShape(shapeType)?.hasHeight === true
     const placementBars = flattenPlacementBars(placement)
     // 名前は配置で 1 つ（先頭の鉄筋を代表にする）。特殊コーナー筋だけ
-    const nameKind = category === 'SPECIAL_CORNER' ? cornerBarNameKind(placementBars) : null
+    const nameKind = cornerBarSupportsName(category) ? cornerBarNameKind(placementBars) : null
 
     let group = groups.get(category)
     if (!group) {
