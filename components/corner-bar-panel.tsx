@@ -1018,10 +1018,10 @@ function CornerBarBarsField({
                   onChangeLayer(barIdx, (e.target.value || null) as CornerBarLayer | null)
                 }
                 aria-label="上・下"
-                title="上筋・下筋"
-                className="w-14 shrink-0 rounded border border-border bg-white px-1 py-1 text-xs outline-none focus:border-primary disabled:opacity-50"
+                title="上筋・下筋・上下とも（図面と加工表の径の前に出す）"
+                className="w-16 shrink-0 rounded border border-border bg-white px-1 py-1 text-xs outline-none focus:border-primary disabled:opacity-50"
               >
-                <option value="">なし</option>
+                <option value="">空白</option>
                 {CORNER_BAR_LAYERS.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.mark}

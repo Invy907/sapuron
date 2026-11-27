@@ -48,6 +48,79 @@ const DIAMETER_ORDER = new Map<string, number>(CORNER_BAR_DIAMETERS.map((d, i) =
 const EMPTY_OVERRIDES: Readonly<Record<string, number>> = {}
 const EMPTY_LABEL_OVERRIDES: Readonly<Record<string, string>> = {}
 
+/**
+ * 加工表の行ごとの見せ方（結果ページで決め、印刷レイアウトにもそのまま出る）。
+ * 客先の指示: 名称の下に補足を自由入力、形の反転・向き、辺の見た目の長さの調整
+ */
+export type CornerBarRowStyle = {
+  /** 筋種類名の下に書く補足（「スリーブ」「隅角」「主」など） */
+  note?: string
+  /** 図を時計回りに 90° ずつ回す回数（自動で選んだ向きに足す） */
+  rotate?: number
+  /** 図を左右反転する */
+  flip?: boolean
+  /** 図の横・縦の伸び縮み（1 = そのまま）。寸法の数字は変えず、線の見た目の長さだけ */
+  stretchX?: number
+  stretchY?: number
+}
+export type CornerBarRowStyles = Readonly<Record<string, CornerBarRowStyle>>
+const EMPTY_ROW_STYLES: CornerBarRowStyles = {}
+
+export const FIGURE_STRETCH_MIN = 0.5
+export const FIGURE_STRETCH_MAX = 2.5
+const FIGURE_STRETCH_STEP = 0.25
+
+/** 寸法の文字の倍率（印刷レイアウトでカードごとに決める） */
+export const DIM_FONT_SCALE_MIN = 0.6
+export const DIM_FONT_SCALE_MAX = 2
+const DIM_FONT_SCALE_STEP = 0.1
+
+function clampStretch(value: number): number {
+  return Math.min(FIGURE_STRETCH_MAX, Math.max(FIGURE_STRETCH_MIN, Math.round(value * 100) / 100))
+}
+
+/** 既定値（補足なし・回転 0・反転なし・伸び 1）を落とす。何も残らなければ null */
+export function normalizeCornerBarRowStyle(style: CornerBarRowStyle): CornerBarRowStyle | null {
+  const out: CornerBarRowStyle = {}
+  const note = style.note?.trim()
+  if (note) out.note = note
+  const rotate = (((Math.round(style.rotate ?? 0) % 4) + 4) % 4)
+  if (rotate) out.rotate = rotate
+  if (style.flip) out.flip = true
+  const sx = style.stretchX != null && Number.isFinite(style.stretchX) ? clampStretch(style.stretchX) : 1
+  const sy = style.stretchY != null && Number.isFinite(style.stretchY) ? clampStretch(style.stretchY) : 1
+  if (sx !== 1) out.stretchX = sx
+  if (sy !== 1) out.stretchY = sy
+  return Object.keys(out).length > 0 ? out : null
+}
+
+export function parseCornerBarRowStyles(raw: string | null): Record<string, CornerBarRowStyle> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, CornerBarRowStyle> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object') continue
+      const v = value as Record<string, unknown>
+      const style = normalizeCornerBarRowStyle({
+        note: typeof v.note === 'string' ? v.note : undefined,
+        rotate: typeof v.rotate === 'number' ? v.rotate : undefined,
+        flip: v.flip === true,
+        stretchX: typeof v.stretchX === 'number' ? v.stretchX : undefined,
+        stretchY: typeof v.stretchY === 'number' ? v.stretchY : undefined,
+      })
+      if (style) out[key] = style
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** 印刷レイアウトのカードで決めた、形状図の寸法の文字の倍率 */
+const DimFontScaleContext = createContext(1)
+
 function diameterRank(diameter: string): number {
   return DIAMETER_ORDER.get(diameter.trim().toUpperCase()) ?? DIAMETER_ORDER.size
 }
@@ -292,6 +365,69 @@ function LabelInput({
   )
 }
 
+/**
+ * 筋種類名の下の補足（「スリーブ」「隅角」「主」など）の自由入力。確定までローカルの文字列で持ち、
+ * 空欄で確定すると消す。空のときは印刷に出さない（行の高さを増やさない）
+ */
+function NoteInput({ note, onChange }: { note: string; onChange: (value: string | null) => void }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? note
+
+  const commit = () => {
+    if (draft == null) return
+    setDraft(null)
+    const value = draft.trim()
+    onChange(value === '' ? null : value)
+  }
+
+  return (
+    <span className={`inline-grid align-baseline text-base ${text ? '' : 'print:hidden'}`}>
+      <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-pre">
+        {text || '＋補足'}
+      </span>
+      <input
+        type="text"
+        aria-label="名称の下の補足"
+        title="名称の下に書く補足（スリーブ・隅角・主 など）。空欄で消す"
+        placeholder="＋補足"
+        value={text}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            setDraft(null)
+            e.currentTarget.blur()
+          }
+        }}
+        className="col-start-1 row-start-1 w-full min-w-0 border-0 bg-transparent p-0 outline-none placeholder:text-muted/50 focus:underline focus:decoration-primary/40"
+      />
+    </span>
+  )
+}
+
+/** 筋種類名と、その下の補足 */
+function RowLabel({
+  label,
+  note,
+  onNoteChange,
+}: {
+  label: ReactNode
+  note: string | undefined
+  onNoteChange?: (value: string | null) => void
+}) {
+  return (
+    <div className="flex flex-col">
+      <span>{label}</span>
+      {onNoteChange ? (
+        <NoteInput note={note ?? ''} onChange={onNoteChange} />
+      ) : note ? (
+        <span className="text-base">{note}</span>
+      ) : null}
+    </div>
+  )
+}
+
 /** 特殊コーナー筋: 括弧内は加工長のみ（辺寸法は形状図） */
 function SpecWithKakouchou({
   row,
@@ -332,6 +468,8 @@ function buildSheetRows(
   onLabelOverrideChange: ((rowKey: string, value: string | null) => void) | undefined,
   quantityOverrides: Readonly<Record<string, number>>,
   onQuantityOverrideChange: ((rowKey: string, value: number | null) => void) | undefined,
+  rowStyles: CornerBarRowStyles,
+  onRowStyleChange: ((rowKey: string, style: CornerBarRowStyle) => void) | undefined,
 ): SheetRow[] {
   const rows: SheetRow[] = []
 
@@ -404,10 +542,21 @@ function buildSheetRows(
 
     for (const block of blocks) {
       block.rows.forEach((row, i) => {
+        const style = rowStyles[row.key] ?? {}
+        const changeStyle = onRowStyleChange
+          ? (patch: CornerBarRowStyle) => onRowStyleChange(row.key, { ...style, ...patch })
+          : undefined
         rows.push({
           key: row.key,
-          // 特殊コーナー筋は配置ごとに「主筋補強」と出せるので、行の名前を使う
-          label: labelFor(row.key, row.categoryLabel),
+          // 特殊コーナー筋は配置ごとに「主筋補強」と出せるので、行の名前を使う。
+          // その下に「スリーブ」「主」などの補足を自由に書ける
+          label: (
+            <RowLabel
+              label={labelFor(row.key, row.categoryLabel)}
+              note={style.note}
+              onNoteChange={changeStyle ? (note) => changeStyle({ note: note ?? undefined }) : undefined}
+            />
+          ),
           isGroupStart: i === 0,
           spec: (
             <SpecWithKakouchou
@@ -421,7 +570,7 @@ function buildSheetRows(
           figure:
             showShapeFigure
               ? {
-                  node: <ShapeFigure row={row} />,
+                  node: <ShapeFigure row={row} style={style} onStyleChange={changeStyle} />,
                   rowSpan: 1,
                 }
               : 'empty',
@@ -735,8 +884,18 @@ const RowHeightContext = createContext<Readonly<Record<string, number>>>({})
 const PRINT_ROW_FIGURE_PADDING = 6
 
 /** 画面用と印刷用の形状図を両方描き、媒体に応じて片方だけ見せる */
-function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
+function ShapeFigure({
+  row,
+  style = {},
+  onStyleChange,
+}: {
+  row: AdditionalRebarSpecRow
+  style?: CornerBarRowStyle
+  /** 渡したときだけ、図の上に向き・反転・長さの調整ボタンを出す（画面のみ） */
+  onStyleChange?: (patch: CornerBarRowStyle) => void
+}) {
   const rowHeight = useContext(RowHeightContext)[row.key]
+  const dimFontScale = useContext(DimFontScaleContext)
   // 印刷用は置かれた幅を測り、その幅で描いて文字が縮まないようにする。
   // 印刷レイアウト画面のシートの中で測れる（測る前は既定の幅で描き、CSS で縮める）
   const [printWidth, setPrintWidth] = useState<number | null>(null)
@@ -754,10 +913,20 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
-  // どの形状も置かれた幅で描き、文字は 12px 以下に揃える（カードを広げても大きくならない）
-  const baseMetrics = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
+  // どの形状も置かれた幅で描き、文字は 12px 以下に揃える（カードを広げても大きくならない）。
+  // 印刷レイアウトで寸法の文字の大きさを変えたときは、その倍率を掛ける
+  const metricsBeforeFont = COMPACT_PRINT_SHAPE_TYPES.has(row.shapeType)
     ? COMPACT_PRINT_FIGURE_METRICS
     : PRINT_FIGURE_METRICS
+  const baseMetrics: FigureMetrics =
+    dimFontScale === 1
+      ? metricsBeforeFont
+      : {
+          ...metricsBeforeFont,
+          dimFont: metricsBeforeFont.dimFont * dimFontScale,
+          measurementFont: metricsBeforeFont.measurementFont * dimFontScale,
+          lineDy: metricsBeforeFont.lineDy * dimFontScale,
+        }
   // 行の高さを決めてあれば、図をその高さいっぱいに描く（余白だけが増えないように）
   const fixedHeight =
     rowHeight != null ? Math.max(30, rowHeight - PRINT_ROW_FIGURE_PADDING) : null
@@ -783,8 +952,9 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
 
   return (
     <>
-      <div className="print:hidden">
-        <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} />
+      <div className="group relative print:hidden">
+        <ShapeFigureSvg row={row} metrics={SCREEN_FIGURE_METRICS} style={style} />
+        {onStyleChange ? <FigureStyleControls style={style} onChange={onStyleChange} /> : null}
       </div>
       <div
         ref={observePrintBox}
@@ -794,9 +964,100 @@ function ShapeFigure({ row }: { row: AdditionalRebarSpecRow }) {
           row={row}
           metrics={printMetrics}
           targetHeight={fixedHeight ?? undefined}
+          style={style}
         />
       </div>
     </>
+  )
+}
+
+/**
+ * 形状図にマウスを乗せると出る調整ボタン（結果ページの画面だけ）。
+ * 回転・左右反転で向きを変え（フック付きは 8 通り）、横・縦で線の見た目の長さを伸び縮みさせる
+ */
+function FigureStyleControls({
+  style,
+  onChange,
+}: {
+  style: CornerBarRowStyle
+  onChange: (patch: CornerBarRowStyle) => void
+}) {
+  const sx = style.stretchX ?? 1
+  const sy = style.stretchY ?? 1
+  const changed = (style.rotate ?? 0) !== 0 || style.flip === true || sx !== 1 || sy !== 1
+  const button =
+    'rounded px-1.5 py-0.5 leading-none hover:bg-primary/10 disabled:opacity-30'
+  return (
+    <div className="absolute right-0 top-0 z-10 hidden items-center gap-0.5 rounded-md border border-primary/30 bg-white/95 px-1 py-0.5 text-xs text-primary shadow-sm group-hover:flex group-focus-within:flex">
+      <button
+        type="button"
+        onClick={() => onChange({ rotate: ((style.rotate ?? 0) + 1) % 4 })}
+        title="90° 回す"
+        aria-label="図を 90° 回す"
+        className={button}
+      >
+        ↻
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange({ flip: !style.flip })}
+        title="左右反転"
+        aria-label="図を左右反転する"
+        aria-pressed={style.flip === true}
+        className={`${button} ${style.flip ? 'bg-primary/10' : ''}`}
+      >
+        ⇆
+      </button>
+      <span className="mx-0.5 h-3 w-px bg-primary/20" aria-hidden />
+      <span className="text-muted">横</span>
+      <button
+        type="button"
+        onClick={() => onChange({ stretchX: clampStretch(sx - FIGURE_STRETCH_STEP) })}
+        disabled={sx <= FIGURE_STRETCH_MIN}
+        aria-label="横を短く描く"
+        className={button}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange({ stretchX: clampStretch(sx + FIGURE_STRETCH_STEP) })}
+        disabled={sx >= FIGURE_STRETCH_MAX}
+        aria-label="横を長く描く"
+        className={button}
+      >
+        ＋
+      </button>
+      <span className="text-muted">縦</span>
+      <button
+        type="button"
+        onClick={() => onChange({ stretchY: clampStretch(sy - FIGURE_STRETCH_STEP) })}
+        disabled={sy <= FIGURE_STRETCH_MIN}
+        aria-label="縦を短く描く"
+        className={button}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange({ stretchY: clampStretch(sy + FIGURE_STRETCH_STEP) })}
+        disabled={sy >= FIGURE_STRETCH_MAX}
+        aria-label="縦を長く描く"
+        className={button}
+      >
+        ＋
+      </button>
+      {changed ? (
+        <button
+          type="button"
+          onClick={() => onChange({ rotate: 0, flip: false, stretchX: 1, stretchY: 1 })}
+          title="向き・長さを元に戻す"
+          className={`${button} text-muted`}
+        >
+          元に戻す
+        </button>
+      ) : null}
+    </div>
   )
 }
 
@@ -804,11 +1065,14 @@ function ShapeFigureSvg({
   row,
   metrics,
   targetHeight,
+  style = {},
 }: {
   row: AdditionalRebarSpecRow
   metrics: FigureMetrics
   /** 図を丸ごとこの高さに拡大・縮小して描く（行の高さを決めたとき）。幅は最大 480 */
   targetHeight?: number
+  /** 行ごとの向き・反転・伸び縮み（結果ページで決めた値） */
+  style?: CornerBarRowStyle
 }) {
   // くの字は行ごとの角度で描く
   const shape = resolveCornerBarShape(
@@ -817,7 +1081,12 @@ function ShapeFigureSvg({
   )
   if (!shape) return null
 
-  const rotation = pickSummaryFigureRotation(shape, metrics.pad)
+  // 横長になる向きを自動で選び、結果ページで回した分を足す
+  const rotation = (pickSummaryFigureRotation(shape, metrics.pad) + (style.rotate ?? 0)) % 4
+  const flipped = style.flip === true
+  const stretch = { x: style.stretchX ?? 1, y: style.stretchY ?? 1 }
+  const figurePoints = (m: FigureMetrics) =>
+    cornerBarThumbPoints(shape, m.width, m.height, m.pad, rotation, flipped, undefined, null, stretch)
   // 二重線の形状は中心線の両側に外形線を描くので、寸法はその外形線から離す
   const lineHalfWidth = shape.doubleLine ? FIGURE_LAP_INSET : 0
   // 同じ寸法の辺の組（四角の 4 辺）は先頭の辺にだけ寸法を書く
@@ -837,9 +1106,7 @@ function ShapeFigureSvg({
         }
       })
   // ラベルの並び（辺の順）は図の大きさによらないので、先に文字だけ決めておく
-  const baseAnchors = anchorsFor(
-    cornerBarThumbPoints(shape, metrics.width, metrics.height, metrics.pad, rotation, false),
-  )
+  const baseAnchors = anchorsFor(figurePoints(metrics))
   const dimTexts = baseAnchors.map((anchor) => segmentLabelFor(row, anchor.index))
   const measurementTexts = baseAnchors.map((anchor) =>
     segmentMeasurementLabelFor(row, anchor.index),
@@ -850,7 +1117,7 @@ function ShapeFigureSvg({
 
   /** 与えた大きさ（viewBox）で形と寸法の置き場所を決める */
   const layoutWith = (m: FigureMetrics) => {
-    const points = cornerBarThumbPoints(shape, m.width, m.height, m.pad, rotation, false)
+    const points = figurePoints(m)
     // 外向きの向きだけ受け取り、中点からの距離は layoutLabels がラベルの大きさで決める
     const placed = layoutLabels(anchorsFor(points), labelLines, points, m, lineHalfWidth)
     // 印刷は図とラベルが入る範囲まで上下を詰める（横は変えない）
@@ -1187,6 +1454,10 @@ export function CornerBarSummarySections({
   onQuantityOverrideChange,
   rowHeights,
   onRowHeightChange,
+  rowStyles = EMPTY_ROW_STYLES,
+  onRowStyleChange,
+  dimFontScale = 1,
+  onDimFontScaleChange,
 }: {
   placements: AdditionalRebarPlacementLike[]
   /** 集計行 key → 手入力した加工長(mm)。無い行は自動計算の値 */
@@ -1202,6 +1473,13 @@ export function CornerBarSummarySections({
   rowHeights?: Readonly<Record<string, number>>
   /** 渡したときだけ行の高さを変えられる（印刷レイアウト画面のカード） */
   onRowHeightChange?: (rowKey: string, height: number | null) => void
+  /** 集計行 key → 補足・図の向き・伸び縮み（結果ページで決める） */
+  rowStyles?: CornerBarRowStyles
+  onRowStyleChange?: (rowKey: string, style: CornerBarRowStyle) => void
+  /** 形状図の寸法の文字の倍率（印刷レイアウトのカードで決める） */
+  dimFontScale?: number
+  /** 渡したときだけ、カードの右上に寸法の文字の大きさのボタンを出す（印刷レイアウト画面。印刷には出ない） */
+  onDimFontScaleChange?: (scale: number | null) => void
 }) {
   const summary = useMemo(() => aggregateAdditionalRebars(placements), [placements])
   const rows = useMemo(
@@ -1214,6 +1492,8 @@ export function CornerBarSummarySections({
         onLabelOverrideChange,
         quantityOverrides,
         onQuantityOverrideChange,
+        rowStyles,
+        onRowStyleChange,
       ),
     [
       summary,
@@ -1223,8 +1503,11 @@ export function CornerBarSummarySections({
       onLabelOverrideChange,
       quantityOverrides,
       onQuantityOverrideChange,
+      rowStyles,
+      onRowStyleChange,
     ],
   )
+  const hasFigure = rows.some((r) => typeof r.figure === 'object')
 
   if (rows.length === 0) {
     return <p className="text-sm text-muted">付加筋がまだ配置されていません。</p>
@@ -1232,9 +1515,64 @@ export function CornerBarSummarySections({
 
   return (
     <div className="corner-summary-print-root">
-      <div className="corner-summary-section overflow-x-auto rounded-lg border-2 border-primary bg-white p-5">
-        <SheetTable rows={rows} rowHeights={rowHeights} onRowHeightChange={onRowHeightChange} />
+      <div className="corner-summary-section relative overflow-x-auto rounded-lg border-2 border-primary bg-white p-5">
+        {onDimFontScaleChange && hasFigure ? (
+          <DimFontScaleControl scale={dimFontScale} onChange={onDimFontScaleChange} />
+        ) : null}
+        <DimFontScaleContext.Provider value={dimFontScale}>
+          <SheetTable rows={rows} rowHeights={rowHeights} onRowHeightChange={onRowHeightChange} />
+        </DimFontScaleContext.Provider>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 印刷レイアウトのカードの右上に出す、形状図の寸法の文字の大きさ（客先の指示: 文字の大きさ調整できる様に）。
+ * カードの上の余白に絶対配置し、カードの高さを変えない。印刷には出さない
+ */
+function DimFontScaleControl({
+  scale,
+  onChange,
+}: {
+  scale: number
+  onChange: (scale: number | null) => void
+}) {
+  const set = (next: number) => {
+    const rounded = Math.round(Math.min(DIM_FONT_SCALE_MAX, Math.max(DIM_FONT_SCALE_MIN, next)) * 10) / 10
+    onChange(rounded === 1 ? null : rounded)
+  }
+  const px = Math.round(PRINT_FIGURE_METRICS.dimFont * scale)
+  const button = 'px-1.5 leading-none hover:bg-primary/10 disabled:opacity-30'
+  return (
+    <div className="print-sheet-ui absolute right-2 top-0.5 z-10 flex items-center gap-1 rounded-full border border-primary/30 bg-white px-1.5 text-[11px] text-primary">
+      <span className="text-muted">寸法の文字</span>
+      <button
+        type="button"
+        onClick={() => set(scale - DIM_FONT_SCALE_STEP)}
+        disabled={scale <= DIM_FONT_SCALE_MIN}
+        aria-label="寸法の文字を小さくする"
+        className={button}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(null)}
+        title="クリックで元の大きさ（12px）に戻す"
+        className="min-w-[2.5rem] text-center tabular-nums"
+      >
+        {px}px
+      </button>
+      <button
+        type="button"
+        onClick={() => set(scale + DIM_FONT_SCALE_STEP)}
+        disabled={scale >= DIM_FONT_SCALE_MAX}
+        aria-label="寸法の文字を大きくする"
+        className={button}
+      >
+        ＋
+      </button>
     </div>
   )
 }

@@ -1038,17 +1038,18 @@ export interface CornerBarBarItem {
   nameKind?: CornerBarNameKind
 }
 
-/** 特殊コーナー筋の上筋・下筋 */
-export type CornerBarLayer = 'UPPER' | 'LOWER'
+/** 特殊コーナー筋の上筋・下筋・上下とも */
+export type CornerBarLayer = 'UPPER' | 'LOWER' | 'BOTH'
 
-/** 鉄筋径の左で選ぶ上・下。mark は丸で囲んだ表示 */
+/** 鉄筋径の左で選ぶ上・下・上下（客先の指示: 空白・上・下・上下）。mark は丸で囲んだ表示 */
 export const CORNER_BAR_LAYERS: Array<{ id: CornerBarLayer; label: string; mark: string }> = [
   { id: 'UPPER', label: '上', mark: '㊤' },
   { id: 'LOWER', label: '下', mark: '㊦' },
+  { id: 'BOTH', label: '上下', mark: '㊤㊦' },
 ]
 
 export function normalizeCornerBarLayer(value: unknown): CornerBarLayer | undefined {
-  return value === 'UPPER' || value === 'LOWER' ? value : undefined
+  return value === 'UPPER' || value === 'LOWER' || value === 'BOTH' ? value : undefined
 }
 
 /** 径の前に付ける「㊤」「㊦」。なしは空 */
@@ -1899,14 +1900,19 @@ export function cornerBarThumbPoints(
   flipped = false,
   segments?: CornerBarSegment[],
   anchorEdgeIndex?: number | null,
+  /** 向きを決めたあとの横・縦の伸び縮み（結果表の図で、辺の見た目の長さを手で調整する） */
+  stretch?: { x: number; y: number },
 ): Array<{ x: number; y: number }> {
   const lengths = drawEdgeLengthsForThumb(shape, segments, anchorEdgeIndex)
   const refSize = Math.max(...lengths, DEFAULT_CORNER_BAR_SIZE_PX)
   const geometry = buildCornerBarGeometryFromLengths(shape, lengths, refSize)
+  const sx = stretch && stretch.x > 0 ? stretch.x : 1
+  const sy = stretch && stretch.y > 0 ? stretch.y : 1
   const rotated = {
-    points: geometry.points.map((p) =>
-      applyCornerBarOrientation(p, rotationSteps, flipped),
-    ),
+    points: geometry.points.map((p) => {
+      const q = applyCornerBarOrientation(p, rotationSteps, flipped)
+      return { x: q.x * sx, y: q.y * sy }
+    }),
   }
   const b = cornerBarGeometryBounds({
     points: [...rotated.points, ...hookApexPoints(shape, rotated.points)],

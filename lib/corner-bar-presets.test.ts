@@ -1,5 +1,7 @@
 import assert from 'node:assert'
 import {
+  cornerBarLayerMark,
+  normalizeCornerBarLayer,
   cornerBarDraggableEnds,
   resizeCornerBarEdgeToPoint,
   cornerBarCanvasGeometry,
@@ -369,4 +371,25 @@ test('特殊コーナー筋の名前（主筋補強）は形状を変えても�
   assert.equal(remapCornerBarBarsToShape(l, 'SPECIAL_CORNER', bars)[0]!.nameKind, 'MAIN_REINFORCE')
   assert.equal(remapCornerBarBarsToShape(straight, 'SOE', bars)[0]!.nameKind, undefined)
   assert.equal(setCornerBarNameKind(bars, null)[0]!.nameKind, undefined)
+})
+
+test('上・下・上下（客先の指示: 空白・上・下・上下）を選べ、上下は ㊤㊦ と書く', () => {
+  assert.equal(normalizeCornerBarLayer('BOTH'), 'BOTH')
+  assert.equal(cornerBarLayerMark('BOTH'), '㊤㊦')
+  assert.equal(normalizeCornerBarLayer('SIDE'), undefined)
+  assert.equal(cornerBarLayerMark(undefined), '')
+})
+
+test('結果表の図は横・縦を伸び縮みさせて描ける（寸法は変えず、線の見た目の長さだけ）', () => {
+  const l = getCornerBarShape('L_LONG')!
+  const span = (pts: Array<{ x: number; y: number }>) => {
+    const xs = pts.map((p) => p.x)
+    const ys = pts.map((p) => p.y)
+    return (Math.max(...xs) - Math.min(...xs)) / Math.max(1, Math.max(...ys) - Math.min(...ys))
+  }
+  const plain = cornerBarThumbPoints(l, 280, 280, 20, 0, false)
+  const wide = cornerBarThumbPoints(l, 280, 280, 20, 0, false, undefined, null, { x: 2, y: 1 })
+  assert.ok(span(wide) > span(plain) * 1.9)
+  // 伸び縮みしても箱の中に収める
+  for (const p of wide) assert.ok(p.x >= 19.9 && p.x <= 260.1 && p.y >= 19.9 && p.y <= 260.1)
 })
