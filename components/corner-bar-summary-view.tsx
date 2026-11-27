@@ -367,7 +367,9 @@ function LabelInput({
 
 /**
  * 筋種類名の下の補足（「スリーブ」「隅角」「主」など）の自由入力。確定までローカルの文字列で持ち、
- * 空欄で確定すると消す。空のときは印刷に出さない（行の高さを増やさない）
+ * 空欄で確定すると消す。Shift+Enter で改行、Enter で確定。空のときは印刷に出さない（行の高さを増やさない）。
+ * 幅は筋種類名の幅までで、それより長いと自動で折り返す（横に伸びて形状図を押し出さないように）。
+ * 高さは見えないミラー要素に合わせるので、改行・折り返しの分だけ伸びる
  */
 function NoteInput({ note, onChange }: { note: string; onChange: (value: string | null) => void }) {
   const [draft, setDraft] = useState<string | null>(null)
@@ -381,26 +383,30 @@ function NoteInput({ note, onChange }: { note: string; onChange: (value: string 
   }
 
   return (
-    <span className={`inline-grid align-baseline text-base ${text ? '' : 'print:hidden'}`}>
-      <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-pre">
-        {text || '＋補足'}
+    <span className={`grid w-full text-base leading-snug ${text ? '' : 'print:hidden'}`}>
+      {/* 末尾の改行でも 1 行分の高さを取るため zero-width space を足す */}
+      <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-pre-wrap break-all">
+        {`${text || '＋補足'}\u200b`}
       </span>
-      <input
-        type="text"
+      <textarea
+        rows={1}
         aria-label="名称の下の補足"
-        title="名称の下に書く補足（スリーブ・隅角・主 など）。空欄で消す"
+        title="名称の下に書く補足（スリーブ・隅角・主 など）。Shift+Enter で改行、空欄で消す"
         placeholder="＋補足"
         value={text}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault()
+            e.currentTarget.blur()
+          }
           if (e.key === 'Escape') {
             setDraft(null)
             e.currentTarget.blur()
           }
         }}
-        className="col-start-1 row-start-1 w-full min-w-0 border-0 bg-transparent p-0 outline-none placeholder:text-muted/50 focus:underline focus:decoration-primary/40"
+        className="col-start-1 row-start-1 w-full min-w-0 resize-none overflow-hidden whitespace-pre-wrap break-all border-0 bg-transparent p-0 leading-snug outline-none placeholder:text-muted/50 focus:underline focus:decoration-primary/40"
       />
     </span>
   )
@@ -417,13 +423,16 @@ function RowLabel({
   onNoteChange?: (value: string | null) => void
 }) {
   return (
-    <div className="flex flex-col">
+    <div className="inline-flex flex-col">
       <span>{label}</span>
-      {onNoteChange ? (
-        <NoteInput note={note ?? ''} onChange={onNoteChange} />
-      ) : note ? (
-        <span className="text-base">{note}</span>
-      ) : null}
+      {/* 幅 0・最小幅 100% にすると、補足は列の幅を広げず筋種類名の幅で折り返す */}
+      <div style={{ width: 0, minWidth: '100%' }}>
+        {onNoteChange ? (
+          <NoteInput note={note ?? ''} onChange={onNoteChange} />
+        ) : note ? (
+          <span className="whitespace-pre-wrap break-all text-base leading-snug">{note}</span>
+        ) : null}
+      </div>
     </div>
   )
 }
